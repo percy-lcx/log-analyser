@@ -1,0 +1,95 @@
+version: 1
+
+# Exact locale whitelist (first path segment must match exactly).
+locales:
+  - en
+  - en-GB
+  - en-in
+  - en-TW
+  - en-HK
+  - en-mo
+  - zh-hans
+  - zh-hant
+  - zh-hant-TW
+  - zh-hant-HK
+  - zh-hant-mo
+  - pt
+  - it
+  - th
+  - vi
+  - tl
+  - fr
+  - id
+  - ms
+  - ko
+  - de
+  - ar
+  - zh-hans-cn
+  - es
+  - en-au
+  - zh-hans-au
+  - zh-hant-au
+
+# First match wins. These are high-priority buckets.
+rules:
+  - group: "Home"
+    match: "exact"
+    value: "/"
+
+  - group: "Home"
+    match: "regex"
+    value: "^/(en|zh-hans|en-in|zh-hant|pt|it|th|vi|tl|fr|id|ms|ko|de|ar|zh-hant-tw|en-eu|en-tw|cht|eng|zh-hant-mo|en-mo)/?$"
+
+  - group: "Robots"
+    match: "exact"
+    value: "/robots.txt"
+
+  - group: "Sitemaps"
+    match: "regex"
+    value: "^/sitemap.*\\.xml$"
+
+  - group: "Nuxt Assets"
+    match: "prefix"
+    value: "/_nuxt/"
+
+  - group: "API"
+    match: "prefix"
+    value: "/api/"
+
+  # Extension-based assets that still hit origin.
+  - group: "Static Assets"
+    match: "ext"
+    value:
+      - css
+      - js
+      - png
+      - jpg
+      - jpeg
+      - gif
+      - webp
+      - svg
+      - ico
+      - woff
+      - woff2
+      - ttf
+      - eot
+      - map
+      - pdf
+      - zip
+      - rar
+      - 7z
+      - mp4
+      - webm
+      - mp3
+
+# Section mapping after locale detection.
+# If path begins with a known locale, section = second segment; else section = first segment.
+section_map:
+  about: "About"
+  academy: "Academy"
+  analysis: "Analysis"
+  platform: "Platform"
+  trading: "Trading"
+
+fallback_group: "Other Content"
+
