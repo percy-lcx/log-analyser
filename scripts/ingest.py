@@ -201,11 +201,19 @@ def apply_url_grouping(path: str, cfg: UrlGroupingConfig) -> Tuple[str, Optional
 
     if first in cfg.locales:
         locale = first
-        section = segs[1] if len(segs) > 1 else None
+        section_index = 1
+        section = segs[section_index] if len(segs) > section_index else None
     else:
+        section_index = 0
         section = first
 
     if section:
+        subsection = segs[section_index + 1] if len(segs) > section_index + 1 else None
+        if subsection:
+            composite = f"{section}/{subsection}".lower()
+            mapped = cfg.section_map.get(composite)
+            if mapped:
+                return mapped, locale, section
         mapped = cfg.section_map.get(section.lower())
         if mapped:
             return mapped, locale, section

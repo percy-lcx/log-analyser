@@ -88,8 +88,9 @@ section_map:
   about: "About"
   academy: "Academy"
   analysis: "Analysis"
+  analysis/market-insight: "Analysis - Market Insight"
+  analysis/market-news: "Analysis - Market News"
   platform: "Platform"
   trading: "Trading"
 
 fallback_group: "Other Content"
-
