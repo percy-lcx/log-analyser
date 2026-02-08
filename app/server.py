@@ -109,6 +109,10 @@ def distinct_values(table: str, column: str, date_from: Optional[str], date_to: 
     return [r[0] for r in rows if r and r[0] is not None]
 
 
+def no_data_notice() -> str:
+    return "<p><em>No data found for the selected date range.</em></p>"
+
+
 def select_html(name: str, options: List[str], current: Optional[str], label: str) -> str:
     opts = ["<option value=''>All</option>"]
     for opt in options:
@@ -251,6 +255,9 @@ def date_filters_html(date_from, date_to):
 @app.get("/reports/locales", response_class=HTMLResponse)
 def locales(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
     paths = list_partitions("locale_daily", date_from, date_to)
+    if not paths:
+        body = date_filters_html(date_from, date_to) + no_data_notice()
+        return page("Locale breakdown", body)
     sql = """
       SELECT locale,
              SUM(hits) AS hits,
@@ -274,6 +281,9 @@ def locales(date_from: Optional[str] = Query(None, alias="from"), date_to: Optio
 @app.get("/reports/url-groups", response_class=HTMLResponse)
 def url_groups(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
     paths = list_partitions("group_daily", date_from, date_to)
+    if not paths:
+        body = date_filters_html(date_from, date_to) + no_data_notice()
+        return page("URL group breakdown", body)
     sql = """
       SELECT url_group,
              SUM(hits) AS hits,
@@ -303,6 +313,9 @@ def locale_groups(
     limit: int = 200,
 ):
     paths = list_partitions("locale_group_daily", date_from, date_to)
+    if not paths:
+        body = date_filters_html(date_from, date_to) + no_data_notice()
+        return page("Locale x URL group", body)
     clauses = []
     if locale:
         clauses.append(f"locale = '{sql_escape_string(locale)}'")
@@ -627,6 +640,8 @@ def export(
     report = report.strip().lower()
 
     def stream_csv(sql: str, paths: List[str], filename: str):
+        if not paths:
+            return PlainTextResponse("No data found for the selected date range.", status_code=404)
         conn = duckdb.connect(database=":memory:")
         conn.execute("PRAGMA threads=4;")
         files_sql = "[" + ",".join("'" + p.replace("'", "''") + "'" for p in paths) + "]"
