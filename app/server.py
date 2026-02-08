@@ -310,7 +310,7 @@ def locale_groups(
     date_to: Optional[str] = Query(None, alias="to"),
     locale: Optional[str] = None,
     url_group: Optional[str] = None,
-    limit: int = 200,
+    limit: int = 999,
 ):
     paths = list_partitions("locale_group_daily", date_from, date_to)
     if not paths:
@@ -392,7 +392,7 @@ def top_urls(
     date_to: Optional[str] = Query(None, alias="to"),
     include_assets: bool = False,
     url_group: Optional[str] = None,
-    limit: int = 200
+    limit: int = 999
 ):
     paths = list_partitions("top_urls_daily", date_from, date_to)
     clauses = []
@@ -439,7 +439,7 @@ def top_404(
     date_to: Optional[str] = Query(None, alias="to"),
     include_assets: bool = False,
     url_group: Optional[str] = None,
-    limit: int = 200
+    limit: int = 999
 ):
     paths = list_partitions("top_404_daily", date_from, date_to)
     clauses = []
@@ -482,7 +482,7 @@ def top_5xx(
     date_to: Optional[str] = Query(None, alias="to"),
     include_assets: bool = False,
     url_group: Optional[str] = None,
-    limit: int = 200
+    limit: int = 999
 ):
     paths = list_partitions("top_5xx_daily", date_from, date_to)
     clauses = []
@@ -520,7 +520,7 @@ def top_5xx(
 
 
 @app.get("/reports/bots", response_class=HTMLResponse)
-def bots(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to"), limit: int = 200):
+def bots(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to"), limit: int = 999):
     paths = list_partitions("bot_daily", date_from, date_to)
     sql = f"""
       SELECT bot_family,
@@ -549,7 +549,7 @@ def wasted_crawl(
     bot: Optional[str] = None,
     include_assets: bool = False,
     url_group: Optional[str] = None,
-    limit: int = 200,
+    limit: int = 999,
 ):
     paths = list_partitions("wasted_crawl_daily", date_from, date_to)
     score_col = "waste_score_strict" if strict else "waste_score"
@@ -603,7 +603,7 @@ def wasted_crawl(
 def top_resource_waste(
     date_from: Optional[str] = Query(None, alias="from"),
     date_to: Optional[str] = Query(None, alias="to"),
-    limit: int = 200,
+    limit: int = 999,
 ):
     paths = list_partitions("top_resource_waste_daily", date_from, date_to)
     sql = f"""
