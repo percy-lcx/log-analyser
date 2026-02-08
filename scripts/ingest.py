@@ -423,6 +423,59 @@ def build_aggregates_for_date(log_date: str) -> None:
     GROUP BY date, COALESCE(bot_family, 'Unknown bot')
     """
 
+    locale_daily_sql = """
+    SELECT
+      date,
+      COALESCE(locale, 'Unknown') AS locale,
+      COUNT(*) AS hits,
+      SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS hits_bot,
+      SUM(CASE WHEN NOT is_bot THEN 1 ELSE 0 END) AS hits_human,
+      SUM(CASE WHEN status_class = 2 THEN 1 ELSE 0 END) AS s2xx,
+      SUM(CASE WHEN status_class = 3 THEN 1 ELSE 0 END) AS s3xx,
+      SUM(CASE WHEN status_class = 4 THEN 1 ELSE 0 END) AS s4xx,
+      SUM(CASE WHEN status_class = 5 THEN 1 ELSE 0 END) AS s5xx,
+      SUM(bytes_sent) AS bytes_sent,
+      SUM(CASE WHEN is_resource THEN 1 ELSE 0 END) AS resource_hits,
+      SUM(CASE WHEN is_resource AND is_bot THEN 1 ELSE 0 END) AS resource_hits_bot
+    FROM parsed
+    GROUP BY date, COALESCE(locale, 'Unknown')
+    """
+
+    group_daily_sql = """
+    SELECT
+      date,
+      url_group,
+      COUNT(*) AS hits,
+      SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS hits_bot,
+      SUM(CASE WHEN NOT is_bot THEN 1 ELSE 0 END) AS hits_human,
+      SUM(CASE WHEN status_class = 2 THEN 1 ELSE 0 END) AS s2xx,
+      SUM(CASE WHEN status_class = 3 THEN 1 ELSE 0 END) AS s3xx,
+      SUM(CASE WHEN status_class = 4 THEN 1 ELSE 0 END) AS s4xx,
+      SUM(CASE WHEN status_class = 5 THEN 1 ELSE 0 END) AS s5xx,
+      SUM(bytes_sent) AS bytes_sent,
+      SUM(CASE WHEN is_resource THEN 1 ELSE 0 END) AS resource_hits,
+      SUM(CASE WHEN is_resource AND is_bot THEN 1 ELSE 0 END) AS resource_hits_bot
+    FROM parsed
+    GROUP BY date, url_group
+    """
+
+    locale_group_daily_sql = """
+    SELECT
+      date,
+      COALESCE(locale, 'Unknown') AS locale,
+      url_group,
+      COUNT(*) AS hits,
+      SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS hits_bot,
+      SUM(CASE WHEN NOT is_bot THEN 1 ELSE 0 END) AS hits_human,
+      SUM(CASE WHEN status_class = 2 THEN 1 ELSE 0 END) AS s2xx,
+      SUM(CASE WHEN status_class = 3 THEN 1 ELSE 0 END) AS s3xx,
+      SUM(CASE WHEN status_class = 4 THEN 1 ELSE 0 END) AS s4xx,
+      SUM(CASE WHEN status_class = 5 THEN 1 ELSE 0 END) AS s5xx,
+      SUM(bytes_sent) AS bytes_sent
+    FROM parsed
+    GROUP BY date, COALESCE(locale, 'Unknown'), url_group
+    """
+
     top_urls_daily_sql = """
     SELECT
       date,
@@ -523,6 +576,9 @@ def build_aggregates_for_date(log_date: str) -> None:
     agg_write_one(conn, daily_sql, out("daily"))
     agg_write_one(conn, hourly_sql, out("hourly"))
     agg_write_one(conn, bot_daily_sql, out("bot_daily"))
+    agg_write_one(conn, locale_daily_sql, out("locale_daily"))
+    agg_write_one(conn, group_daily_sql, out("group_daily"))
+    agg_write_one(conn, locale_group_daily_sql, out("locale_group_daily"))
     agg_write_one(conn, top_urls_daily_sql, out("top_urls_daily"))
     agg_write_one(conn, top_404_daily_sql, out("top_404_daily"))
     agg_write_one(conn, top_5xx_daily_sql, out("top_5xx_daily"))
