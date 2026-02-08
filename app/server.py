@@ -37,9 +37,28 @@ def list_partitions(table: str, date_from: Optional[str], date_to: Optional[str]
     return sorted(out)
 
 
+# def html_table(rows, columns, max_rows: int = 200) -> str:
+#     # Simple HTML table (no extra deps)
+#     head = "".join(f"<th>{c}</th>" for c in columns)
+#     body_rows = []
+#     for i, r in enumerate(rows):
+#         if i >= max_rows:
+#             break
+#         tds = "".join(f"<td>{'' if v is None else v}</td>" for v in r)
+#         body_rows.append(f"<tr>{tds}</tr>")
+#     body = "\n".join(body_rows)
+#     return f"<table border='1' cellpadding='6' cellspacing='0'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
 def html_table(rows, columns, max_rows: int = 200) -> str:
-    # Simple HTML table (no extra deps)
-    head = "".join(f"<th>{c}</th>" for c in columns)
+    """
+    Simple HTML table with client-side sorting (no deps).
+    Click a header to sort; click again to reverse.
+    """
+    head = "".join(
+        f"<th scope='col' data-col='{i}'>{c}</th>"
+        for i, c in enumerate(columns)
+    )
+
     body_rows = []
     for i, r in enumerate(rows):
         if i >= max_rows:
@@ -47,8 +66,13 @@ def html_table(rows, columns, max_rows: int = 200) -> str:
         tds = "".join(f"<td>{'' if v is None else v}</td>" for v in r)
         body_rows.append(f"<tr>{tds}</tr>")
     body = "\n".join(body_rows)
-    return f"<table border='1' cellpadding='6' cellspacing='0'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
 
+    return (
+        "<table class='sortable' border='1' cellpadding='6' cellspacing='0'>"
+        f"<thead><tr>{head}</tr></thead>"
+        f"<tbody>{body}</tbody>"
+        "</table>"
+    )
 
 def run_query(paths: List[str], sql: str):
     if not paths:
@@ -71,14 +95,99 @@ def sql_escape_string(s: str) -> str:
     # DuckDB uses SQL single quotes; escape single quote by doubling it.
     return s.replace("'", "''")
 
+# def page(title: str, body: str) -> HTMLResponse:
+#     html = f"""
+#     <html>
+#       <head><title>{title}</title></head>
+#       <body style="font-family: Arial, sans-serif; padding: 20px;">
+#         <h1>{title}</h1>
+#         <p><a href="/">Home</a></p>
+#         {body}
+#       </body>
+#     </html>
+#     """
+#     return HTMLResponse(html)
+
 def page(title: str, body: str) -> HTMLResponse:
+    css = """
+    <style>
+      table.sortable th { cursor: pointer; user-select: none; }
+      table.sortable th.sorted-asc::after  { content: " ▲"; }
+      table.sortable th.sorted-desc::after { content: " ▼"; }
+    </style>
+    """
+
+    js = """
+    <script>
+    (function() {
+      function parseNumber(s) {
+        // Remove commas and spaces; keep digits, dot, minus.
+        const cleaned = s.replace(/[,\\s]/g, "");
+        if (!cleaned) return null;
+        const n = Number(cleaned);
+        return Number.isFinite(n) ? n : null;
+      }
+
+      function sortTable(table, colIndex, asc) {
+        const tbody = table.tBodies[0];
+        if (!tbody) return;
+
+        const rows = Array.from(tbody.rows);
+
+        rows.sort((ra, rb) => {
+          const a = (ra.cells[colIndex]?.innerText ?? "").trim();
+          const b = (rb.cells[colIndex]?.innerText ?? "").trim();
+
+          const na = parseNumber(a);
+          const nb = parseNumber(b);
+
+          if (na !== null && nb !== null) {
+            return asc ? (na - nb) : (nb - na);
+          }
+
+          // Fallback to string compare
+          return asc ? a.localeCompare(b) : b.localeCompare(a);
+        });
+
+        // Re-append in new order
+        for (const r of rows) tbody.appendChild(r);
+      }
+
+      function attachSortable(table) {
+        const headers = table.tHead ? Array.from(table.tHead.rows[0].cells) : [];
+        headers.forEach((th, idx) => {
+          th.addEventListener("click", () => {
+            const currentlyAsc = th.classList.contains("sorted-asc");
+            const asc = !currentlyAsc;
+
+            // Clear indicators for this table
+            headers.forEach(h => h.classList.remove("sorted-asc", "sorted-desc"));
+            th.classList.add(asc ? "sorted-asc" : "sorted-desc");
+
+            sortTable(table, idx, asc);
+          });
+        });
+      }
+
+      document.addEventListener("DOMContentLoaded", () => {
+        document.querySelectorAll("table.sortable").forEach(attachSortable);
+      });
+    })();
+    </script>
+    """
+
     html = f"""
     <html>
-      <head><title>{title}</title></head>
+      <head>
+        <meta charset="utf-8">
+        <title>{title}</title>
+        {css}
+      </head>
       <body style="font-family: Arial, sans-serif; padding: 20px;">
         <h1>{title}</h1>
         <p><a href="/">Home</a></p>
         {body}
+        {js}
       </body>
     </html>
     """
