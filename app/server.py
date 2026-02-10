@@ -41,7 +41,7 @@ def list_partitions(table: str, date_from: Optional[str], date_to: Optional[str]
     return sorted(out)
 
 
-# def html_table(rows, columns, max_rows: int = 200) -> str:
+# def html_table(rows, columns, max_rows: int = 999) -> str:
 #     # Simple HTML table (no extra deps)
 #     head = "".join(f"<th>{c}</th>" for c in columns)
 #     body_rows = []
@@ -53,7 +53,7 @@ def list_partitions(table: str, date_from: Optional[str], date_to: Optional[str]
 #     body = "\n".join(body_rows)
 #     return f"<table border='1' cellpadding='6' cellspacing='0'><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
 
-def html_table(rows, columns, max_rows: int = 200) -> str:
+def html_table(rows, columns, max_rows: int = 999) -> str:
     """
     Simple HTML table with client-side sorting (no deps).
     Click a header to sort; click again to reverse.
@@ -237,6 +237,7 @@ def index():
         ("Bots", "/reports/bots"),
         ("Wasted crawl", "/reports/wasted-crawl"),
         ("Top resource waste", "/reports/top-resource-waste"),
+        ("Bot URLs (Googlebot)", "/reports/bot-urls?bot=Googlebot"),
     ]
     links = "<ul>" + "".join(f"<li><a href='{u}'>{n}</a></li>" for n, u in items) + "</ul>"
     help_txt = """
@@ -627,6 +628,55 @@ def top_resource_waste(
     body += html_table(rows, cols, max_rows=min(int(limit), 500))
     return page("Top resource waste", body)
 
+@app.get("/reports/bot-urls", response_class=HTMLResponse)
+def bot_urls(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    bot: str = "Googlebot",
+    include_assets: bool = False,
+    limit: int = 999,
+):
+    paths = list_partitions("bot_urls_daily", date_from, date_to)
+
+    clauses = []
+    if bot:
+        clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
+    if not include_assets:
+        clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    sql = f"""
+      SELECT path, url_group, SUM(hits) AS hits
+      FROM t
+      {where}
+      GROUP BY path, url_group
+      ORDER BY hits DESC
+      LIMIT {int(limit)};
+    """
+
+    cols, rows = run_query(paths, sql)
+
+    body = date_filters_html(date_from, date_to)
+    body += f"""
+    <form method="get">
+      <input type="hidden" name="from" value="{date_from or ''}">
+      <input type="hidden" name="to" value="{date_to or ''}">
+      <label>Bot family:
+        <input name="bot" value="{bot or ''}" placeholder="Googlebot">
+      </label>
+      <label><input type="checkbox" name="include_assets" value="true" {"checked" if include_assets else ""}> Include assets</label>
+      <label>Limit: <input name="limit" value="{limit}" size="6"></label>
+      <button type="submit">Apply</button>
+    </form>
+    """
+
+    body += (
+        f"<p><a href='/export?report=bot-urls&from={date_from or ''}&to={date_to or ''}"
+        f"&bot={bot or ''}&include_assets={str(include_assets).lower()}&limit={limit}'>Export CSV</a></p>"
+    )
+
+    body += html_table(rows, cols, max_rows=min(int(limit), 500))
+    return page(f"Bot URLs: {bot}", body)
 
 @app.get("/export")
 def export(
@@ -877,6 +927,27 @@ def export(
           LIMIT {int(limit)};
         """
         return stream_csv(sql, paths, "top_resource_waste.csv")
+    
+    if report == "bot-urls":
+        paths = list_partitions("bot_urls_daily", date_from, date_to)
+
+        clauses = []
+        if bot:
+            clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
+        if not include_assets:
+            clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+        sql = f"""
+            SELECT path, url_group, SUM(hits) AS hits
+            FROM t
+            {where}
+            GROUP BY path, url_group
+            ORDER BY hits DESC
+            LIMIT {int(limit)};
+        """
+        return stream_csv(sql, paths, "bot_urls.csv")
+
 
     return PlainTextResponse(
         "Unknown report. Try report=daily, daily-status, locales, url-groups, locale-groups, top-urls, top-404, top-5xx, bots, wasted-crawl, top-resource-waste",

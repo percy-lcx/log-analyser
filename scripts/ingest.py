@@ -578,6 +578,19 @@ def build_aggregates_for_date(log_date: str) -> None:
     GROUP BY date, path
     """
 
+    bot_urls_daily_sql = """
+    SELECT
+    date,
+    COALESCE(bot_family, 'Unknown bot') AS bot_family,
+    path,
+    url_group,
+    COUNT(*) AS hits
+    FROM parsed
+    WHERE is_bot
+    GROUP BY date, COALESCE(bot_family, 'Unknown bot'), path, url_group
+    """
+
+
     def out(name: str) -> Path:
         return DATA_AGG / name / f"date={log_date}" / "part.parquet"
 
@@ -592,6 +605,7 @@ def build_aggregates_for_date(log_date: str) -> None:
     agg_write_one(conn, top_5xx_daily_sql, out("top_5xx_daily"))
     agg_write_one(conn, wasted_crawl_daily_sql, out("wasted_crawl_daily"))
     agg_write_one(conn, top_resource_waste_daily_sql, out("top_resource_waste_daily"))
+    agg_write_one(conn, bot_urls_daily_sql, out("bot_urls_daily"))
 
     conn.close()
 
