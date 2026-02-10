@@ -8,6 +8,10 @@ import duckdb
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, StreamingResponse, PlainTextResponse
 
+import csv
+import io
+from fastapi.responses import StreamingResponse, PlainTextResponse
+
 ROOT = Path(__file__).resolve().parents[1]
 AGG = ROOT / "data" / "aggregates"
 
@@ -642,18 +646,46 @@ def export(
     def stream_csv(sql: str, paths: List[str], filename: str):
         if not paths:
             return PlainTextResponse("No data found for the selected date range.", status_code=404)
+
+        sql_clean = sql.strip().rstrip(";").strip()
+
         conn = duckdb.connect(database=":memory:")
         conn.execute("PRAGMA threads=4;")
         files_sql = "[" + ",".join("'" + p.replace("'", "''") + "'" for p in paths) + "]"
         conn.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet({files_sql});")
 
-
-        # Stream by writing to an in-memory string generator via DuckDB COPY TO STDOUT
         def gen():
-            yield conn.execute(f"COPY ({sql}) TO STDOUT (HEADER, DELIMITER ',');").fetchone()[0]
+            try:
+                cur = conn.execute(sql_clean)
+                cols = [d[0] for d in cur.description]
 
-        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-        return StreamingResponse(gen(), media_type="text/csv", headers=headers)
+                # header
+                s = io.StringIO()
+                w = csv.writer(s)
+                w.writerow(cols)
+                yield s.getvalue().encode("utf-8-sig")  # Excel-friendly
+                s.seek(0)
+                s.truncate(0)
+
+                # rows in batches
+                while True:
+                    batch = cur.fetchmany(1000)
+                    if not batch:
+                        break
+                    for row in batch:
+                        w.writerow(row)
+                    yield s.getvalue().encode("utf-8")
+                    s.seek(0)
+                    s.truncate(0)
+            finally:
+                conn.close()
+
+        headers = {
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        }
+        return StreamingResponse(gen(), media_type="text/csv; charset=utf-8", headers=headers)
+
 
     if report == "daily":
         paths = list_partitions("daily", date_from, date_to)
