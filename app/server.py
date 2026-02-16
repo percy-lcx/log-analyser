@@ -238,6 +238,7 @@ def index():
         ("Wasted crawl", "/reports/wasted-crawl"),
         ("Top resource waste", "/reports/top-resource-waste"),
         ("Bot URLs (Googlebot)", "/reports/bot-urls?bot=Googlebot"),
+        ("UTM: chatgpt.com", "/reports/utm-chatgpt"),
     ]
     links = "<ul>" + "".join(f"<li><a href='{u}'>{n}</a></li>" for n, u in items) + "</ul>"
     help_txt = """
@@ -678,6 +679,44 @@ def bot_urls(
     body += html_table(rows, cols, max_rows=min(int(limit), 500))
     return page(f"Bot URLs: {bot}", body)
 
+@app.get("/reports/utm-chatgpt", response_class=HTMLResponse)
+def utm_chatgpt(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    limit: int = 200
+):
+    daily_paths = list_partitions("utm_chatgpt_daily", date_from, date_to)
+    urls_paths = list_partitions("utm_chatgpt_urls_daily", date_from, date_to)
+
+    daily_sql = """
+      SELECT date, SUM(hits) AS hits, SUM(hits_human) AS hits_human, SUM(hits_bot) AS hits_bot
+      FROM t
+      GROUP BY date
+      ORDER BY date;
+    """
+    cols1, rows1 = run_query(daily_paths, daily_sql)
+
+    urls_sql = f"""
+      SELECT path, url_group, SUM(hits) AS hits
+      FROM t
+      GROUP BY path, url_group
+      ORDER BY hits DESC
+      LIMIT {int(limit)};
+    """
+    cols2, rows2 = run_query(urls_paths, urls_sql)
+
+    body = date_filters_html(date_from, date_to)
+    body += f"<p><a href='/export?report=utm-chatgpt&from={date_from or ''}&to={date_to or ''}'>Export daily CSV</a> | "
+    body += f"<a href='/export?report=utm-chatgpt-urls&from={date_from or ''}&to={date_to or ''}&limit={limit}'>Export URLs CSV</a></p>"
+
+    body += "<h2>Daily counts</h2>"
+    body += html_table(rows1, cols1)
+
+    body += "<h2>Top landing URLs</h2>"
+    body += html_table(rows2, cols2, max_rows=min(int(limit), 500))
+
+    return page("UTM: utm_source=chatgpt.com", body)
+
 @app.get("/export")
 def export(
     report: str,
@@ -947,7 +986,27 @@ def export(
             LIMIT {int(limit)};
         """
         return stream_csv(sql, paths, "bot_urls.csv")
+    
+    if report == "utm-chatgpt":
+        paths = list_partitions("utm_chatgpt_daily", date_from, date_to)
+        sql = """
+          SELECT date, SUM(hits) AS hits, SUM(hits_human) AS hits_human, SUM(hits_bot) AS hits_bot
+          FROM t
+          GROUP BY date
+          ORDER BY date;
+        """
+        return stream_csv(sql, paths, "utm_chatgpt_daily.csv")
 
+    if report == "utm-chatgpt-urls":
+        paths = list_partitions("utm_chatgpt_urls_daily", date_from, date_to)
+        sql = f"""
+          SELECT path, url_group, SUM(hits) AS hits
+          FROM t
+          GROUP BY path, url_group
+          ORDER BY hits DESC
+          LIMIT {int(limit)};
+        """
+        return stream_csv(sql, paths, "utm_chatgpt_urls.csv")
 
     return PlainTextResponse(
         "Unknown report. Try report=daily, daily-status, locales, url-groups, locale-groups, top-urls, top-404, top-5xx, bots, wasted-crawl, top-resource-waste",

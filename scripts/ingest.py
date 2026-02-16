@@ -220,24 +220,28 @@ def apply_url_grouping(path: str, cfg: UrlGroupingConfig) -> Tuple[str, Optional
     return cfg.fallback_group, locale, section
 
 
-def parse_request(req: str) -> Tuple[Optional[str], str, Optional[str], bool]:
+def parse_request(req: str) -> Tuple[Optional[str], str, Optional[str], bool, str, Optional[str]]:
     """
     request line: "GET /path?x=y HTTP/1.1"
-    returns (method, path_no_query, http_version, has_query)
+    returns (method, path_no_query, http_version, has_query, request_target, query_string)
     """
     if not req:
-        return None, "/", None, False
+        return None, "/", None, False, "/", None
     parts = req.split()
     if len(parts) < 2:
-        return None, "/", None, False
+        return None, "/", None, False, "/", None
+
     method = parts[0]
-    target = parts[1]
+    request_target = parts[1] or "/"
     http_ver = parts[2] if len(parts) >= 3 else None
 
-    if "?" in target:
-        path = target.split("?", 1)[0]
-        return method, path or "/", http_ver, True
-    return method, target or "/", http_ver, False
+    if "?" in request_target:
+        path, qs = request_target.split("?", 1)
+        path = path or "/"
+        qs = qs if qs != "" else None
+        return method, path, http_ver, True, request_target, qs
+
+    return method, request_target, http_ver, False, request_target, None
 
 
 def parse_time_local(time_s: str) -> Tuple[datetime, datetime]:
@@ -286,13 +290,15 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
                     bad += 1
                     continue
 
-                method, path, http_ver, has_query = parse_request(req)
+                method, path, http_ver, has_query, request_target, query_string = parse_request(req)
 
                 if referer == "-" or referer == "":
                     referer = None
 
                 is_bot, bot_family = classify_bot(ua, bot_rules)
                 url_group, locale, section = apply_url_grouping(path, url_cfg)
+                qs_l = (query_string or "").lower()
+                is_utm_chatgpt = "utm_source=chatgpt.com" in qs_l
                 is_resource = url_group in ("Nuxt Assets", "Static Assets")
 
                 rows.append({
@@ -316,6 +322,9 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
                     "is_resource": bool(is_resource),
                     "is_bot": bool(is_bot),
                     "bot_family": bot_family if is_bot else None,
+                    "request_target": request_target,
+                    "query_string": query_string,
+                    "is_utm_chatgpt": bool(is_utm_chatgpt),
                 })
 
     if not rows:
@@ -324,7 +333,7 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
             "date","ts_local","ts_utc","edge_ip","method","path","http_version",
             "status","status_class","bytes_sent","referer","user_agent",
             "has_query","is_parameterized","locale","section","url_group","is_resource",
-            "is_bot","bot_family"
+            "is_bot","bot_family","request_target","query_string","is_utm_chatgpt"
         ])
     else:
         df = pd.DataFrame(rows)
@@ -590,6 +599,27 @@ def build_aggregates_for_date(log_date: str) -> None:
     GROUP BY date, COALESCE(bot_family, 'Unknown bot'), path, url_group
     """
 
+    utm_chatgpt_daily_sql = """
+    SELECT
+    date,
+    COUNT(*) AS hits,
+    SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS hits_bot,
+    SUM(CASE WHEN NOT is_bot THEN 1 ELSE 0 END) AS hits_human
+    FROM parsed
+    WHERE is_utm_chatgpt
+    GROUP BY date
+    """
+
+    utm_chatgpt_urls_daily_sql = """
+    SELECT
+    date,
+    path,
+    url_group,
+    COUNT(*) AS hits
+    FROM parsed
+    WHERE is_utm_chatgpt
+    GROUP BY date, path, url_group
+    """
 
     def out(name: str) -> Path:
         return DATA_AGG / name / f"date={log_date}" / "part.parquet"
@@ -606,6 +636,8 @@ def build_aggregates_for_date(log_date: str) -> None:
     agg_write_one(conn, wasted_crawl_daily_sql, out("wasted_crawl_daily"))
     agg_write_one(conn, top_resource_waste_daily_sql, out("top_resource_waste_daily"))
     agg_write_one(conn, bot_urls_daily_sql, out("bot_urls_daily"))
+    agg_write_one(conn, utm_chatgpt_daily_sql, out("utm_chatgpt_daily"))
+    agg_write_one(conn, utm_chatgpt_urls_daily_sql, out("utm_chatgpt_urls_daily"))
 
     conn.close()
 
