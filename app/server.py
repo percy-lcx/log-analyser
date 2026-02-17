@@ -12,6 +12,9 @@ import csv
 import io
 from fastapi.responses import StreamingResponse, PlainTextResponse
 
+import plotly.express as px
+import pandas as pd
+
 ROOT = Path(__file__).resolve().parents[1]
 AGG = ROOT / "data" / "aggregates"
 
@@ -94,6 +97,14 @@ def run_query(paths: List[str], sql: str):
     conn.close()
     return cols, rows
 
+def line_chart(rows, columns, x_col, y_cols, title):
+    if not rows:
+        return "<p>No data.</p>"
+
+    df = pd.DataFrame(rows, columns=columns)
+    fig = px.line(df, x=x_col, y=y_cols, title=title)
+    fig.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20))
+    return fig.to_html(full_html=False, include_plotlyjs="cdn")
 
 def sql_escape_string(s: str) -> str:
     # DuckDB uses SQL single quotes; escape single quote by doubling it.
@@ -371,8 +382,17 @@ def crawl_volume(date_from: Optional[str] = Query(None, alias="from"), date_to: 
       ORDER BY date;
     """
     cols, rows = run_query(paths, sql)
+    chart_html = line_chart(
+        rows,
+        cols,
+        x_col="date",
+        y_cols=["hits", "hits_bot", "hits_human"],
+        title="Daily Crawl Volume"
+    )
     body = date_filters_html(date_from, date_to)
     body += f"<p><a href='/export?report=daily&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
+    body += chart_html
+    body += "<br>"
     body += html_table(rows, cols)
     return page("Crawl volume (daily)", body)
 
@@ -386,8 +406,17 @@ def status_over_time(date_from: Optional[str] = Query(None, alias="from"), date_
       ORDER BY date;
     """
     cols, rows = run_query(paths, sql)
+    chart_html = line_chart(
+        rows,
+        cols,
+        x_col="date",
+        y_cols=["s2xx", "s3xx", "s4xx", "s5xx"],
+        title="Status Codes Over Time"
+    )
     body = date_filters_html(date_from, date_to)
     body += f"<p><a href='/export?report=daily-status&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
+    body += chart_html
+    body += "<br>"
     body += html_table(rows, cols)
     return page("Status codes over time (daily)", body)
 
@@ -541,8 +570,17 @@ def bots(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional
       LIMIT {int(limit)};
     """
     cols, rows = run_query(paths, sql)
+    chart_html = line_chart(
+        rows,
+        cols,
+        x_col="bot_family",
+        y_cols=["hits"],
+        title="Bot Hit Distribution"
+    )
     body = date_filters_html(date_from, date_to)
     body += f"<p><a href='/export?report=bots&from={date_from or ''}&to={date_to or ''}&limit={limit}'>Export CSV</a></p>"
+    body += chart_html
+    body += "<br>"
     body += html_table(rows, cols, max_rows=min(int(limit), 500))
     return page("Bots summary", body)
 
