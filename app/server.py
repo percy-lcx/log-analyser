@@ -10,7 +10,6 @@ from fastapi.responses import HTMLResponse, StreamingResponse, PlainTextResponse
 
 import csv
 import io
-from fastapi.responses import StreamingResponse, PlainTextResponse
 
 import plotly.express as px
 import pandas as pd
@@ -115,10 +114,10 @@ def distinct_values(table: str, column: str, date_from: Optional[str], date_to: 
     if not paths:
         return []
     sql = f"""
-      SELECT DISTINCT {column} AS value
-      FROM t
-      WHERE {column} IS NOT NULL
-      ORDER BY value;
+    SELECT DISTINCT {column} AS value
+    FROM t
+    WHERE {column} IS NOT NULL
+    ORDER BY value;
     """
     _, rows = run_query(paths, sql)
     return [r[0] for r in rows if r and r[0] is not None]
@@ -151,52 +150,52 @@ def select_html(name: str, options: List[str], current: Optional[str], label: st
 def page(title: str, body: str) -> HTMLResponse:
     css = """
     <style>
-      table.sortable th { cursor: pointer; user-select: none; }
-      table.sortable th.sorted-asc::after  { content: " ▲"; }
-      table.sortable th.sorted-desc::after { content: " ▼"; }
+    table.sortable th { cursor: pointer; user-select: none; }
+    table.sortable th.sorted-asc::after  { content: " ▲"; }
+    table.sortable th.sorted-desc::after { content: " ▼"; }
     </style>
     """
 
     js = """
     <script>
     (function() {
-      function parseNumber(s) {
+    function parseNumber(s) {
         // Remove commas and spaces; keep digits, dot, minus.
         const cleaned = s.replace(/[,\\s]/g, "");
         if (!cleaned) return null;
         const n = Number(cleaned);
         return Number.isFinite(n) ? n : null;
-      }
+    }
 
-      function sortTable(table, colIndex, asc) {
+    function sortTable(table, colIndex, asc) {
         const tbody = table.tBodies[0];
         if (!tbody) return;
 
         const rows = Array.from(tbody.rows);
 
         rows.sort((ra, rb) => {
-          const a = (ra.cells[colIndex]?.innerText ?? "").trim();
-          const b = (rb.cells[colIndex]?.innerText ?? "").trim();
+        const a = (ra.cells[colIndex]?.innerText ?? "").trim();
+        const b = (rb.cells[colIndex]?.innerText ?? "").trim();
 
-          const na = parseNumber(a);
-          const nb = parseNumber(b);
+        const na = parseNumber(a);
+        const nb = parseNumber(b);
 
-          if (na !== null && nb !== null) {
+        if (na !== null && nb !== null) {
             return asc ? (na - nb) : (nb - na);
-          }
+        }
 
-          // Fallback to string compare
-          return asc ? a.localeCompare(b) : b.localeCompare(a);
+        // Fallback to string compare
+        return asc ? a.localeCompare(b) : b.localeCompare(a);
         });
 
         // Re-append in new order
         for (const r of rows) tbody.appendChild(r);
-      }
+    }
 
-      function attachSortable(table) {
+    function attachSortable(table) {
         const headers = table.tHead ? Array.from(table.tHead.rows[0].cells) : [];
         headers.forEach((th, idx) => {
-          th.addEventListener("click", () => {
+        th.addEventListener("click", () => {
             const currentlyAsc = th.classList.contains("sorted-asc");
             const asc = !currentlyAsc;
 
@@ -205,30 +204,30 @@ def page(title: str, body: str) -> HTMLResponse:
             th.classList.add(asc ? "sorted-asc" : "sorted-desc");
 
             sortTable(table, idx, asc);
-          });
         });
-      }
+        });
+    }
 
-      document.addEventListener("DOMContentLoaded", () => {
+    document.addEventListener("DOMContentLoaded", () => {
         document.querySelectorAll("table.sortable").forEach(attachSortable);
-      });
+    });
     })();
     </script>
     """
 
     html = f"""
     <html>
-      <head>
+    <head>
         <meta charset="utf-8">
         <title>{title}</title>
         {css}
-      </head>
-      <body style="font-family: Arial, sans-serif; padding: 20px;">
+    </head>
+    <body style="font-family: Arial, sans-serif; padding: 20px;">
         <h1>{title}</h1>
         <p><a href="/">Home</a></p>
         {body}
         {js}
-      </body>
+    </body>
     </html>
     """
     return HTMLResponse(html)
@@ -262,9 +261,9 @@ def index():
 def date_filters_html(date_from, date_to):
     return f"""
     <form method="get">
-      <label>From: <input name="from" value="{date_from or ''}" placeholder="YYYY-MM-DD"></label>
-      <label>To: <input name="to" value="{date_to or ''}" placeholder="YYYY-MM-DD"></label>
-      <button type="submit">Apply</button>
+    <label>From: <input name="from" value="{date_from or ''}" placeholder="YYYY-MM-DD"></label>
+    <label>To: <input name="to" value="{date_to or ''}" placeholder="YYYY-MM-DD"></label>
+    <button type="submit">Apply</button>
     </form>
     """
 
@@ -275,23 +274,52 @@ def locales(date_from: Optional[str] = Query(None, alias="from"), date_to: Optio
     if not paths:
         body = date_filters_html(date_from, date_to) + no_data_notice()
         return page("Locale breakdown", body)
-    sql = """
-      SELECT locale,
-             SUM(hits) AS hits,
-             SUM(hits_bot) AS hits_bot,
-             SUM(hits_human) AS hits_human,
-             SUM(s4xx) AS s4xx,
-             SUM(s5xx) AS s5xx,
-             SUM(resource_hits) AS resource_hits,
-             SUM(resource_hits_bot) AS resource_hits_bot
-      FROM t
-      GROUP BY locale
-      ORDER BY hits DESC;
+
+    # 1) Full totals (includes resources)
+    sql_totals = """
+    SELECT
+      CASE
+        WHEN locale IS NULL OR locale = 'Unknown' THEN 'no-locale'
+        ELSE locale
+      END AS locale,
+      SUM(hits) AS hits,
+      SUM(hits_bot) AS hits_bot,
+      SUM(hits_human) AS hits_human,
+      SUM(s4xx) AS s4xx,
+      SUM(s5xx) AS s5xx,
+      SUM(resource_hits) AS resource_hits,
+      SUM(resource_hits_bot) AS resource_hits_bot
+    FROM t
+    GROUP BY 1
+    ORDER BY hits DESC;
     """
-    cols, rows = run_query(paths, sql)
+    cols1, rows1 = run_query(paths, sql_totals)
+
+    # 2) Content-ish totals (exclude resources)
+    sql_non_resource = """
+    SELECT
+      CASE
+        WHEN locale IS NULL OR locale = 'Unknown' THEN 'no-locale'
+        ELSE locale
+      END AS locale,
+      (SUM(hits) - SUM(resource_hits)) AS hits_non_resource,
+      (SUM(hits_bot) - SUM(resource_hits_bot)) AS hits_bot_non_resource,
+      (SUM(hits_human) - (SUM(resource_hits) - SUM(resource_hits_bot))) AS hits_human_non_resource
+    FROM t
+    GROUP BY 1
+    ORDER BY hits_non_resource DESC;
+    """
+    cols2, rows2 = run_query(paths, sql_non_resource)
+
     body = date_filters_html(date_from, date_to)
     body += f"<p><a href='/export?report=locales&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
-    body += html_table(rows, cols)
+
+    body += "<h2>All hits (includes Nuxt/static resources)</h2>"
+    body += html_table(rows1, cols1)
+
+    body += "<h2>Non-resource hits (excludes Nuxt/static resources)</h2>"
+    body += html_table(rows2, cols2)
+
     return page("Locale breakdown", body)
 
 
@@ -302,17 +330,17 @@ def url_groups(date_from: Optional[str] = Query(None, alias="from"), date_to: Op
         body = date_filters_html(date_from, date_to) + no_data_notice()
         return page("URL group breakdown", body)
     sql = """
-      SELECT url_group,
-             SUM(hits) AS hits,
-             SUM(hits_bot) AS hits_bot,
-             SUM(hits_human) AS hits_human,
-             SUM(s4xx) AS s4xx,
-             SUM(s5xx) AS s5xx,
-             SUM(resource_hits) AS resource_hits,
-             SUM(resource_hits_bot) AS resource_hits_bot
-      FROM t
-      GROUP BY url_group
-      ORDER BY hits DESC;
+    SELECT url_group,
+            SUM(hits) AS hits,
+            SUM(hits_bot) AS hits_bot,
+            SUM(hits_human) AS hits_human,
+            SUM(s4xx) AS s4xx,
+            SUM(s5xx) AS s5xx,
+            SUM(resource_hits) AS resource_hits,
+            SUM(resource_hits_bot) AS resource_hits_bot
+    FROM t
+    GROUP BY url_group
+    ORDER BY hits DESC;
     """
     cols, rows = run_query(paths, sql)
     body = date_filters_html(date_from, date_to)
@@ -341,18 +369,18 @@ def locale_groups(
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
     sql = f"""
-      SELECT locale,
-             url_group,
-             SUM(hits) AS hits,
-             SUM(hits_bot) AS hits_bot,
-             SUM(hits_human) AS hits_human,
-             SUM(s4xx) AS s4xx,
-             SUM(s5xx) AS s5xx
-      FROM t
-      {where}
-      GROUP BY locale, url_group
-      ORDER BY hits DESC
-      LIMIT {int(limit)};
+    SELECT locale,
+            url_group,
+            SUM(hits) AS hits,
+            SUM(hits_bot) AS hits_bot,
+            SUM(hits_human) AS hits_human,
+            SUM(s4xx) AS s4xx,
+            SUM(s5xx) AS s5xx
+    FROM t
+    {where}
+    GROUP BY locale, url_group
+    ORDER BY hits DESC
+    LIMIT {int(limit)};
     """
     cols, rows = run_query(paths, sql)
     locale_options = distinct_values("locale_daily", "locale", date_from, date_to)
@@ -360,12 +388,12 @@ def locale_groups(
     body = date_filters_html(date_from, date_to)
     body += f"""
     <form method="get">
-      <input type="hidden" name="from" value="{date_from or ''}">
-      <input type="hidden" name="to" value="{date_to or ''}">
-      {select_html("locale", locale_options, locale, "Locale")}
-      {select_html("url_group", group_options, url_group, "URL group")}
-      <label>Limit: <input name="limit" value="{limit}" size="6"></label>
-      <button type="submit">Apply</button>
+    <input type="hidden" name="from" value="{date_from or ''}">
+    <input type="hidden" name="to" value="{date_to or ''}">
+    {select_html("locale", locale_options, locale, "Locale")}
+    {select_html("url_group", group_options, url_group, "URL group")}
+    <label>Limit: <input name="limit" value="{limit}" size="6"></label>
+    <button type="submit">Apply</button>
     </form>
     """
     body += f"<p><a href='/export?report=locale-groups&from={date_from or ''}&to={date_to or ''}&locale={locale or ''}&url_group={url_group or ''}&limit={limit}'>Export CSV</a></p>"
@@ -377,9 +405,9 @@ def locale_groups(
 def crawl_volume(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
     paths = list_partitions("daily", date_from, date_to)
     sql = """
-      SELECT date, hits, hits_bot, hits_human, bytes_sent, resource_hits, resource_hits_bot
-      FROM t
-      ORDER BY date;
+    SELECT date, hits, hits_bot, hits_human, bytes_sent, resource_hits, resource_hits_bot
+    FROM t
+    ORDER BY date;
     """
     cols, rows = run_query(paths, sql)
     chart_html = line_chart(
@@ -401,9 +429,9 @@ def crawl_volume(date_from: Optional[str] = Query(None, alias="from"), date_to: 
 def status_over_time(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
     paths = list_partitions("daily", date_from, date_to)
     sql = """
-      SELECT date, s2xx, s3xx, s4xx, s5xx, hits
-      FROM t
-      ORDER BY date;
+    SELECT date, s2xx, s3xx, s4xx, s5xx, hits
+    FROM t
+    ORDER BY date;
     """
     cols, rows = run_query(paths, sql)
     chart_html = line_chart(
@@ -437,30 +465,30 @@ def top_urls(
         clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     sql = f"""
-      SELECT path, url_group,
-             SUM(hits_total) AS hits_total,
-             SUM(hits_bot) AS hits_bot,
-             SUM(s3xx) AS s3xx,
-             SUM(s4xx) AS s4xx,
-             SUM(s5xx) AS s5xx,
-             SUM(parameterized_hits) AS parameterized_hits
-      FROM t
-      {where}
-      GROUP BY path, url_group
-      ORDER BY hits_total DESC
-      LIMIT {int(limit)};
+    SELECT path, url_group,
+            SUM(hits_total) AS hits_total,
+            SUM(hits_bot) AS hits_bot,
+            SUM(s3xx) AS s3xx,
+            SUM(s4xx) AS s4xx,
+            SUM(s5xx) AS s5xx,
+            SUM(parameterized_hits) AS parameterized_hits
+    FROM t
+    {where}
+    GROUP BY path, url_group
+    ORDER BY hits_total DESC
+    LIMIT {int(limit)};
     """
     cols, rows = run_query(paths, sql)
     group_options = distinct_values("group_daily", "url_group", date_from, date_to)
     body = date_filters_html(date_from, date_to)
     body += f"""
     <form method="get">
-      <input type="hidden" name="from" value="{date_from or ''}">
-      <input type="hidden" name="to" value="{date_to or ''}">
-      <label><input type="checkbox" name="include_assets" value="true" {"checked" if include_assets else ""}> Include assets</label>
-      {select_html("url_group", group_options, url_group, "URL group")}
-      <label>Limit: <input name="limit" value="{limit}" size="6"></label>
-      <button type="submit">Apply</button>
+    <input type="hidden" name="from" value="{date_from or ''}">
+    <input type="hidden" name="to" value="{date_to or ''}">
+    <label><input type="checkbox" name="include_assets" value="true" {"checked" if include_assets else ""}> Include assets</label>
+    {select_html("url_group", group_options, url_group, "URL group")}
+    <label>Limit: <input name="limit" value="{limit}" size="6"></label>
+    <button type="submit">Apply</button>
     </form>
     """
     body += f"<p><a href='/export?report=top-urls&from={date_from or ''}&to={date_to or ''}&include_assets={str(include_assets).lower()}&url_group={url_group or ''}&limit={limit}'>Export CSV</a></p>"
@@ -484,26 +512,26 @@ def top_404(
         clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     sql = f"""
-      SELECT path, url_group,
-             SUM(hits_404) AS hits_404,
-             SUM(hits_404_bot) AS hits_404_bot
-      FROM t
-      {where}
-      GROUP BY path, url_group
-      ORDER BY hits_404 DESC
-      LIMIT {int(limit)};
+    SELECT path, url_group,
+            SUM(hits_404) AS hits_404,
+            SUM(hits_404_bot) AS hits_404_bot
+    FROM t
+    {where}
+    GROUP BY path, url_group
+    ORDER BY hits_404 DESC
+    LIMIT {int(limit)};
     """
     cols, rows = run_query(paths, sql)
     group_options = distinct_values("group_daily", "url_group", date_from, date_to)
     body = date_filters_html(date_from, date_to)
     body += f"""
     <form method="get">
-      <input type="hidden" name="from" value="{date_from or ''}">
-      <input type="hidden" name="to" value="{date_to or ''}">
-      <label><input type="checkbox" name="include_assets" value="true" {"checked" if include_assets else ""}> Include assets</label>
-      {select_html("url_group", group_options, url_group, "URL group")}
-      <label>Limit: <input name="limit" value="{limit}" size="6"></label>
-      <button type="submit">Apply</button>
+    <input type="hidden" name="from" value="{date_from or ''}">
+    <input type="hidden" name="to" value="{date_to or ''}">
+    <label><input type="checkbox" name="include_assets" value="true" {"checked" if include_assets else ""}> Include assets</label>
+    {select_html("url_group", group_options, url_group, "URL group")}
+    <label>Limit: <input name="limit" value="{limit}" size="6"></label>
+    <button type="submit">Apply</button>
     </form>
     """
     body += f"<p><a href='/export?report=top-404&from={date_from or ''}&to={date_to or ''}&include_assets={str(include_assets).lower()}&url_group={url_group or ''}&limit={limit}'>Export CSV</a></p>"
@@ -527,26 +555,26 @@ def top_5xx(
         clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     sql = f"""
-      SELECT path, url_group,
-             SUM(hits_5xx) AS hits_5xx,
-             SUM(hits_5xx_bot) AS hits_5xx_bot
-      FROM t
-      {where}
-      GROUP BY path, url_group
-      ORDER BY hits_5xx DESC
-      LIMIT {int(limit)};
+    SELECT path, url_group,
+            SUM(hits_5xx) AS hits_5xx,
+            SUM(hits_5xx_bot) AS hits_5xx_bot
+    FROM t
+    {where}
+    GROUP BY path, url_group
+    ORDER BY hits_5xx DESC
+    LIMIT {int(limit)};
     """
     cols, rows = run_query(paths, sql)
     group_options = distinct_values("group_daily", "url_group", date_from, date_to)
     body = date_filters_html(date_from, date_to)
     body += f"""
     <form method="get">
-      <input type="hidden" name="from" value="{date_from or ''}">
-      <input type="hidden" name="to" value="{date_to or ''}">
-      <label><input type="checkbox" name="include_assets" value="true" {"checked" if include_assets else ""}> Include assets</label>
-      {select_html("url_group", group_options, url_group, "URL group")}
-      <label>Limit: <input name="limit" value="{limit}" size="6"></label>
-      <button type="submit">Apply</button>
+    <input type="hidden" name="from" value="{date_from or ''}">
+    <input type="hidden" name="to" value="{date_to or ''}">
+    <label><input type="checkbox" name="include_assets" value="true" {"checked" if include_assets else ""}> Include assets</label>
+    {select_html("url_group", group_options, url_group, "URL group")}
+    <label>Limit: <input name="limit" value="{limit}" size="6"></label>
+    <button type="submit">Apply</button>
     </form>
     """
     body += f"<p><a href='/export?report=top-5xx&from={date_from or ''}&to={date_to or ''}&include_assets={str(include_assets).lower()}&url_group={url_group or ''}&limit={limit}'>Export CSV</a></p>"
@@ -558,16 +586,16 @@ def top_5xx(
 def bots(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to"), limit: int = 999):
     paths = list_partitions("bot_daily", date_from, date_to)
     sql = f"""
-      SELECT bot_family,
-             SUM(hits) AS hits,
-             SUM(resource_hits) AS resource_hits,
-             AVG(resource_hits_pct) AS avg_resource_pct,
-             SUM(s4xx) AS s4xx,
-             SUM(s5xx) AS s5xx
-      FROM t
-      GROUP BY bot_family
-      ORDER BY hits DESC
-      LIMIT {int(limit)};
+    SELECT bot_family,
+            SUM(hits) AS hits,
+            SUM(resource_hits) AS resource_hits,
+            AVG(resource_hits_pct) AS avg_resource_pct,
+            SUM(s4xx) AS s4xx,
+            SUM(s5xx) AS s5xx
+    FROM t
+    GROUP BY bot_family
+    ORDER BY hits DESC
+    LIMIT {int(limit)};
     """
     cols, rows = run_query(paths, sql)
     chart_html = line_chart(
@@ -609,33 +637,33 @@ def wasted_crawl(
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
     sql = f"""
-      SELECT path, url_group, bot_family,
-             SUM(bot_hits) AS bot_hits,
-             SUM(parameterized_bot_hits) AS parameterized_bot_hits,
-             SUM(redirect_bot_hits) AS redirect_bot_hits,
-             SUM(error_bot_hits) AS error_bot_hits,
-             SUM(resource_bot_hits) AS resource_bot_hits,
-             SUM(resource_error_bot_hits) AS resource_error_bot_hits,
-             SUM({score_col}) AS waste_score
-      FROM t
-      {where}
-      GROUP BY path, url_group, bot_family
-      ORDER BY waste_score DESC
-      LIMIT {int(limit)};
+    SELECT path, url_group, bot_family,
+            SUM(bot_hits) AS bot_hits,
+            SUM(parameterized_bot_hits) AS parameterized_bot_hits,
+            SUM(redirect_bot_hits) AS redirect_bot_hits,
+            SUM(error_bot_hits) AS error_bot_hits,
+            SUM(resource_bot_hits) AS resource_bot_hits,
+            SUM(resource_error_bot_hits) AS resource_error_bot_hits,
+            SUM({score_col}) AS waste_score
+    FROM t
+    {where}
+    GROUP BY path, url_group, bot_family
+    ORDER BY waste_score DESC
+    LIMIT {int(limit)};
     """
     cols, rows = run_query(paths, sql)
     group_options = distinct_values("group_daily", "url_group", date_from, date_to)
     body = date_filters_html(date_from, date_to)
     body += f"""
     <form method="get">
-      <input type="hidden" name="from" value="{date_from or ''}">
-      <input type="hidden" name="to" value="{date_to or ''}">
-      <label><input type="checkbox" name="strict" value="true" {"checked" if strict else ""}> Strict (count all resources)</label>
-      <label><input type="checkbox" name="include_assets" value="true" {"checked" if include_assets else ""}> Include assets in list</label>
-      {select_html("url_group", group_options, url_group, "URL group")}
-      <label>Bot family (optional): <input name="bot" value="{bot or ''}" placeholder="e.g. Googlebot"></label>
-      <label>Limit: <input name="limit" value="{limit}" size="6"></label>
-      <button type="submit">Apply</button>
+    <input type="hidden" name="from" value="{date_from or ''}">
+    <input type="hidden" name="to" value="{date_to or ''}">
+    <label><input type="checkbox" name="strict" value="true" {"checked" if strict else ""}> Strict (count all resources)</label>
+    <label><input type="checkbox" name="include_assets" value="true" {"checked" if include_assets else ""}> Include assets in list</label>
+    {select_html("url_group", group_options, url_group, "URL group")}
+    <label>Bot family (optional): <input name="bot" value="{bot or ''}" placeholder="e.g. Googlebot"></label>
+    <label>Limit: <input name="limit" value="{limit}" size="6"></label>
+    <button type="submit">Apply</button>
     </form>
     """
     body += f"<p><a href='/export?report=wasted-crawl&from={date_from or ''}&to={date_to or ''}&strict={str(strict).lower()}&include_assets={str(include_assets).lower()}&url_group={url_group or ''}&bot={bot or ''}&limit={limit}'>Export CSV</a></p>"
@@ -651,15 +679,15 @@ def top_resource_waste(
 ):
     paths = list_partitions("top_resource_waste_daily", date_from, date_to)
     sql = f"""
-      SELECT path,
-             SUM(bot_hits) AS bot_hits,
-             SUM(resource_error_bot_hits) AS resource_error_bot_hits,
-             SUM(status_404_bot_hits) AS status_404_bot_hits,
-             SUM(waste_score_strict) AS waste_score_strict
-      FROM t
-      GROUP BY path
-      ORDER BY waste_score_strict DESC
-      LIMIT {int(limit)};
+    SELECT path,
+            SUM(bot_hits) AS bot_hits,
+            SUM(resource_error_bot_hits) AS resource_error_bot_hits,
+            SUM(status_404_bot_hits) AS status_404_bot_hits,
+            SUM(waste_score_strict) AS waste_score_strict
+    FROM t
+    GROUP BY path
+    ORDER BY waste_score_strict DESC
+    LIMIT {int(limit)};
     """
     cols, rows = run_query(paths, sql)
     body = date_filters_html(date_from, date_to)
@@ -685,12 +713,12 @@ def bot_urls(
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
     sql = f"""
-      SELECT path, url_group, SUM(hits) AS hits
-      FROM t
-      {where}
-      GROUP BY path, url_group
-      ORDER BY hits DESC
-      LIMIT {int(limit)};
+    SELECT path, url_group, SUM(hits) AS hits
+    FROM t
+    {where}
+    GROUP BY path, url_group
+    ORDER BY hits DESC
+    LIMIT {int(limit)};
     """
 
     cols, rows = run_query(paths, sql)
@@ -698,14 +726,14 @@ def bot_urls(
     body = date_filters_html(date_from, date_to)
     body += f"""
     <form method="get">
-      <input type="hidden" name="from" value="{date_from or ''}">
-      <input type="hidden" name="to" value="{date_to or ''}">
-      <label>Bot family:
+    <input type="hidden" name="from" value="{date_from or ''}">
+    <input type="hidden" name="to" value="{date_to or ''}">
+    <label>Bot family:
         <input name="bot" value="{bot or ''}" placeholder="Googlebot">
-      </label>
-      <label><input type="checkbox" name="include_assets" value="true" {"checked" if include_assets else ""}> Include assets</label>
-      <label>Limit: <input name="limit" value="{limit}" size="6"></label>
-      <button type="submit">Apply</button>
+    </label>
+    <label><input type="checkbox" name="include_assets" value="true" {"checked" if include_assets else ""}> Include assets</label>
+    <label>Limit: <input name="limit" value="{limit}" size="6"></label>
+    <button type="submit">Apply</button>
     </form>
     """
 
@@ -727,19 +755,19 @@ def utm_chatgpt(
     urls_paths = list_partitions("utm_chatgpt_urls_daily", date_from, date_to)
 
     daily_sql = """
-      SELECT date, SUM(hits) AS hits, SUM(hits_human) AS hits_human, SUM(hits_bot) AS hits_bot
-      FROM t
-      GROUP BY date
-      ORDER BY date;
+    SELECT date, SUM(hits) AS hits, SUM(hits_human) AS hits_human, SUM(hits_bot) AS hits_bot
+    FROM t
+    GROUP BY date
+    ORDER BY date;
     """
     cols1, rows1 = run_query(daily_paths, daily_sql)
 
     urls_sql = f"""
-      SELECT path, url_group, SUM(hits) AS hits
-      FROM t
-      GROUP BY path, url_group
-      ORDER BY hits DESC
-      LIMIT {int(limit)};
+    SELECT path, url_group, SUM(hits) AS hits
+    FROM t
+    GROUP BY path, url_group
+    ORDER BY hits DESC
+    LIMIT {int(limit)};
     """
     cols2, rows2 = run_query(urls_paths, urls_sql)
 
@@ -833,18 +861,18 @@ def export(
             clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"""
-          SELECT path, url_group,
-                 SUM(hits_total) AS hits_total,
-                 SUM(hits_bot) AS hits_bot,
-                 SUM(s3xx) AS s3xx,
-                 SUM(s4xx) AS s4xx,
-                 SUM(s5xx) AS s5xx,
-                 SUM(parameterized_hits) AS parameterized_hits
-          FROM t
-          {where}
-          GROUP BY path, url_group
-          ORDER BY hits_total DESC
-          LIMIT {int(limit)};
+        SELECT path, url_group,
+                SUM(hits_total) AS hits_total,
+                SUM(hits_bot) AS hits_bot,
+                SUM(s3xx) AS s3xx,
+                SUM(s4xx) AS s4xx,
+                SUM(s5xx) AS s5xx,
+                SUM(parameterized_hits) AS parameterized_hits
+        FROM t
+        {where}
+        GROUP BY path, url_group
+        ORDER BY hits_total DESC
+        LIMIT {int(limit)};
         """
         return stream_csv(sql, paths, "top_urls.csv")
 
@@ -857,14 +885,14 @@ def export(
             clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"""
-          SELECT path, url_group,
-                 SUM(hits_404) AS hits_404,
-                 SUM(hits_404_bot) AS hits_404_bot
-          FROM t
-          {where}
-          GROUP BY path, url_group
-          ORDER BY hits_404 DESC
-          LIMIT {int(limit)};
+        SELECT path, url_group,
+                SUM(hits_404) AS hits_404,
+                SUM(hits_404_bot) AS hits_404_bot
+        FROM t
+        {where}
+        GROUP BY path, url_group
+        ORDER BY hits_404 DESC
+        LIMIT {int(limit)};
         """
         return stream_csv(sql, paths, "top_404.csv")
 
@@ -877,30 +905,30 @@ def export(
             clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"""
-          SELECT path, url_group,
-                 SUM(hits_5xx) AS hits_5xx,
-                 SUM(hits_5xx_bot) AS hits_5xx_bot
-          FROM t
-          {where}
-          GROUP BY path, url_group
-          ORDER BY hits_5xx DESC
-          LIMIT {int(limit)};
+        SELECT path, url_group,
+                SUM(hits_5xx) AS hits_5xx,
+                SUM(hits_5xx_bot) AS hits_5xx_bot
+        FROM t
+        {where}
+        GROUP BY path, url_group
+        ORDER BY hits_5xx DESC
+        LIMIT {int(limit)};
         """
         return stream_csv(sql, paths, "top_5xx.csv")
 
     if report == "bots":
         paths = list_partitions("bot_daily", date_from, date_to)
         sql = f"""
-          SELECT bot_family,
-                 SUM(hits) AS hits,
-                 SUM(resource_hits) AS resource_hits,
-                 AVG(resource_hits_pct) AS avg_resource_pct,
-                 SUM(s4xx) AS s4xx,
-                 SUM(s5xx) AS s5xx
-          FROM t
-          GROUP BY bot_family
-          ORDER BY hits DESC
-          LIMIT {int(limit)};
+        SELECT bot_family,
+                SUM(hits) AS hits,
+                SUM(resource_hits) AS resource_hits,
+                AVG(resource_hits_pct) AS avg_resource_pct,
+                SUM(s4xx) AS s4xx,
+                SUM(s5xx) AS s5xx
+        FROM t
+        GROUP BY bot_family
+        ORDER BY hits DESC
+        LIMIT {int(limit)};
         """
         return stream_csv(sql, paths, "bots.csv")
 
@@ -916,53 +944,53 @@ def export(
             clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"""
-          SELECT path, url_group, bot_family,
-                 SUM(bot_hits) AS bot_hits,
-                 SUM(parameterized_bot_hits) AS parameterized_bot_hits,
-                 SUM(redirect_bot_hits) AS redirect_bot_hits,
-                 SUM(error_bot_hits) AS error_bot_hits,
-                 SUM(resource_bot_hits) AS resource_bot_hits,
-                 SUM(resource_error_bot_hits) AS resource_error_bot_hits,
-                 SUM({score_col}) AS waste_score
-          FROM t
-          {where}
-          GROUP BY path, url_group, bot_family
-          ORDER BY waste_score DESC
-          LIMIT {int(limit)};
+        SELECT path, url_group, bot_family,
+                SUM(bot_hits) AS bot_hits,
+                SUM(parameterized_bot_hits) AS parameterized_bot_hits,
+                SUM(redirect_bot_hits) AS redirect_bot_hits,
+                SUM(error_bot_hits) AS error_bot_hits,
+                SUM(resource_bot_hits) AS resource_bot_hits,
+                SUM(resource_error_bot_hits) AS resource_error_bot_hits,
+                SUM({score_col}) AS waste_score
+        FROM t
+        {where}
+        GROUP BY path, url_group, bot_family
+        ORDER BY waste_score DESC
+        LIMIT {int(limit)};
         """
         return stream_csv(sql, paths, "wasted_crawl.csv")
 
     if report == "locales":
         paths = list_partitions("locale_daily", date_from, date_to)
         sql = """
-          SELECT locale,
-                 SUM(hits) AS hits,
-                 SUM(hits_bot) AS hits_bot,
-                 SUM(hits_human) AS hits_human,
-                 SUM(s4xx) AS s4xx,
-                 SUM(s5xx) AS s5xx,
-                 SUM(resource_hits) AS resource_hits,
-                 SUM(resource_hits_bot) AS resource_hits_bot
-          FROM t
-          GROUP BY locale
-          ORDER BY hits DESC;
+        SELECT locale,
+                SUM(hits) AS hits,
+                SUM(hits_bot) AS hits_bot,
+                SUM(hits_human) AS hits_human,
+                SUM(s4xx) AS s4xx,
+                SUM(s5xx) AS s5xx,
+                SUM(resource_hits) AS resource_hits,
+                SUM(resource_hits_bot) AS resource_hits_bot
+        FROM t
+        GROUP BY locale
+        ORDER BY hits DESC;
         """
         return stream_csv(sql, paths, "locales.csv")
 
     if report == "url-groups":
         paths = list_partitions("group_daily", date_from, date_to)
         sql = """
-          SELECT url_group,
-                 SUM(hits) AS hits,
-                 SUM(hits_bot) AS hits_bot,
-                 SUM(hits_human) AS hits_human,
-                 SUM(s4xx) AS s4xx,
-                 SUM(s5xx) AS s5xx,
-                 SUM(resource_hits) AS resource_hits,
-                 SUM(resource_hits_bot) AS resource_hits_bot
-          FROM t
-          GROUP BY url_group
-          ORDER BY hits DESC;
+        SELECT url_group,
+                SUM(hits) AS hits,
+                SUM(hits_bot) AS hits_bot,
+                SUM(hits_human) AS hits_human,
+                SUM(s4xx) AS s4xx,
+                SUM(s5xx) AS s5xx,
+                SUM(resource_hits) AS resource_hits,
+                SUM(resource_hits_bot) AS resource_hits_bot
+        FROM t
+        GROUP BY url_group
+        ORDER BY hits DESC;
         """
         return stream_csv(sql, paths, "url_groups.csv")
 
@@ -975,33 +1003,33 @@ def export(
             clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"""
-          SELECT locale,
-                 url_group,
-                 SUM(hits) AS hits,
-                 SUM(hits_bot) AS hits_bot,
-                 SUM(hits_human) AS hits_human,
-                 SUM(s4xx) AS s4xx,
-                 SUM(s5xx) AS s5xx
-          FROM t
-          {where}
-          GROUP BY locale, url_group
-          ORDER BY hits DESC
-          LIMIT {int(limit)};
+        SELECT locale,
+                url_group,
+                SUM(hits) AS hits,
+                SUM(hits_bot) AS hits_bot,
+                SUM(hits_human) AS hits_human,
+                SUM(s4xx) AS s4xx,
+                SUM(s5xx) AS s5xx
+        FROM t
+        {where}
+        GROUP BY locale, url_group
+        ORDER BY hits DESC
+        LIMIT {int(limit)};
         """
         return stream_csv(sql, paths, "locale_groups.csv")
 
     if report == "top-resource-waste":
         paths = list_partitions("top_resource_waste_daily", date_from, date_to)
         sql = f"""
-          SELECT path,
-                 SUM(bot_hits) AS bot_hits,
-                 SUM(resource_error_bot_hits) AS resource_error_bot_hits,
-                 SUM(status_404_bot_hits) AS status_404_bot_hits,
-                 SUM(waste_score_strict) AS waste_score_strict
-          FROM t
-          GROUP BY path
-          ORDER BY waste_score_strict DESC
-          LIMIT {int(limit)};
+        SELECT path,
+                SUM(bot_hits) AS bot_hits,
+                SUM(resource_error_bot_hits) AS resource_error_bot_hits,
+                SUM(status_404_bot_hits) AS status_404_bot_hits,
+                SUM(waste_score_strict) AS waste_score_strict
+        FROM t
+        GROUP BY path
+        ORDER BY waste_score_strict DESC
+        LIMIT {int(limit)};
         """
         return stream_csv(sql, paths, "top_resource_waste.csv")
     
@@ -1028,21 +1056,21 @@ def export(
     if report == "utm-chatgpt":
         paths = list_partitions("utm_chatgpt_daily", date_from, date_to)
         sql = """
-          SELECT date, SUM(hits) AS hits, SUM(hits_human) AS hits_human, SUM(hits_bot) AS hits_bot
-          FROM t
-          GROUP BY date
-          ORDER BY date;
+        SELECT date, SUM(hits) AS hits, SUM(hits_human) AS hits_human, SUM(hits_bot) AS hits_bot
+        FROM t
+        GROUP BY date
+        ORDER BY date;
         """
         return stream_csv(sql, paths, "utm_chatgpt_daily.csv")
 
     if report == "utm-chatgpt-urls":
         paths = list_partitions("utm_chatgpt_urls_daily", date_from, date_to)
         sql = f"""
-          SELECT path, url_group, SUM(hits) AS hits
-          FROM t
-          GROUP BY path, url_group
-          ORDER BY hits DESC
-          LIMIT {int(limit)};
+        SELECT path, url_group, SUM(hits) AS hits
+        FROM t
+        GROUP BY path, url_group
+        ORDER BY hits DESC
+        LIMIT {int(limit)};
         """
         return stream_csv(sql, paths, "utm_chatgpt_urls.csv")
 

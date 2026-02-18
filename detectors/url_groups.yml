@@ -3,15 +3,15 @@ version: 1
 # Exact locale whitelist (first path segment must match exactly).
 locales:
   - en
-  - en-GB
+  - en-eu #en-gb
   - en-in
-  - en-TW
-  - en-HK
-  - en-mo
   - zh-hans
   - zh-hant
-  - zh-hant-TW
-  - zh-hant-HK
+  - en-tw
+  - zh-hant-tw
+  - eng #en-HK
+  - cht #zh-hant-HK
+  - en-mo
   - zh-hant-mo
   - pt
   - it

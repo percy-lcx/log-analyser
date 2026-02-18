@@ -23,6 +23,9 @@ DETECTORS_DIR = ROOT / "detectors"
 STATE_DIR = ROOT / "state"
 MANIFEST_DB = STATE_DIR / "manifest.sqlite"
 
+# Locale label to use when the URL does not start with a whitelisted locale segment.
+NO_LOCALE_LABEL = "no-locale"
+
 
 # Nginx combined-ish:
 # $remote_addr - - [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"
@@ -56,7 +59,7 @@ class UrlRule:
 
 @dataclass
 class UrlGroupingConfig:
-    locales: set
+    locales: set  # normalized to lowercase
     rules: List[UrlRule]
     section_map: Dict[str, str]
     fallback_group: str
@@ -84,13 +87,17 @@ def load_bot_rules() -> List[BotRule]:
 
 def load_url_grouping() -> UrlGroupingConfig:
     cfg = load_yaml(DETECTORS_DIR / "url_groups.yml")
-    locales = set(cfg.get("locales", []))
+
+    # Normalize locales to lowercase for robust matching against URL path segments.
+    locales = set([str(x).strip().lower() for x in cfg.get("locales", []) if str(x).strip()])
+
     rules: List[UrlRule] = []
     for r in cfg.get("rules", []):
         ur = UrlRule(group=r["group"], match=r["match"], value=r["value"])
         if ur.match == "regex":
             ur.compiled = re.compile(str(ur.value), re.IGNORECASE)
         rules.append(ur)
+
     section_map = {k.lower(): v for k, v in (cfg.get("section_map") or {}).items()}
     fallback = cfg.get("fallback_group", "Other Content")
     return UrlGroupingConfig(locales=locales, rules=rules, section_map=section_map, fallback_group=fallback)
@@ -169,41 +176,62 @@ def ext_of_path(path: str) -> Optional[str]:
     return ext if ext else None
 
 
+def normalize_path_only(path: str) -> str:
+    """
+    Normalize a path for matching:
+    - ensure leading slash
+    - drop querystring if mistakenly included
+    - lowercase for stable locale matching
+    """
+    p = (path or "/").split("?", 1)[0]
+    if not p.startswith("/"):
+        p = "/" + p
+    return p.lower() or "/"
+
+
 def apply_url_grouping(path: str, cfg: UrlGroupingConfig) -> Tuple[str, Optional[str], Optional[str]]:
     """
     Returns: (url_group, locale, section)
+
+    Locale behavior change:
+    - If the first segment is a whitelisted locale: locale=<that locale>
+    - Otherwise: locale=NO_LOCALE_LABEL (instead of None/"Unknown")
     """
     # 1) high priority rules
-    p = path or "/"
+    p = normalize_path_only(path)
+
     for r in cfg.rules:
         if r.match == "exact":
-            if p == r.value:
-                return r.group, None, None
+            # NOTE: r.value may be "/" etc. Match using normalized p.
+            if p == str(r.value).lower():
+                return r.group, NO_LOCALE_LABEL, None
         elif r.match == "prefix":
-            if p.startswith(str(r.value)):
-                return r.group, None, None
+            if p.startswith(str(r.value).lower()):
+                return r.group, NO_LOCALE_LABEL, None
         elif r.match == "regex":
             if r.compiled and r.compiled.search(p):
-                return r.group, None, None
+                return r.group, NO_LOCALE_LABEL, None
         elif r.match == "ext":
             ex = ext_of_path(p)
             if ex and ex in set([str(x).lower() for x in r.value]):
-                return r.group, None, None
+                return r.group, NO_LOCALE_LABEL, None
 
     # 2) segment-based
     segs = [s for s in p.split("/") if s]
     if not segs:
-        return "Home", None, None
+        # Root "/" is no-locale by definition.
+        return "Home", NO_LOCALE_LABEL, None
 
     first = segs[0]
-    locale = None
-    section = None
+    locale: Optional[str] = None
+    section: Optional[str] = None
 
     if first in cfg.locales:
         locale = first
         section_index = 1
         section = segs[section_index] if len(segs) > section_index else None
     else:
+        locale = NO_LOCALE_LABEL
         section_index = 0
         section = first
 
@@ -217,6 +245,7 @@ def apply_url_grouping(path: str, cfg: UrlGroupingConfig) -> Tuple[str, Optional
         mapped = cfg.section_map.get(section.lower())
         if mapped:
             return mapped, locale, section
+
     return cfg.fallback_group, locale, section
 
 
@@ -296,7 +325,10 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
                     referer = None
 
                 is_bot, bot_family = classify_bot(ua, bot_rules)
+
+                # Apply grouping/locale detection (now returns NO_LOCALE_LABEL when not whitelisted).
                 url_group, locale, section = apply_url_grouping(path, url_cfg)
+
                 qs_l = (query_string or "").lower()
                 is_utm_chatgpt = "utm_source=chatgpt.com" in qs_l
                 is_resource = url_group in ("Nuxt Assets", "Static Assets")
@@ -330,10 +362,10 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
     if not rows:
         # still create an empty parquet so later steps can work predictably
         df = pd.DataFrame(columns=[
-            "date","ts_local","ts_utc","edge_ip","method","path","http_version",
-            "status","status_class","bytes_sent","referer","user_agent",
-            "has_query","is_parameterized","locale","section","url_group","is_resource",
-            "is_bot","bot_family","request_target","query_string","is_utm_chatgpt"
+            "date", "ts_local", "ts_utc", "edge_ip", "method", "path", "http_version",
+            "status", "status_class", "bytes_sent", "referer", "user_agent",
+            "has_query", "is_parameterized", "locale", "section", "url_group", "is_resource",
+            "is_bot", "bot_family", "request_target", "query_string", "is_utm_chatgpt"
         ])
     else:
         df = pd.DataFrame(rows)
@@ -440,10 +472,12 @@ def build_aggregates_for_date(log_date: str) -> None:
     GROUP BY date, COALESCE(bot_family, 'Unknown bot')
     """
 
-    locale_daily_sql = """
+    # NOTE: Locale "Unknown" becomes "no-locale" at ingest time.
+    # Keep COALESCE as a safety net in case older partitions still have NULL.
+    locale_daily_sql = f"""
     SELECT
       date,
-      COALESCE(locale, 'Unknown') AS locale,
+      COALESCE(locale, '{NO_LOCALE_LABEL}') AS locale,
       COUNT(*) AS hits,
       SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS hits_bot,
       SUM(CASE WHEN NOT is_bot THEN 1 ELSE 0 END) AS hits_human,
@@ -455,7 +489,7 @@ def build_aggregates_for_date(log_date: str) -> None:
       SUM(CASE WHEN is_resource THEN 1 ELSE 0 END) AS resource_hits,
       SUM(CASE WHEN is_resource AND is_bot THEN 1 ELSE 0 END) AS resource_hits_bot
     FROM parsed
-    GROUP BY date, COALESCE(locale, 'Unknown')
+    GROUP BY date, COALESCE(locale, '{NO_LOCALE_LABEL}')
     """
 
     group_daily_sql = """
@@ -476,10 +510,10 @@ def build_aggregates_for_date(log_date: str) -> None:
     GROUP BY date, url_group
     """
 
-    locale_group_daily_sql = """
+    locale_group_daily_sql = f"""
     SELECT
       date,
-      COALESCE(locale, 'Unknown') AS locale,
+      COALESCE(locale, '{NO_LOCALE_LABEL}') AS locale,
       url_group,
       COUNT(*) AS hits,
       SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS hits_bot,
@@ -490,7 +524,7 @@ def build_aggregates_for_date(log_date: str) -> None:
       SUM(CASE WHEN status_class = 5 THEN 1 ELSE 0 END) AS s5xx,
       SUM(bytes_sent) AS bytes_sent
     FROM parsed
-    GROUP BY date, COALESCE(locale, 'Unknown'), url_group
+    GROUP BY date, COALESCE(locale, '{NO_LOCALE_LABEL}'), url_group
     """
 
     top_urls_daily_sql = """
