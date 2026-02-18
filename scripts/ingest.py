@@ -14,6 +14,8 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import duckdb
 
+from urllib.parse import parse_qs, unquote_plus
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_RAW = ROOT / "data" / "raw"
@@ -25,6 +27,9 @@ MANIFEST_DB = STATE_DIR / "manifest.sqlite"
 
 # Locale label to use when the URL does not start with a whitelisted locale segment.
 NO_LOCALE_LABEL = "no-locale"
+
+# Label used when a request has UTM params but no utm_source key.
+NO_UTM_SOURCE_LABEL = "(none)"  # NEW
 
 
 # Nginx combined-ish:
@@ -168,7 +173,6 @@ def classify_bot(ua: str, bot_rules: List[BotRule]) -> Tuple[bool, str]:
 
 
 def ext_of_path(path: str) -> Optional[str]:
-    # extract extension from last path segment only
     seg = path.rsplit("/", 1)[-1]
     if "." not in seg:
         return None
@@ -177,12 +181,6 @@ def ext_of_path(path: str) -> Optional[str]:
 
 
 def normalize_path_only(path: str) -> str:
-    """
-    Normalize a path for matching:
-    - ensure leading slash
-    - drop querystring if mistakenly included
-    - lowercase for stable locale matching
-    """
     p = (path or "/").split("?", 1)[0]
     if not p.startswith("/"):
         p = "/" + p
@@ -190,19 +188,10 @@ def normalize_path_only(path: str) -> str:
 
 
 def apply_url_grouping(path: str, cfg: UrlGroupingConfig) -> Tuple[str, Optional[str], Optional[str]]:
-    """
-    Returns: (url_group, locale, section)
-
-    Locale behavior change:
-    - If the first segment is a whitelisted locale: locale=<that locale>
-    - Otherwise: locale=NO_LOCALE_LABEL (instead of None/"Unknown")
-    """
-    # 1) high priority rules
     p = normalize_path_only(path)
 
     for r in cfg.rules:
         if r.match == "exact":
-            # NOTE: r.value may be "/" etc. Match using normalized p.
             if p == str(r.value).lower():
                 return r.group, NO_LOCALE_LABEL, None
         elif r.match == "prefix":
@@ -216,10 +205,8 @@ def apply_url_grouping(path: str, cfg: UrlGroupingConfig) -> Tuple[str, Optional
             if ex and ex in set([str(x).lower() for x in r.value]):
                 return r.group, NO_LOCALE_LABEL, None
 
-    # 2) segment-based
     segs = [s for s in p.split("/") if s]
     if not segs:
-        # Root "/" is no-locale by definition.
         return "Home", NO_LOCALE_LABEL, None
 
     first = segs[0]
@@ -274,7 +261,6 @@ def parse_request(req: str) -> Tuple[Optional[str], str, Optional[str], bool, st
 
 
 def parse_time_local(time_s: str) -> Tuple[datetime, datetime]:
-    # Example: 29/Jan/2026:02:07:29 +0800
     dt_local = datetime.strptime(time_s, "%d/%b/%Y:%H:%M:%S %z")
     dt_utc = dt_local.astimezone(timezone.utc)
     return dt_local, dt_utc
@@ -291,6 +277,43 @@ def status_class(status: int) -> int:
         return 5
     return 0
 
+
+# ---------- NEW: UTM parsing helpers ----------
+
+def _first_qs_value(qs: dict, key: str) -> Optional[str]:
+    v = qs.get(key)
+    if not v:
+        return None
+    s = v[0] if isinstance(v, list) else v
+    if s is None:
+        return None
+    s = str(s).strip()
+    return s if s != "" else None
+
+
+def parse_utm_fields(query_string: Optional[str]) -> Tuple[bool, Optional[str], Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
+    if not query_string:
+        return False, None, None, None, None, None, None
+
+    # Decode at the query-string level first (handles %27/%2527 etc.)
+    qs_decoded = _safe_unquote_plus(query_string, passes=2)
+
+    # parse_qs will still handle splitting/decoding reliably
+    qs = parse_qs(qs_decoded, keep_blank_values=True)
+
+    has_utm = any(k.lower().startswith("utm_") for k in qs.keys())
+    if not has_utm:
+        return False, None, None, None, None, None, None
+
+    utm_source = normalize_utm_value(_first_qs_value(qs, "utm_source") or _first_qs_value(qs, "UTM_SOURCE"))
+    utm_medium = normalize_utm_value(_first_qs_value(qs, "utm_medium") or _first_qs_value(qs, "UTM_MEDIUM"))
+    utm_campaign = normalize_utm_value(_first_qs_value(qs, "utm_campaign") or _first_qs_value(qs, "UTM_CAMPAIGN"))
+    utm_term = normalize_utm_value(_first_qs_value(qs, "utm_term") or _first_qs_value(qs, "UTM_TERM"))
+    utm_content = normalize_utm_value(_first_qs_value(qs, "utm_content") or _first_qs_value(qs, "UTM_CONTENT"))
+
+    utm_source_norm = utm_source.lower() if utm_source else None
+
+    return has_utm, utm_source, utm_source_norm, utm_medium, utm_campaign, utm_term, utm_content
 
 def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotRule], url_cfg: UrlGroupingConfig) -> int:
     rows = []
@@ -325,18 +348,18 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
                     referer = None
 
                 is_bot, bot_family = classify_bot(ua, bot_rules)
-
-                # Apply grouping/locale detection (now returns NO_LOCALE_LABEL when not whitelisted).
                 url_group, locale, section = apply_url_grouping(path, url_cfg)
 
-                qs_l = (query_string or "").lower()
-                is_utm_chatgpt = "utm_source=chatgpt.com" in qs_l
+                # NEW: dynamic UTM extraction
+                has_utm, utm_source, utm_source_norm, utm_medium, utm_campaign, utm_term, utm_content = parse_utm_fields(query_string)
+                is_utm_chatgpt = (utm_source_norm == "chatgpt.com") if utm_source_norm else False
+
                 is_resource = url_group in ("Nuxt Assets", "Static Assets")
 
                 rows.append({
                     "date": log_date,
                     "ts_local": ts_local,
-                    "ts_utc": ts_utc.replace(tzinfo=None),  # store UTC as naive timestamp
+                    "ts_utc": ts_utc.replace(tzinfo=None),
                     "edge_ip": ip,
                     "method": method,
                     "path": path,
@@ -356,16 +379,28 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
                     "bot_family": bot_family if is_bot else None,
                     "request_target": request_target,
                     "query_string": query_string,
+
+                    # legacy + new UTM fields
                     "is_utm_chatgpt": bool(is_utm_chatgpt),
+                    "has_utm": bool(has_utm),
+                    "utm_source": utm_source,
+                    "utm_source_norm": utm_source_norm,
+                    "utm_medium": utm_medium,
+                    "utm_campaign": utm_campaign,
+                    "utm_term": utm_term,
+                    "utm_content": utm_content,
                 })
 
     if not rows:
-        # still create an empty parquet so later steps can work predictably
         df = pd.DataFrame(columns=[
             "date", "ts_local", "ts_utc", "edge_ip", "method", "path", "http_version",
             "status", "status_class", "bytes_sent", "referer", "user_agent",
             "has_query", "is_parameterized", "locale", "section", "url_group", "is_resource",
-            "is_bot", "bot_family", "request_target", "query_string", "is_utm_chatgpt"
+            "is_bot", "bot_family", "request_target", "query_string",
+
+            # legacy + new UTM columns
+            "is_utm_chatgpt", "has_utm",
+            "utm_source", "utm_source_norm", "utm_medium", "utm_campaign", "utm_term", "utm_content",
         ])
     else:
         df = pd.DataFrame(rows)
@@ -383,7 +418,6 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
 
 def agg_write_one(conn: duckdb.DuckDBPyConnection, sql: str, out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # DuckDB COPY writes Parquet
     conn.execute(f"COPY ({sql}) TO '{out_path.as_posix()}' (FORMAT PARQUET);")
 
 
@@ -396,7 +430,10 @@ def build_aggregates_for_date(log_date: str) -> None:
     conn.execute("PRAGMA threads=4;")
     conn.execute(f"CREATE OR REPLACE VIEW parsed AS SELECT * FROM read_parquet('{parsed_path.as_posix()}');")
 
-    # daily (one row)
+    # ----------------------------
+    # existing aggregates unchanged
+    # ----------------------------
+
     daily_sql = """
     SELECT
       date,
@@ -423,7 +460,6 @@ def build_aggregates_for_date(log_date: str) -> None:
     GROUP BY date
     """
 
-    # hourly (bucket by log time, not machine time)
     hourly_sql = """
     SELECT
       date,
@@ -472,8 +508,6 @@ def build_aggregates_for_date(log_date: str) -> None:
     GROUP BY date, COALESCE(bot_family, 'Unknown bot')
     """
 
-    # NOTE: Locale "Unknown" becomes "no-locale" at ingest time.
-    # Keep COALESCE as a safety net in case older partitions still have NULL.
     locale_daily_sql = f"""
     SELECT
       date,
@@ -633,6 +667,9 @@ def build_aggregates_for_date(log_date: str) -> None:
     GROUP BY date, COALESCE(bot_family, 'Unknown bot'), path, url_group
     """
 
+    # ----------------------------
+    # legacy UTM chatgpt aggregates (kept, derived from utm_source_norm)
+    # ----------------------------
     utm_chatgpt_daily_sql = """
     SELECT
     date,
@@ -640,7 +677,7 @@ def build_aggregates_for_date(log_date: str) -> None:
     SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS hits_bot,
     SUM(CASE WHEN NOT is_bot THEN 1 ELSE 0 END) AS hits_human
     FROM parsed
-    WHERE is_utm_chatgpt
+    WHERE utm_source_norm = 'chatgpt.com'
     GROUP BY date
     """
 
@@ -651,13 +688,45 @@ def build_aggregates_for_date(log_date: str) -> None:
     url_group,
     COUNT(*) AS hits
     FROM parsed
-    WHERE is_utm_chatgpt
+    WHERE utm_source_norm = 'chatgpt.com'
     GROUP BY date, path, url_group
+    """
+
+    # ----------------------------
+    # NEW: generic UTM aggregates
+    # ----------------------------
+
+    # Note: We aggregate by normalized utm_source (lowercase), with a stable label for missing utm_source.
+    utm_sources_daily_sql = f"""
+    SELECT
+      date,
+      COALESCE(utm_source_norm, '{NO_UTM_SOURCE_LABEL}') AS utm_source,
+      COUNT(*) AS hits,
+      SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS hits_bot,
+      SUM(CASE WHEN NOT is_bot THEN 1 ELSE 0 END) AS hits_human
+    FROM parsed
+    WHERE has_utm
+    GROUP BY date, COALESCE(utm_source_norm, '{NO_UTM_SOURCE_LABEL}')
+    """
+
+    utm_source_urls_daily_sql = f"""
+    SELECT
+      date,
+      COALESCE(utm_source_norm, '{NO_UTM_SOURCE_LABEL}') AS utm_source,
+      path,
+      url_group,
+      COUNT(*) AS hits,
+      SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS hits_bot,
+      SUM(CASE WHEN NOT is_bot THEN 1 ELSE 0 END) AS hits_human
+    FROM parsed
+    WHERE has_utm
+    GROUP BY date, COALESCE(utm_source_norm, '{NO_UTM_SOURCE_LABEL}'), path, url_group
     """
 
     def out(name: str) -> Path:
         return DATA_AGG / name / f"date={log_date}" / "part.parquet"
 
+    # existing
     agg_write_one(conn, daily_sql, out("daily"))
     agg_write_one(conn, hourly_sql, out("hourly"))
     agg_write_one(conn, bot_daily_sql, out("bot_daily"))
@@ -670,8 +739,14 @@ def build_aggregates_for_date(log_date: str) -> None:
     agg_write_one(conn, wasted_crawl_daily_sql, out("wasted_crawl_daily"))
     agg_write_one(conn, top_resource_waste_daily_sql, out("top_resource_waste_daily"))
     agg_write_one(conn, bot_urls_daily_sql, out("bot_urls_daily"))
+
+    # legacy
     agg_write_one(conn, utm_chatgpt_daily_sql, out("utm_chatgpt_daily"))
     agg_write_one(conn, utm_chatgpt_urls_daily_sql, out("utm_chatgpt_urls_daily"))
+
+    # NEW generic
+    agg_write_one(conn, utm_sources_daily_sql, out("utm_sources_daily"))
+    agg_write_one(conn, utm_source_urls_daily_sql, out("utm_source_urls_daily"))
 
     conn.close()
 
@@ -729,13 +804,50 @@ def ingest(dry_run: bool = False) -> None:
         build_aggregates_for_date(d)
         print(f"[DATE {d}] Aggregates done")
 
-        # Update manifest for day files
         for fp in day_files:
             size_b, mtime = file_meta(fp)
             manifest_upsert(fp, size_b, mtime, d)
 
     print("\nIngest complete.")
 
+def _safe_unquote_plus(s: str, passes: int = 2) -> str:
+    """
+    Decode percent-encoding and '+' to space. Do up to `passes` rounds to handle
+    double-encoding like %2527 -> %27 -> '.
+    """
+    out = s or ""
+    for _ in range(max(1, int(passes))):
+        new = unquote_plus(out)
+        if new == out:
+            break
+        out = new
+    return out
+
+def normalize_utm_value(s: Optional[str]) -> Optional[str]:
+    """
+    Canonicalize decoded UTM values for grouping.
+    Fixes cases where utm_source ends with a decoded %27 (apostrophe).
+    - trims whitespace
+    - strips wrapping quotes/apostrophes/backticks from BOTH ends repeatedly
+    - keeps internal apostrophes intact (only touches ends)
+    """
+    if s is None:
+        return None
+
+    s = str(s)
+    s = _safe_unquote_plus(s, passes=2)  # handles %27 and %2527 safely
+    s = s.strip()
+    if not s:
+        return None
+
+    # Strip ONLY from ends, repeatedly
+    strip_chars = " '\"\t\r\n`"
+    prev = None
+    while s != prev:
+        prev = s
+        s = s.strip(strip_chars)
+
+    return s if s else None
 
 def main():
     parser = argparse.ArgumentParser(description="Ingest raw nginx logs -> parsed parquet -> aggregates")

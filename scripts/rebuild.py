@@ -114,8 +114,14 @@ def main():
         "wasted_crawl_daily",
         "top_resource_waste_daily",
         "bot_urls_daily",
+
+        # legacy
         "utm_chatgpt_daily",
         "utm_chatgpt_urls_daily",
+
+        # NEW generic UTM
+        "utm_sources_daily",
+        "utm_source_urls_daily",
     ]
 
     for d in dates:
