@@ -655,6 +655,17 @@ def build_aggregates_for_date(log_date: str) -> None:
     GROUP BY date, path
     """
 
+    human_urls_daily_sql = """
+    SELECT
+    date,
+    path,
+    url_group,
+    COUNT(*) AS hits
+    FROM parsed
+    WHERE NOT is_bot
+    GROUP BY date, path, url_group
+    """
+
     bot_urls_daily_sql = """
     SELECT
     date,
@@ -739,6 +750,7 @@ def build_aggregates_for_date(log_date: str) -> None:
     agg_write_one(conn, wasted_crawl_daily_sql, out("wasted_crawl_daily"))
     agg_write_one(conn, top_resource_waste_daily_sql, out("top_resource_waste_daily"))
     agg_write_one(conn, bot_urls_daily_sql, out("bot_urls_daily"))
+    agg_write_one(conn, human_urls_daily_sql, out("human_urls_daily"))
 
     # legacy
     agg_write_one(conn, utm_chatgpt_daily_sql, out("utm_chatgpt_daily"))

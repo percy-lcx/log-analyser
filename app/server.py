@@ -301,6 +301,7 @@ def index():
         ("Wasted crawl", "/reports/wasted-crawl"),
         ("Top resource waste", "/reports/top-resource-waste"),
         ("Bot URLs (Googlebot)", "/reports/bot-urls?bot=Googlebot"),
+        ("Human URLs", "/reports/human-urls"),
         ("UTM (all sources)", "/reports/utm"),
         ("UTM: chatgpt.com (legacy)", "/reports/utm-chatgpt"),
     ]
@@ -598,10 +599,26 @@ def top_404(
         clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
+    # 1) Trend over time (total 404s per day)
+    daily_sql = f"""
+    SELECT
+        date,
+        SUM(hits_404) AS hits_404,
+        SUM(hits_404_bot) AS hits_404_bot,
+        (SUM(hits_404) - SUM(hits_404_bot)) AS hits_404_non_bot
+    FROM t
+    {where}
+    GROUP BY date
+    ORDER BY date;
+    """
+    cols_d, rows_d = run_query(paths, daily_sql)
+
+    # 2) Top URLs (table + bar chart)
     sql = f"""
     SELECT path, url_group,
         SUM(hits_404) AS hits_404,
         SUM(hits_404_bot) AS hits_404_bot,
+        (SUM(hits_404) - SUM(hits_404_bot)) AS hits_404_non_bot,
         SUM(bytes_sent_404) AS bytes_sent_404
     FROM t
     {where}
@@ -610,15 +627,28 @@ def top_404(
     LIMIT {int(limit)};
     """
     cols, rows = run_query(paths, sql)
+
     body += export_link(
         "top-404", date_from, date_to,
         extra=f"&include_assets={'true' if include_assets else 'false'}"
               + (f"&url_group={url_group}" if url_group else "")
               + f"&limit={int(limit)}"
     )
-    body += html_table(rows, cols)
-    return page("Top 404", body)
 
+    body += "<h2>404 trend (daily)</h2>"
+    body += line_chart(rows_d, cols_d, x_col="date", y_cols=["hits_404", "hits_404_bot", "hits_404_non_bot"], title="404s by day")
+    body += "<br>"
+    body += html_table(rows_d, cols_d, max_rows=500)
+
+    chart_limit = min(int(limit), 30)
+    if rows:
+        rows_bar = [r[:len(cols)] for r in rows[:chart_limit]]
+        body += "<h2>Top 404 URLs</h2>"
+        body += bar_chart(rows_bar, cols, x_col="path", y_col="hits_404", title=f"Top {chart_limit} 404 URLs")
+        body += "<br>"
+
+    body += html_table(rows, cols, max_rows=min(int(limit), 500))
+    return page("Top 404", body)
 
 @app.get("/reports/top-5xx", response_class=HTMLResponse)
 def top_5xx(
@@ -651,10 +681,26 @@ def top_5xx(
         clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
+    # 1) Trend over time (total 5xx per day)
+    daily_sql = f"""
+    SELECT
+        date,
+        SUM(hits_5xx) AS hits_5xx,
+        SUM(hits_5xx_bot) AS hits_5xx_bot,
+        (SUM(hits_5xx) - SUM(hits_5xx_bot)) AS hits_5xx_non_bot
+    FROM t
+    {where}
+    GROUP BY date
+    ORDER BY date;
+    """
+    cols_d, rows_d = run_query(paths, daily_sql)
+
+    # 2) Top URLs (table + bar chart)
     sql = f"""
     SELECT path, url_group,
         SUM(hits_5xx) AS hits_5xx,
-        SUM(hits_5xx_bot) AS hits_5xx_bot
+        SUM(hits_5xx_bot) AS hits_5xx_bot,
+        (SUM(hits_5xx) - SUM(hits_5xx_bot)) AS hits_5xx_non_bot
     FROM t
     {where}
     GROUP BY path, url_group
@@ -662,13 +708,27 @@ def top_5xx(
     LIMIT {int(limit)};
     """
     cols, rows = run_query(paths, sql)
+
     body += export_link(
         "top-5xx", date_from, date_to,
         extra=f"&include_assets={'true' if include_assets else 'false'}"
               + (f"&url_group={url_group}" if url_group else "")
               + f"&limit={int(limit)}"
     )
-    body += html_table(rows, cols)
+
+    body += "<h2>5xx trend (daily)</h2>"
+    body += line_chart(rows_d, cols_d, x_col="date", y_cols=["hits_5xx", "hits_5xx_bot", "hits_5xx_non_bot"], title="5xx by day")
+    body += "<br>"
+    body += html_table(rows_d, cols_d, max_rows=500)
+
+    chart_limit = min(int(limit), 30)
+    if rows:
+        rows_bar = [r[:len(cols)] for r in rows[:chart_limit]]
+        body += "<h2>Top 5xx URLs</h2>"
+        body += bar_chart(rows_bar, cols, x_col="path", y_col="hits_5xx", title=f"Top {chart_limit} 5xx URLs")
+        body += "<br>"
+
+    body += html_table(rows, cols, max_rows=min(int(limit), 500))
     return page("Top 5xx", body)
 
 
@@ -827,6 +887,51 @@ def top_resource_waste(
     body += html_table(rows, cols)
     return page("Top resource waste", body)
 
+@app.get("/reports/human-urls", response_class=HTMLResponse)
+def human_urls(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    include_assets: bool = False,
+    limit: int = 500,
+):
+    paths = list_partitions("human_urls_daily", date_from, date_to)
+    body = date_filters_html(date_from, date_to)
+
+    groups = distinct_values("human_urls_daily", "url_group", date_from, date_to)
+
+    body += "<form method='get'>"
+    body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
+    body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
+    checked_assets = "checked" if include_assets else ""
+    body += f" <label><input type='checkbox' name='include_assets' value='true' {checked_assets}> Include assets</label>"
+    body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
+    body += " <button type='submit'>Apply</button></form>"
+
+    if not paths:
+        return page("Human URLs", body + no_data_notice())
+
+    clauses = []
+    if not include_assets:
+        clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    sql = f"""
+    SELECT url_group, path,
+        SUM(hits) AS hits
+    FROM t
+    {where}
+    GROUP BY url_group, path
+    ORDER BY hits DESC
+    LIMIT {int(limit)};
+    """
+    cols, rows = run_query(paths, sql)
+    body += export_link(
+        "human-urls", date_from, date_to,
+        extra=f"&include_assets={'true' if include_assets else 'false'}"
+              + f"&limit={int(limit)}"
+    )
+    body += html_table(rows, cols)
+    return page("Human URLs", body)
 
 @app.get("/reports/bot-urls", response_class=HTMLResponse)
 def bot_urls(
