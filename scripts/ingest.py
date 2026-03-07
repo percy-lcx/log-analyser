@@ -392,19 +392,52 @@ def _build_parsed_native(log_date: str, files: List[Path], native_bin: Path) -> 
             df.to_parquet(out_path, index=False)
             return 0
 
-        # Read NDJSON and fix timestamp column types before writing parquet.
+        # Convert NDJSON → parquet with DuckDB — avoids the slow pandas read_json
+        # round-trip. DuckDB's NDJSON reader is C++ and orders of magnitude faster.
         #
-        # ts_local: ISO-8601 string with offset (e.g. "2024-01-01T10:30:00+08:00")
-        #           → timezone-aware TIMESTAMPTZ column (stored as UTC in parquet).
-        # ts_utc:   ISO-8601 string, no offset (e.g. "2024-01-01T02:30:00")
-        #           → timezone-naive TIMESTAMP column, matching the Python behaviour
-        #             of ts_utc.replace(tzinfo=None).
-        df = pd.read_json(tmp_path, lines=True, convert_dates=False)
-        df["ts_local"] = pd.to_datetime(df["ts_local"], utc=True)
-        df["ts_utc"] = pd.to_datetime(df["ts_utc"])  # naive – no tz
-
-        df.to_parquet(out_path, index=False)
-        return len(df)
+        # ts_local: ISO-8601 string with offset → TIMESTAMPTZ (stored as UTC).
+        # ts_utc:   ISO-8601 string, no offset  → naive TIMESTAMP.
+        conn = duckdb.connect(database=":memory:")
+        try:
+            conn.execute(f"""
+                COPY (
+                    SELECT
+                        date,
+                        ts_local::TIMESTAMPTZ  AS ts_local,
+                        ts_utc::TIMESTAMP      AS ts_utc,
+                        edge_ip,
+                        method,
+                        path,
+                        http_version,
+                        status,
+                        status_class,
+                        bytes_sent,
+                        referer,
+                        user_agent,
+                        has_query,
+                        is_parameterized,
+                        locale,
+                        section,
+                        url_group,
+                        is_resource,
+                        is_bot,
+                        bot_family,
+                        request_target,
+                        query_string,
+                        is_utm_chatgpt,
+                        has_utm,
+                        utm_source,
+                        utm_source_norm,
+                        utm_medium,
+                        utm_campaign,
+                        utm_term,
+                        utm_content
+                    FROM read_ndjson('{tmp_path}', auto_detect=true)
+                ) TO '{out_path.as_posix()}' (FORMAT PARQUET)
+            """)
+        finally:
+            conn.close()
+        return n_rows
 
     finally:
         try:
