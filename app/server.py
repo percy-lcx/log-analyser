@@ -114,6 +114,13 @@ def line_chart(rows, columns, x_col, y_cols, title):
 
     fig = go.Figure()
 
+    status_colors = {
+        "s2xx": "#03e200",
+        "s3xx": "#fce839",
+        "s4xx": "#ffb03d",
+        "s5xx": "#ff2a07",
+    }
+
     # y: force float conversion; invalid -> None (so Plotly will gap)
     for yc in y_cols:
         if yc not in df.columns:
@@ -129,7 +136,8 @@ def line_chart(rows, columns, x_col, y_cols, title):
                 except Exception:
                     y.append(None)
 
-        fig.add_trace(go.Scatter(x=x, y=y, mode="lines", name=yc))
+        color = status_colors.get(yc)
+        fig.add_trace(go.Scatter(x=x, y=y, mode="lines", name=yc, line=dict(color=color) if color else {}))
 
     fig.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20), title=title)
     return fig.to_html(full_html=False, include_plotlyjs=False)
