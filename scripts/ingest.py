@@ -328,6 +328,10 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
     rows = []
     bad = 0
 
+    # Per-date caches: most bots repeat the same UA and URL patterns heavily.
+    ua_cache: Dict[str, Tuple[bool, str]] = {}
+    path_cache: Dict[str, Tuple[str, Optional[str], Optional[str]]] = {}
+
     for fp in files:
         with open(fp, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -356,13 +360,20 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
                 if referer == "-" or referer == "":
                     referer = None
 
-                is_bot, bot_family = classify_bot(ua, bot_rules)
+                if ua not in ua_cache:
+                    ua_cache[ua] = classify_bot(ua, bot_rules)
+                is_bot, bot_family = ua_cache[ua]
+
+                # Referer check is per-request (same UA can arrive with different referers).
                 if not is_bot and referer and referer_rules:
                     for rr in referer_rules:
                         if rr.pattern.search(referer.lower()):
                             is_bot, bot_family = True, rr.family
                             break
-                url_group, locale, section = apply_url_grouping(path, url_cfg)
+
+                if path not in path_cache:
+                    path_cache[path] = apply_url_grouping(path, url_cfg)
+                url_group, locale, section = path_cache[path]
 
                 # NEW: dynamic UTM extraction
                 has_utm, utm_source, utm_source_norm, utm_medium, utm_campaign, utm_term, utm_content = parse_utm_fields(query_string)

@@ -6,6 +6,7 @@ import re
 import sys
 import os
 import importlib.util
+import multiprocessing
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_RAW = ROOT / "data" / "raw"
@@ -53,12 +54,64 @@ def delete_dir_files(path: Path) -> None:
                 pass
 
 
+AGG_TABLES = [
+    "daily",
+    "hourly",
+    "bot_daily",
+    "locale_daily",
+    "group_daily",
+    "locale_group_daily",
+    "top_urls_daily",
+    "top_404_daily",
+    "top_5xx_daily",
+    "wasted_crawl_daily",
+    "top_resource_waste_daily",
+    "bot_urls_daily",
+
+    # legacy
+    "utm_chatgpt_daily",
+    "utm_chatgpt_urls_daily",
+
+    # NEW generic UTM
+    "utm_sources_daily",
+    "utm_source_urls_daily",
+]
+
+
+def rebuild_date(args_tuple):
+    """Worker function for parallel date rebuild. Runs in a child process."""
+    d, day_file_strs, bot_rules, referer_rules, url_cfg = args_tuple
+    ingest = load_ingest_module()
+
+    day_files = [Path(f) for f in day_file_strs]
+
+    parsed_dir = DATA_PARSED / f"date={d}"
+    delete_dir_files(parsed_dir)
+    parsed_dir.mkdir(parents=True, exist_ok=True)
+
+    for agg_name in AGG_TABLES:
+        agg_dir = DATA_AGG / agg_name / f"date={d}"
+        delete_dir_files(agg_dir)
+        agg_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n[DATE {d}] Rebuilding parsed partition from {len(day_files)} file(s)", flush=True)
+    n_rows = ingest.build_parsed_for_date(d, day_files, bot_rules, url_cfg, referer_rules)
+    print(f"[DATE {d}] Parsed rows: {n_rows}", flush=True)
+
+    ingest.build_aggregates_for_date(d)
+    print(f"[DATE {d}] Aggregates done", flush=True)
+
+    return d, n_rows
+
+
 def main():
     p = argparse.ArgumentParser(
         description="Rebuild parsed + aggregates. If no --from/--to, rebuild ALL dates found in data/raw/."
     )
     p.add_argument("--from", dest="date_from", required=False, help="YYYY-MM-DD")
     p.add_argument("--to", dest="date_to", required=False, help="YYYY-MM-DD")
+    p.add_argument("--workers", dest="workers", type=int, default=None,
+                   help="Parallel worker processes (default: CPU count)")
     args = p.parse_args()
 
     ingest = load_ingest_module()
@@ -67,6 +120,7 @@ def main():
     ingest.init_manifest()
 
     bot_rules = ingest.load_bot_rules()
+    referer_rules = ingest.load_referer_rules()
     url_cfg = ingest.load_url_grouping()
     files = ingest.list_raw_files()
 
@@ -99,54 +153,27 @@ def main():
         print("No dated log files found. Filenames must include _access_YYYY-MM-DD_.")
         return
 
-    print(f"Rebuilding {len(dates)} date(s).")
+    workers = args.workers or multiprocessing.cpu_count()
+    print(f"Rebuilding {len(dates)} date(s) with {workers} worker(s).")
 
-    agg_tables = [
-        "daily",
-        "hourly",
-        "bot_daily",
-        "locale_daily",
-        "group_daily",
-        "locale_group_daily",
-        "top_urls_daily",
-        "top_404_daily",
-        "top_5xx_daily",
-        "wasted_crawl_daily",
-        "top_resource_waste_daily",
-        "bot_urls_daily",
-
-        # legacy
-        "utm_chatgpt_daily",
-        "utm_chatgpt_urls_daily",
-
-        # NEW generic UTM
-        "utm_sources_daily",
-        "utm_source_urls_daily",
-    ]
-
+    work_items = []
     for d in dates:
         day_files = ingest.gather_files_for_date(files, d)
         if not day_files:
             continue
+        # Pass file paths as strings — Path objects don't pickle on all platforms
+        work_items.append((d, [f.as_posix() for f in day_files], bot_rules, referer_rules, url_cfg))
 
-        # Remove old parsed output for the date (safe)
-        parsed_dir = DATA_PARSED / f"date={d}"
-        delete_dir_files(parsed_dir)
-        parsed_dir.mkdir(parents=True, exist_ok=True)
+    if not work_items:
+        print("No work to do.")
+        return
 
-        # Remove old aggregates for the date (safe)
-        for agg_name in agg_tables:
-            agg_dir = DATA_AGG / agg_name / f"date={d}"
-            delete_dir_files(agg_dir)
-            agg_dir.mkdir(parents=True, exist_ok=True)
-
-        print(f"\n[DATE {d}] Rebuilding parsed partition from {len(day_files)} file(s)")
-        n_rows = ingest.build_parsed_for_date(d, day_files, bot_rules, url_cfg)
-        print(f"[DATE {d}] Parsed rows: {n_rows}")
-
-        print(f"[DATE {d}] Building aggregates")
-        ingest.build_aggregates_for_date(d)
-        print(f"[DATE {d}] Aggregates done")
+    if workers == 1 or len(work_items) == 1:
+        for item in work_items:
+            rebuild_date(item)
+    else:
+        with multiprocessing.Pool(processes=workers) as pool:
+            pool.map(rebuild_date, work_items)
 
     print("\nRebuild complete.")
 
