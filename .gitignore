@@ -11,3 +11,7 @@ data/aggregates/
 
 *.log
 *.tmp
+
+# Native parser binary (built locally with parser/build.sh)
+parser/log-parser
+parser/log-parser.exe
