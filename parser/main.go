@@ -548,7 +548,7 @@ type pathCacheEntry struct {
 	section *string
 }
 
-func processFiles(date string, files []string, botRules, refererRules []botRule, cfg *urlConfig, out *bufio.Writer) (nRows, nBad int) {
+func processFiles(date string, files []string, botRules, refererRules []botRule, cfg *urlConfig, out *bufio.Writer) (nRows, nBad, nNoLocale int) {
 	enc := json.NewEncoder(out)
 
 	uaCache := make(map[string]uaCacheEntry)
@@ -698,6 +698,9 @@ func processFiles(date string, files []string, botRules, refererRules []botRule,
 			}
 
 			nRows++
+			if pce.locale == noLocaleLabel {
+				nNoLocale++
+			}
 		}
 
 		f.Close()
@@ -706,7 +709,7 @@ func processFiles(date string, files []string, botRules, refererRules []botRule,
 		}
 	}
 
-	return nRows, nBad
+	return nRows, nBad, nNoLocale
 }
 
 // ---------------------------------------------------------------------------
@@ -770,7 +773,7 @@ func main() {
 	bw := bufio.NewWriterSize(outFile, 4<<20) // 4 MB write buffer
 
 	t0 := time.Now()
-	nRows, nBad := processFiles(*date, files, botRules, refererRules, urlCfg, bw)
+	nRows, nBad, nNoLocale := processFiles(*date, files, botRules, refererRules, urlCfg, bw)
 
 	if err := bw.Flush(); err != nil {
 		fmt.Fprintf(os.Stderr, "error flushing output: %v\n", err)
@@ -785,8 +788,8 @@ func main() {
 
 	// Stats → stderr (visible in rebuild output).
 	fmt.Fprintf(os.Stderr,
-		"[DATE %s] parse complete: %s rows, %d bad lines, %.1fs (%s rows/s)\n",
-		*date, commaSep(nRows), nBad, elapsed, commaSep(rate))
+		"[DATE %s] parse complete: %s rows, %d bad lines, %s no-locale, %.1fs (%s rows/s)\n",
+		*date, commaSep(nRows), nBad, commaSep(nNoLocale), elapsed, commaSep(rate))
 
 	// Row count → stdout so the Python caller can read it without parsing stderr.
 	fmt.Println(nRows)
