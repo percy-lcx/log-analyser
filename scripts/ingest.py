@@ -90,6 +90,15 @@ def load_bot_rules() -> List[BotRule]:
     return rules
 
 
+def load_referer_rules() -> List[BotRule]:
+    cfg = load_yaml(DETECTORS_DIR / "bots.yml")
+    rules = []
+    for r in cfg.get("referer_rules", []):
+        pat = re.compile(r["pattern"], re.IGNORECASE)
+        rules.append(BotRule(family=r["family"], pattern=pat))
+    return rules
+
+
 def load_url_grouping() -> UrlGroupingConfig:
     cfg = load_yaml(DETECTORS_DIR / "url_groups.yml")
 
@@ -315,7 +324,7 @@ def parse_utm_fields(query_string: Optional[str]) -> Tuple[bool, Optional[str], 
 
     return has_utm, utm_source, utm_source_norm, utm_medium, utm_campaign, utm_term, utm_content
 
-def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotRule], url_cfg: UrlGroupingConfig) -> int:
+def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotRule], url_cfg: UrlGroupingConfig, referer_rules: Optional[List[BotRule]] = None) -> int:
     rows = []
     bad = 0
 
@@ -348,6 +357,11 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
                     referer = None
 
                 is_bot, bot_family = classify_bot(ua, bot_rules)
+                if not is_bot and referer and referer_rules:
+                    for rr in referer_rules:
+                        if rr.pattern.search(referer.lower()):
+                            is_bot, bot_family = True, rr.family
+                            break
                 url_group, locale, section = apply_url_grouping(path, url_cfg)
 
                 # NEW: dynamic UTM extraction
@@ -776,6 +790,7 @@ def ingest(dry_run: bool = False) -> None:
     ensure_dirs()
     init_manifest()
     bot_rules = load_bot_rules()
+    referer_rules = load_referer_rules()
     url_cfg = load_url_grouping()
 
     files = list_raw_files()
@@ -809,7 +824,7 @@ def ingest(dry_run: bool = False) -> None:
         if dry_run:
             continue
 
-        n_rows = build_parsed_for_date(d, day_files, bot_rules, url_cfg)
+        n_rows = build_parsed_for_date(d, day_files, bot_rules, url_cfg, referer_rules)
         print(f"[DATE {d}] Parsed rows: {n_rows}")
 
         print(f"[DATE {d}] Building aggregates")
