@@ -50,7 +50,7 @@ def list_partitions(table: str, date_from: Optional[str], date_to: Optional[str]
 
 def html_table(rows, columns, max_rows: int = 999) -> str:
     """
-    Simple HTML table with client-side sorting (no deps).
+    Styled HTML table with client-side sorting.
     Click a header to sort; click again to reverse.
     """
     head = "".join(
@@ -66,12 +66,13 @@ def html_table(rows, columns, max_rows: int = 999) -> str:
         body_rows.append(f"<tr>{tds}</tr>")
     body = "\n".join(body_rows)
 
-    return (
-        "<table class='sortable' border='1' cellpadding='6' cellspacing='0'>"
+    table = (
+        "<table class='sortable'>"
         f"<thead><tr>{head}</tr></thead>"
         f"<tbody>{body}</tbody>"
         "</table>"
     )
+    return f"<div class='card'><div class='table-wrapper'>{table}</div></div>"
 
 
 def run_query(paths: List[str], sql: str):
@@ -140,7 +141,8 @@ def line_chart(rows, columns, x_col, y_cols, title):
         fig.add_trace(go.Scatter(x=x, y=y, mode="lines", name=yc, line=dict(color=color) if color else {}))
 
     fig.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20), title=title)
-    return fig.to_html(full_html=False, include_plotlyjs=False)
+    chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
+    return f"<div class='card'>{chart_html}</div>"
 
 
 def bar_chart(rows, columns, x_col, y_col, title):
@@ -165,7 +167,8 @@ def bar_chart(rows, columns, x_col, y_col, title):
 
     fig = go.Figure(data=[go.Bar(x=x, y=y)])
     fig.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20), title=title)
-    return fig.to_html(full_html=False, include_plotlyjs=False)
+    chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
+    return f"<div class='card'>{chart_html}</div>"
 
 
 def sql_escape_string(s: str) -> str:
@@ -187,7 +190,7 @@ def distinct_values(table: str, column: str, date_from: Optional[str], date_to: 
 
 
 def no_data_notice() -> str:
-    return "<p><em>No data found for the selected date range.</em></p>"
+    return "<p class='no-data'>No data found for the selected date range.</p>"
 
 
 def select_html(name: str, options: List[str], current: Optional[str], label: str) -> str:
@@ -202,101 +205,8 @@ def page(title: str, body: str) -> HTMLResponse:
 
     plotly_cdn = "<script src='https://cdn.plot.ly/plotly-latest.min.js'></script>"
 
-    css = """
-    <style>
-    table.sortable th { cursor: pointer; user-select: none; }
-    table.sortable th.sorted-asc::after  { content: " ▲"; }
-    table.sortable th.sorted-desc::after { content: " ▼"; }
-    </style>
-    """
-
-    js = """
-    <script>
-    (function() {
-    function parseNumber(s) {
-        const cleaned = s.replace(/[,\\s]/g, "");
-        if (!cleaned) return null;
-        const n = Number(cleaned);
-        return Number.isFinite(n) ? n : null;
-    }
-
-    function sortTable(table, colIndex, asc) {
-        const tbody = table.tBodies[0];
-        if (!tbody) return;
-
-        const rows = Array.from(tbody.rows);
-
-        rows.sort((ra, rb) => {
-        const a = (ra.cells[colIndex]?.innerText ?? "").trim();
-        const b = (rb.cells[colIndex]?.innerText ?? "").trim();
-
-        const na = parseNumber(a);
-        const nb = parseNumber(b);
-
-        if (na !== null && nb !== null) {
-            return asc ? (na - nb) : (nb - na);
-        }
-
-        return asc ? a.localeCompare(b) : b.localeCompare(a);
-        });
-
-        for (const r of rows) tbody.appendChild(r);
-    }
-
-    function attachSortable(table) {
-        const headers = table.tHead ? Array.from(table.tHead.rows[0].cells) : [];
-        headers.forEach((th, idx) => {
-        th.addEventListener("click", () => {
-            const currentlyAsc = th.classList.contains("sorted-asc");
-            const asc = !currentlyAsc;
-
-            headers.forEach(h => h.classList.remove("sorted-asc", "sorted-desc"));
-            th.classList.add(asc ? "sorted-asc" : "sorted-desc");
-
-            sortTable(table, idx, asc);
-        });
-        });
-    }
-
-    document.addEventListener("DOMContentLoaded", () => {
-        document.querySelectorAll("table.sortable").forEach(attachSortable);
-    });
-    })();
-    </script>
-    """
-
-    html = f"""
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <title>{title}</title>
-        {plotly_cdn}
-        {css}
-    </head>
-    <body style="font-family: Arial, sans-serif; padding: 20px;">
-        <h1>{title}</h1>
-        <p><a href="/">Home</a></p>
-        {body}
-        {js}
-    </body>
-    </html>
-    """
-    return HTMLResponse(html)
-
-
-def date_filters_html(date_from, date_to):
-    return f"""
-    <form method="get">
-    <label>From: <input name="from" value="{date_from or ''}" placeholder="YYYY-MM-DD"></label>
-    <label>To: <input name="to" value="{date_to or ''}" placeholder="YYYY-MM-DD"></label>
-    <button type="submit">Apply</button>
-    </form>
-    """
-
-
-@app.get("/", response_class=HTMLResponse)
-def index():
-    items = [
+    nav_items = [
+        ("Home", "/"),
         ("Crawl volume", "/reports/crawl-volume"),
         ("Status over time", "/reports/status-over-time"),
         ("Locale breakdown", "/reports/locales"),
@@ -308,17 +218,395 @@ def index():
         ("Bots", "/reports/bots"),
         ("Wasted crawl", "/reports/wasted-crawl"),
         ("Top resource waste", "/reports/top-resource-waste"),
-        ("Bot URLs (Googlebot)", "/reports/bot-urls?bot=Googlebot"),
+        ("Bot URLs", "/reports/bot-urls"),
         ("Human URLs", "/reports/human-urls"),
-        ("UTM (all sources)", "/reports/utm"),
-        ("UTM: chatgpt.com (legacy)", "/reports/utm-chatgpt"),
+        ("UTM sources", "/reports/utm"),
     ]
-    links = "<ul>" + "".join(f"<li><a href='{u}'>{n}</a></li>" for n, u in items) + "</ul>"
-    help_txt = """
-    <p>Tip: Use query parameters like <code>?from=2026-01-01&amp;to=2026-01-31</code>.</p>
-    <p>CSV export: add <code>/export?report=...</code> (links are on each page).</p>
+    nav_links = "\n".join(
+        f"<a href='{url}' class='nav-link' data-path='{url}'>{name}</a>"
+        for name, url in nav_items
+    )
+
+    css = """<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f1f5f9;
+    color: #334155;
+    display: flex;
+    min-height: 100vh;
+}
+
+/* ── Sidebar ── */
+.sidebar {
+    width: 210px;
+    min-width: 210px;
+    background: #1e293b;
+    color: #cbd5e1;
+    display: flex;
+    flex-direction: column;
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    overflow-y: auto;
+    z-index: 100;
+}
+.sidebar-logo {
+    padding: 18px 16px;
+    font-size: 13px;
+    font-weight: 700;
+    color: #f8fafc;
+    border-bottom: 1px solid #334155;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    line-height: 1.3;
+}
+.sidebar-logo span { display: block; font-size: 10px; font-weight: 400; color: #64748b; text-transform: none; margin-top: 2px; letter-spacing: 0; }
+.sidebar-section {
+    padding: 14px 16px 4px;
+    font-size: 10px;
+    color: #475569;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 600;
+}
+.nav-link {
+    display: block;
+    padding: 7px 16px;
+    color: #94a3b8;
+    text-decoration: none;
+    font-size: 13px;
+    border-left: 3px solid transparent;
+    transition: background 0.12s, color 0.12s;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.nav-link:hover { background: #334155; color: #e2e8f0; border-left-color: #475569; }
+.nav-link.active { background: #0f172a; color: #60a5fa; border-left-color: #3b82f6; font-weight: 600; }
+
+/* ── Main content ── */
+.main {
+    margin-left: 210px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+.topbar {
+    background: #fff;
+    border-bottom: 1px solid #e2e8f0;
+    padding: 14px 24px;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+}
+.topbar h1 { font-size: 18px; font-weight: 700; color: #1e293b; }
+.content { padding: 20px 24px; flex: 1; }
+
+/* Hide raw <br> separators between cards */
+.content > br { display: none; }
+
+/* ── Cards ── */
+.card {
+    background: #fff;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+    padding: 18px 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    overflow: hidden;
+}
+
+/* ── Section headings ── */
+.content h2 {
+    font-size: 14px;
+    font-weight: 700;
+    color: #475569;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 20px 0 10px;
+}
+.content h2:first-child { margin-top: 0; }
+
+/* ── Forms (filter bars) ── */
+.content form {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-bottom: 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: flex-end;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+.content form label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+.content form label:has(input[type=checkbox]) {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 13px;
+    color: #374151;
+    font-weight: 500;
+    padding-bottom: 2px;
+}
+.content form input:not([type=checkbox]):not([type=hidden]),
+.content form select {
+    padding: 7px 10px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    font-size: 13px;
+    color: #334155;
+    background: #fff;
+    min-width: 110px;
+    outline: none;
+    transition: border-color 0.12s, box-shadow 0.12s;
+}
+.content form input:focus, .content form select:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
+}
+.content form input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: #3b82f6; }
+
+/* ── Buttons ── */
+button[type=submit] {
+    padding: 8px 18px;
+    background: #3b82f6;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.12s;
+    white-space: nowrap;
+}
+button[type=submit]:hover { background: #2563eb; }
+
+/* ── Export links ── */
+a[href^='/export'] {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 12px;
+    background: #f8fafc;
+    color: #475569;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    text-decoration: none;
+    transition: background 0.12s, color 0.12s;
+    margin-bottom: 14px;
+    margin-right: 6px;
+}
+a[href^='/export']:hover { background: #e2e8f0; color: #1e293b; }
+.content p:has(a[href^='/export']) { margin-bottom: 0; }
+
+/* ── Tables ── */
+.table-wrapper { overflow-x: auto; }
+table.sortable {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+}
+table.sortable thead tr { background: #f8fafc; }
+table.sortable th {
+    padding: 9px 12px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 700;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border-bottom: 2px solid #e2e8f0;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+table.sortable th:hover { color: #1e293b; background: #f1f5f9; }
+table.sortable th.sorted-asc::after  { content: " ▲"; color: #3b82f6; }
+table.sortable th.sorted-desc::after { content: " ▼"; color: #3b82f6; }
+table.sortable td {
+    padding: 8px 12px;
+    border-bottom: 1px solid #f1f5f9;
+    color: #374151;
+    max-width: 480px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+table.sortable tbody tr:hover { background: #f8fafc; }
+table.sortable tbody tr:last-child td { border-bottom: none; }
+
+/* ── No-data notice ── */
+.no-data { color: #94a3b8; font-style: italic; padding: 8px 0; }
+
+/* ── Report grid (index page) ── */
+.report-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 10px;
+}
+.report-card {
+    display: block;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 14px 16px;
+    text-decoration: none;
+    color: #1e293b;
+    font-size: 13.5px;
+    font-weight: 500;
+    transition: border-color 0.12s, box-shadow 0.12s, color 0.12s;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+.report-card:hover {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 2px rgba(59,130,246,0.15);
+    color: #2563eb;
+}
+.report-card small { display: block; font-size: 11px; color: #94a3b8; font-weight: 400; margin-top: 3px; }
+.index-tip {
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 8px;
+    padding: 12px 16px;
+    font-size: 13px;
+    color: #1e40af;
+    margin-bottom: 16px;
+}
+.index-tip code { background: #dbeafe; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>"""
+
+    js = """<script>
+(function() {
+// Highlight the active nav link based on current path
+var path = window.location.pathname;
+document.querySelectorAll('.nav-link').forEach(function(a) {
+    if (a.getAttribute('data-path') === path) a.classList.add('active');
+});
+
+function parseNumber(s) {
+    const cleaned = s.replace(/[,\s]/g, "");
+    if (!cleaned) return null;
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : null;
+}
+
+function sortTable(table, colIndex, asc) {
+    const tbody = table.tBodies[0];
+    if (!tbody) return;
+    const rows = Array.from(tbody.rows);
+    rows.sort((ra, rb) => {
+        const a = (ra.cells[colIndex]?.innerText ?? "").trim();
+        const b = (rb.cells[colIndex]?.innerText ?? "").trim();
+        const na = parseNumber(a);
+        const nb = parseNumber(b);
+        if (na !== null && nb !== null) return asc ? (na - nb) : (nb - na);
+        return asc ? a.localeCompare(b) : b.localeCompare(a);
+    });
+    for (const r of rows) tbody.appendChild(r);
+}
+
+function attachSortable(table) {
+    const headers = table.tHead ? Array.from(table.tHead.rows[0].cells) : [];
+    headers.forEach((th, idx) => {
+        th.addEventListener("click", () => {
+            const currentlyAsc = th.classList.contains("sorted-asc");
+            const asc = !currentlyAsc;
+            headers.forEach(h => h.classList.remove("sorted-asc", "sorted-desc"));
+            th.classList.add(asc ? "sorted-asc" : "sorted-desc");
+            sortTable(table, idx, asc);
+        });
+    });
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    document.querySelectorAll("table.sortable").forEach(attachSortable);
+});
+})();
+</script>"""
+
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{title} — Log Dashboard</title>
+    {plotly_cdn}
+    {css}
+</head>
+<body>
+    <nav class="sidebar">
+        <div class="sidebar-logo">Log Dashboard<span>nginx analytics</span></div>
+        <div class="sidebar-section">Reports</div>
+        {nav_links}
+    </nav>
+    <div class="main">
+        <div class="topbar"><h1>{title}</h1></div>
+        <div class="content">
+            {body}
+        </div>
+    </div>
+    {js}
+</body>
+</html>"""
+    return HTMLResponse(html)
+
+
+def date_filters_html(date_from, date_to):
+    return f"""
+    <form method="get">
+    <label>From<input type="date" name="from" value="{date_from or ''}"></label>
+    <label>To<input type="date" name="to" value="{date_to or ''}"></label>
+    <button type="submit">Apply dates</button>
+    </form>
     """
-    return page("Local Log Dashboard", links + help_txt)
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    items = [
+        ("Crawl volume", "/reports/crawl-volume", "Daily hit counts — total, bot and human"),
+        ("Status over time", "/reports/status-over-time", "2xx / 3xx / 4xx / 5xx trends by day"),
+        ("Locale breakdown", "/reports/locales", "Hit distribution by locale"),
+        ("URL group breakdown", "/reports/url-groups", "Hits aggregated by URL group"),
+        ("Locale x URL group", "/reports/locale-groups", "Cross-tab of locale and URL group"),
+        ("Top URLs", "/reports/top-urls", "Most-requested paths, filterable by group"),
+        ("Top 404s", "/reports/top-404", "Paths returning 404, with daily trend"),
+        ("Top 5xx errors", "/reports/top-5xx", "Paths returning 5xx, with daily trend"),
+        ("Bots", "/reports/bots", "Bot traffic by family with hit counts"),
+        ("Wasted crawl", "/reports/wasted-crawl", "Bot requests that yielded no value"),
+        ("Top resource waste", "/reports/top-resource-waste", "Paths with highest waste score"),
+        ("Bot URLs", "/reports/bot-urls?bot=Googlebot", "URLs crawled by a specific bot"),
+        ("Human URLs", "/reports/human-urls", "Top paths visited by real users"),
+        ("UTM sources", "/reports/utm", "Traffic from UTM-tagged campaigns"),
+    ]
+    cards = "".join(
+        f"<a href='{url}' class='report-card'>{name}<small>{desc}</small></a>"
+        for name, url, desc in items
+    )
+    tip = (
+        "<div class='index-tip'>"
+        "Tip: use the date picker on any report page to filter by date range. "
+        "Each report also has an <strong>Export CSV</strong> link for raw data downloads."
+        "</div>"
+    )
+    return page("Log Dashboard", tip + "<div class='report-grid'>" + cards + "</div>")
 
 
 # ----------------------------
@@ -516,7 +804,7 @@ def export_link(report: str, date_from: Optional[str], date_to: Optional[str], e
         qs.append(f"to={date_to}")
     if extra:
         qs.append(extra.lstrip("&"))
-    return f"<p><a href='/export?{'&'.join(qs)}'>Export CSV</a></p>"
+    return f"<p><a href='/export?{'&'.join(qs)}'>&#8595; Export CSV</a></p>"
 
 
 @app.get("/reports/top-urls", response_class=HTMLResponse)
