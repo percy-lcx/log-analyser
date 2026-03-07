@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import re
+import subprocess
 import time
 import sys
 import json
@@ -325,7 +326,105 @@ def parse_utm_fields(query_string: Optional[str]) -> Tuple[bool, Optional[str], 
 
     return has_utm, utm_source, utm_source_norm, utm_medium, utm_campaign, utm_term, utm_content
 
+def _find_native_parser() -> Optional[Path]:
+    """Return the path to the pre-built native log-parser binary, or None."""
+    candidate = ROOT / "parser" / "log-parser"
+    if candidate.exists() and os.access(candidate, os.X_OK):
+        return candidate
+    return None
+
+
+def _build_parsed_native(log_date: str, files: List[Path], native_bin: Path) -> int:
+    """Use the Go native parser binary to write the parquet file.
+
+    The binary writes NDJSON; we read it here and convert to parquet so
+    the schema matches what the rest of the pipeline (DuckDB) expects.
+    Returns the number of rows written.
+    """
+    import tempfile
+
+    out_dir = DATA_PARSED / f"date={log_date}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "access.parquet"
+
+    bots_yml = DETECTORS_DIR / "bots.yml"
+    urls_yml = DETECTORS_DIR / "url_groups.yml"
+
+    with tempfile.NamedTemporaryFile(suffix=".ndjson", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        cmd = [
+            str(native_bin),
+            "--date", log_date,
+            "--out", tmp_path,
+            "--bots", str(bots_yml),
+            "--urls", str(urls_yml),
+        ] + [str(f) for f in files]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        # Parser stats go to stderr (shown in rebuild output).
+        if result.stderr:
+            print(result.stderr, end="", flush=True)
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"native parser exited {result.returncode}: {result.stdout.strip()}"
+            )
+
+        # Row count is on stdout.
+        try:
+            n_rows = int(result.stdout.strip())
+        except ValueError:
+            n_rows = 0
+
+        if n_rows == 0:
+            # Write empty parquet with correct schema.
+            df = pd.DataFrame(columns=[
+                "date", "ts_local", "ts_utc", "edge_ip", "method", "path", "http_version",
+                "status", "status_class", "bytes_sent", "referer", "user_agent",
+                "has_query", "is_parameterized", "locale", "section", "url_group", "is_resource",
+                "is_bot", "bot_family", "request_target", "query_string",
+                "is_utm_chatgpt", "has_utm",
+                "utm_source", "utm_source_norm", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+            ])
+            df.to_parquet(out_path, index=False)
+            return 0
+
+        # Read NDJSON and fix timestamp column types before writing parquet.
+        #
+        # ts_local: ISO-8601 string with offset (e.g. "2024-01-01T10:30:00+08:00")
+        #           → timezone-aware TIMESTAMPTZ column (stored as UTC in parquet).
+        # ts_utc:   ISO-8601 string, no offset (e.g. "2024-01-01T02:30:00")
+        #           → timezone-naive TIMESTAMP column, matching the Python behaviour
+        #             of ts_utc.replace(tzinfo=None).
+        df = pd.read_json(tmp_path, lines=True, convert_dates=False)
+        df["ts_local"] = pd.to_datetime(df["ts_local"], utc=True)
+        df["ts_utc"] = pd.to_datetime(df["ts_utc"])  # naive – no tz
+
+        df.to_parquet(out_path, index=False)
+        return len(df)
+
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotRule], url_cfg: UrlGroupingConfig, referer_rules: Optional[List[BotRule]] = None) -> int:
+    # Try the native Go binary first; fall back to the Python implementation.
+    native_bin = _find_native_parser()
+    if native_bin:
+        try:
+            return _build_parsed_native(log_date, files, native_bin)
+        except Exception as e:
+            print(
+                f"[DATE {log_date}] native parser failed ({e}), falling back to Python",
+                flush=True,
+            )
+
     t0 = time.monotonic()
     rows = []
     bad = 0
