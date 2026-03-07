@@ -7,6 +7,7 @@ import sys
 import os
 import importlib.util
 import multiprocessing
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_RAW = ROOT / "data" / "raw"
@@ -94,12 +95,15 @@ def rebuild_date(args_tuple):
         delete_dir_files(agg_dir)
         agg_dir.mkdir(parents=True, exist_ok=True)
 
+    t0 = time.monotonic()
     print(f"\n[DATE {d}] Rebuilding parsed partition from {len(day_files)} file(s)", flush=True)
     n_rows = ingest.build_parsed_for_date(d, day_files, bot_rules, url_cfg, referer_rules)
-    print(f"[DATE {d}] Parsed rows: {n_rows}", flush=True)
+    t_parsed = time.monotonic()
+    print(f"[DATE {d}] Parsed rows: {n_rows} ({t_parsed - t0:.1f}s)", flush=True)
 
     ingest.build_aggregates_for_date(d)
-    print(f"[DATE {d}] Aggregates done", flush=True)
+    t_agg = time.monotonic()
+    print(f"[DATE {d}] Aggregates done ({t_agg - t_parsed:.1f}s, total {t_agg - t0:.1f}s)", flush=True)
 
     return d, n_rows
 
@@ -168,6 +172,8 @@ def main():
         print("No work to do.")
         return
 
+    t_start = time.monotonic()
+
     if workers == 1 or len(work_items) == 1:
         for item in work_items:
             rebuild_date(item)
@@ -175,7 +181,8 @@ def main():
         with multiprocessing.Pool(processes=workers) as pool:
             pool.map(rebuild_date, work_items)
 
-    print("\nRebuild complete.")
+    elapsed = time.monotonic() - t_start
+    print(f"\nRebuild complete. {len(work_items)} date(s) in {elapsed:.1f}s.")
 
 
 if __name__ == "__main__":

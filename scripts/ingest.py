@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import re
+import time
 import sys
 import json
 import yaml
@@ -325,6 +326,7 @@ def parse_utm_fields(query_string: Optional[str]) -> Tuple[bool, Optional[str], 
     return has_utm, utm_source, utm_source_norm, utm_medium, utm_campaign, utm_term, utm_content
 
 def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotRule], url_cfg: UrlGroupingConfig, referer_rules: Optional[List[BotRule]] = None) -> int:
+    t0 = time.monotonic()
     rows = []
     bad = 0
 
@@ -435,10 +437,12 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
     out_path = out_dir / "access.parquet"
     df.to_parquet(out_path, index=False)
 
-    if bad > 0:
-        print(f"[WARN] {log_date}: {bad} lines failed to parse", file=sys.stderr)
+    elapsed = time.monotonic() - t0
+    n = len(df)
+    rate = int(n / elapsed) if elapsed > 0 else 0
+    print(f"[DATE {log_date}] parse complete: {n} rows, {bad} bad lines, {elapsed:.1f}s ({rate:,} rows/s)")
 
-    return len(df)
+    return n
 
 
 def agg_write_one(conn: duckdb.DuckDBPyConnection, sql: str, out_path: Path) -> None:
@@ -826,6 +830,8 @@ def ingest(dry_run: bool = False) -> None:
 
     print(f"Affected dates: {', '.join(sorted(affected_dates))}")
 
+    t_ingest_start = time.monotonic()
+
     for d in sorted(affected_dates):
         day_files = gather_files_for_date(files, d)
         if not day_files:
@@ -835,18 +841,20 @@ def ingest(dry_run: bool = False) -> None:
         if dry_run:
             continue
 
+        t0 = time.monotonic()
         n_rows = build_parsed_for_date(d, day_files, bot_rules, url_cfg, referer_rules)
-        print(f"[DATE {d}] Parsed rows: {n_rows}")
+        t_agg = time.monotonic()
 
-        print(f"[DATE {d}] Building aggregates")
         build_aggregates_for_date(d)
-        print(f"[DATE {d}] Aggregates done")
+        t_done = time.monotonic()
+        print(f"[DATE {d}] Aggregates done ({t_done - t_agg:.1f}s, total {t_done - t0:.1f}s)")
 
         for fp in day_files:
             size_b, mtime = file_meta(fp)
             manifest_upsert(fp, size_b, mtime, d)
 
-    print("\nIngest complete.")
+    elapsed = time.monotonic() - t_ingest_start
+    print(f"\nIngest complete. {len(affected_dates)} date(s) in {elapsed:.1f}s.")
 
 def _safe_unquote_plus(s: str, passes: int = 2) -> str:
     """
