@@ -193,6 +193,34 @@ def no_data_notice() -> str:
     return "<p class='no-data'>No data found for the selected date range.</p>"
 
 
+def list_tables() -> List[str]:
+    """Return aggregate table names that have at least one parquet partition."""
+    if not AGG.exists():
+        return []
+    return sorted(
+        p.name for p in AGG.iterdir()
+        if p.is_dir() and any(p.glob("date=*/part.parquet"))
+    )
+
+
+TABLE_DESCRIPTIONS = {
+    "daily": "Daily totals — hits, status codes, bytes sent",
+    "locale_daily": "Daily hits broken down by locale",
+    "group_daily": "Daily hits broken down by URL group",
+    "locale_group_daily": "Daily hits by locale × URL group",
+    "bot_daily": "Daily hits by bot family",
+    "top_urls_daily": "Top requested paths per day",
+    "top_404_daily": "Top 404 paths per day",
+    "top_5xx_daily": "Top 5xx paths per day",
+    "wasted_crawl_daily": "Wasted bot crawl by bot and path",
+    "top_resource_waste_daily": "Resource waste score by path",
+    "bot_urls_daily": "URLs crawled by specific bots",
+    "human_urls_daily": "URLs visited by human traffic",
+    "utm_sources_daily": "UTM source hit counts by day",
+    "utm_source_urls_daily": "UTM source URL distribution",
+}
+
+
 def select_html(name: str, options: List[str], current: Optional[str], label: str) -> str:
     opts = ["<option value=''>All</option>"]
     for opt in options:
@@ -221,6 +249,7 @@ def page(title: str, body: str) -> HTMLResponse:
         ("Bot URLs", "/reports/bot-urls"),
         ("Human URLs", "/reports/human-urls"),
         ("UTM sources", "/reports/utm"),
+        ("SQL Query", "/query"),
     ]
     nav_links = "\n".join(
         f"<a href='{url}' class='nav-link' data-path='{url}'>{name}</a>"
@@ -490,6 +519,70 @@ table.sortable tbody tr:last-child td { border-bottom: none; }
     margin-bottom: 16px;
 }
 .index-tip code { background: #dbeafe; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+/* ── SQL Query page ── */
+.content form textarea {
+    width: 100%;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 10px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    resize: vertical;
+    color: #1e293b;
+    background: #f8fafc;
+    outline: none;
+    transition: border-color 0.12s, box-shadow 0.12s;
+    min-height: 130px;
+}
+.content form textarea:focus {
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
+    background: #fff;
+}
+/* Make the textarea label span full width inside the flex form */
+label.sql-label { width: 100%; flex: 0 0 100%; }
+
+.schema-pills { display: flex; flex-wrap: wrap; gap: 5px; margin: 12px 0 4px; }
+.schema-pill {
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    color: #1d4ed8;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.1s;
+}
+.schema-pill:hover { background: #dbeafe; }
+.schema-pill small { color: #60a5fa; margin-left: 3px; }
+
+.query-meta { font-size: 12px; color: #64748b; margin-bottom: 10px; }
+.query-error {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 8px;
+    padding: 12px 16px;
+    color: #991b1b;
+    font-size: 13px;
+    margin-bottom: 16px;
+    white-space: pre-wrap;
+    font-family: 'SFMono-Regular', Consolas, monospace;
+}
+.table-hint {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 16px;
+}
+.table-hint table { font-size: 12px; border-collapse: collapse; width: 100%; }
+.table-hint td { padding: 5px 12px 5px 0; color: #374151; vertical-align: top; }
+.table-hint td:first-child { font-family: monospace; color: #2563eb; font-weight: 600; white-space: nowrap; }
+.table-hint td:last-child { color: #64748b; }
 </style>"""
 
     js = """<script>
@@ -537,6 +630,19 @@ function attachSortable(table) {
 
 document.addEventListener("DOMContentLoaded", () => {
     document.querySelectorAll("table.sortable").forEach(attachSortable);
+
+    // Click a schema pill to insert the column name at the textarea cursor
+    document.querySelectorAll(".schema-pill").forEach(function(pill) {
+        pill.addEventListener("click", function() {
+            var ta = document.querySelector("textarea[name='sql']");
+            if (!ta) return;
+            var col = this.dataset.col;
+            var start = ta.selectionStart, end = ta.selectionEnd;
+            ta.value = ta.value.slice(0, start) + col + ta.value.slice(end);
+            ta.selectionStart = ta.selectionEnd = start + col.length;
+            ta.focus();
+        });
+    });
 });
 })();
 </script>"""
@@ -595,6 +701,7 @@ def index():
         ("Bot URLs", "/reports/bot-urls?bot=Googlebot", "URLs crawled by a specific bot"),
         ("Human URLs", "/reports/human-urls", "Top paths visited by real users"),
         ("UTM sources", "/reports/utm", "Traffic from UTM-tagged campaigns"),
+        ("SQL Query", "/query", "Ad-hoc SQL against any aggregate table"),
     ]
     cards = "".join(
         f"<a href='{url}' class='report-card'>{name}<small>{desc}</small></a>"
@@ -1451,6 +1558,175 @@ def utm_chatgpt(
     # Keep legacy URL but send to the generic UTM report
     target = f"/reports/utm?from={date_from or ''}&to={date_to or ''}&utm_source=chatgpt.com"
     return RedirectResponse(url=target, status_code=302)
+
+
+# ----------------------------
+# SQL Query page
+# ----------------------------
+
+@app.get("/query", response_class=HTMLResponse)
+def query_page(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    table: Optional[str] = None,
+    sql: Optional[str] = None,
+    limit: int = Query(500, ge=1, le=5000),
+):
+    import time as _time
+
+    tables = list_tables()
+
+    # ── Table selector ──────────────────────────────────────────────
+    table_options = "<option value=''>— select a table —</option>"
+    for t in tables:
+        sel = "selected" if t == table else ""
+        desc = TABLE_DESCRIPTIONS.get(t, "")
+        table_options += f"<option value='{t}' {sel}>{t}</option>"
+
+    # ── Schema pills (if a valid table + date range selected) ───────
+    schema_html = ""
+    safe_table = table if table in tables else None
+    if safe_table:
+        schema_paths = list_partitions(safe_table, date_from, date_to)
+        if schema_paths:
+            try:
+                col_info, _ = run_query(schema_paths, "DESCRIBE t")
+                # col_info columns: column_name, column_type, null, key, default, extra
+                pills = "".join(
+                    f"<span class='schema-pill' data-col='{r[0]}' title='{r[1]}'>"
+                    f"{r[0]}<small>{r[1]}</small></span>"
+                    for r in col_info
+                )
+                schema_html = (
+                    f"<div style='margin-bottom:4px;font-size:11px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.4px'>"
+                    f"Columns — click to insert</div>"
+                    f"<div class='schema-pills'>{pills}</div>"
+                )
+            except Exception:
+                pass
+
+    # ── Table hint on landing (no table selected) ───────────────────
+    hint_html = ""
+    if not safe_table and tables:
+        rows_hint = "".join(
+            f"<tr><td>{t}</td><td>{TABLE_DESCRIPTIONS.get(t, '')}</td></tr>"
+            for t in tables
+        )
+        hint_html = (
+            "<div class='table-hint'>"
+            "<div style='font-size:12px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.4px;margin-bottom:10px'>Available tables</div>"
+            f"<table><tbody>{rows_hint}</tbody></table>"
+            "</div>"
+        )
+
+    # ── Default SQL ──────────────────────────────────────────────────
+    default_sql = sql or (f"SELECT *\nFROM t\nLIMIT {limit}" if safe_table else "-- Select a table above, then write your SQL here.\n-- The table data is exposed as view \"t\".\n\nSELECT *\nFROM t\nLIMIT 100")
+
+    # ── Export URL (shown only when there are results to export) ─────
+    import urllib.parse as _urlparse
+    export_qs = _urlparse.urlencode({
+        "table": table or "",
+        "from": date_from or "",
+        "to": date_to or "",
+        "sql": sql or "",
+        "limit": limit,
+    })
+    export_link_html = (
+        f"<a href='/query/export?{export_qs}'>&#8595; Export CSV</a>"
+        if safe_table and sql else ""
+    )
+
+    form_html = f"""
+    <form method="get">
+        <label>Table
+            <select name="table" onchange="this.form.submit()">
+                {table_options}
+            </select>
+        </label>
+        <label>From<input type="date" name="from" value="{date_from or ''}"></label>
+        <label>To<input type="date" name="to" value="{date_to or ''}"></label>
+        <label>Limit<input type="number" name="limit" value="{limit}" min="1" max="5000" style="width:80px"></label>
+        {schema_html}
+        <label class="sql-label">SQL
+            <textarea name="sql" spellcheck="false">{default_sql}</textarea>
+        </label>
+        <button type="submit">&#9654; Run query</button>
+        {export_link_html}
+    </form>
+    """
+
+    # ── Execute ──────────────────────────────────────────────────────
+    result_html = ""
+    if safe_table and sql and sql.strip():
+        paths = list_partitions(safe_table, date_from, date_to)
+        if not paths:
+            result_html = no_data_notice()
+        else:
+            try:
+                t0 = _time.monotonic()
+                cols, rows = run_query(paths, sql)
+                elapsed = _time.monotonic() - t0
+                n = len(rows)
+                result_html = (
+                    f"<p class='query-meta'>{n:,} row{'s' if n != 1 else ''} &middot; {elapsed:.2f}s</p>"
+                    + html_table(rows, cols, max_rows=limit)
+                )
+            except Exception as exc:
+                result_html = f"<div class='query-error'>{exc}</div>"
+
+    body = hint_html + form_html + result_html
+    return page("SQL Query", body)
+
+
+@app.get("/query/export")
+def query_export(
+    table: Optional[str] = None,
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    sql: Optional[str] = None,
+    limit: int = Query(100_000, ge=1, le=500_000),
+):
+    tables = list_tables()
+    safe_table = table if table in tables else None
+    if not safe_table or not sql or not sql.strip():
+        return PlainTextResponse("Missing table or sql parameter.", status_code=400)
+
+    paths = list_partitions(safe_table, date_from, date_to)
+    if not paths:
+        return PlainTextResponse("No data found for the selected date range.", status_code=404)
+
+    sql_clean = sql.strip().rstrip(";")
+    conn = duckdb.connect(database=":memory:")
+    conn.execute("PRAGMA threads=4;")
+    files_sql = "[" + ",".join("'" + p.replace("'", "''") + "'" for p in paths) + "]"
+    conn.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet({files_sql});")
+
+    def gen():
+        try:
+            cur = conn.execute(sql_clean)
+            cols = [d[0] for d in cur.description]
+            buf = io.StringIO()
+            w = csv.writer(buf)
+            w.writerow(cols)
+            yield buf.getvalue().encode("utf-8-sig")
+            buf.seek(0); buf.truncate(0)
+            while True:
+                batch = cur.fetchmany(1000)
+                if not batch:
+                    break
+                for row in batch:
+                    w.writerow(row)
+                yield buf.getvalue().encode("utf-8")
+                buf.seek(0); buf.truncate(0)
+        finally:
+            conn.close()
+
+    filename = f"query_{safe_table}.csv"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store",
+    }
+    return StreamingResponse(gen(), media_type="text/csv; charset=utf-8", headers=headers)
 
 
 @app.get("/export")
