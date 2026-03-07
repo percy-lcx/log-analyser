@@ -140,8 +140,19 @@ rules:
     match: "regex"
     pattern: "cloudflare"
 
+  # Fake browser UAs — truncated version numbers (e.g. Chrome/124.0.0 without patch)
+  - family: "Fake Browser UA"
+    match: "regex"
+    pattern: "chrome/\d+\.0\.0[\s/]|firefox/\d+\.0[\s/]"
+
   # Generic bot bucket (keep last)
   - family: "Other bot"
     match: "regex"
     pattern: "bot|crawler|spider"
 
+# Referer-based bot detection.
+# Applied only when UA classification returns human.
+# Matches against the lowercased referer string. First match wins.
+referer_rules:
+  - family: "Hotlink Bot"
+    pattern: "ventrofx\\.com"
