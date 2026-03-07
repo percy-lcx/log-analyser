@@ -81,8 +81,14 @@ AGG_TABLES = [
 
 def rebuild_date(args_tuple):
     """Worker function for parallel date rebuild. Runs in a child process."""
-    d, day_file_strs, bot_rules, referer_rules, url_cfg = args_tuple
+    d, day_file_strs = args_tuple
     ingest = load_ingest_module()
+
+    # Load rules inside the worker — BotRule/UrlGroupingConfig are defined in a
+    # dynamically-loaded module and can't be pickled across process boundaries.
+    bot_rules = ingest.load_bot_rules()
+    referer_rules = ingest.load_referer_rules()
+    url_cfg = ingest.load_url_grouping()
 
     day_files = [Path(f) for f in day_file_strs]
 
@@ -123,9 +129,6 @@ def main():
     ingest.ensure_dirs()
     ingest.init_manifest()
 
-    bot_rules = ingest.load_bot_rules()
-    referer_rules = ingest.load_referer_rules()
-    url_cfg = ingest.load_url_grouping()
     files = ingest.list_raw_files()
 
     if not files:
@@ -165,8 +168,10 @@ def main():
         day_files = ingest.gather_files_for_date(files, d)
         if not day_files:
             continue
-        # Pass file paths as strings — Path objects don't pickle on all platforms
-        work_items.append((d, [f.as_posix() for f in day_files], bot_rules, referer_rules, url_cfg))
+        # Pass file paths as strings — Path objects don't pickle on all platforms.
+        # Rules are NOT passed here; each worker loads them itself to avoid
+        # pickling BotRule/UrlGroupingConfig from a dynamically-loaded module.
+        work_items.append((d, [f.as_posix() for f in day_files]))
 
     if not work_items:
         print("No work to do.")
