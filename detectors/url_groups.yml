@@ -36,10 +36,6 @@ rules:
     match: "exact"
     value: "/"
 
-  - group: "Home"
-    match: "regex"
-    value: "^/(en|zh-hans|en-in|zh-hant|pt|it|th|vi|tl|fr|id|ms|ko|de|ar|zh-hant-tw|en-eu|en-tw|cht|eng|zh-hant-mo|en-mo|es|en-au|zh-hans-cn|zh-hans-au|zh-hant-au)/?$"
-
   - group: "Robots"
     match: "exact"
     value: "/robots.txt"

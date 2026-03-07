@@ -356,6 +356,9 @@ func applyURLGrouping(path string, cfg *urlConfig) (group, locale string, sectio
 
 	if _, ok := cfg.locales[first]; ok {
 		detectedLocale = first
+		if len(segs) == 1 {
+			return "Home", detectedLocale, nil
+		}
 		sectionIdx = 1
 	} else {
 		detectedLocale = noLocaleLabel
