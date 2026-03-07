@@ -226,6 +226,8 @@ def apply_url_grouping(path: str, cfg: UrlGroupingConfig) -> Tuple[str, Optional
 
     if first in cfg.locales:
         locale = first
+        if len(segs) == 1:
+            return "Home", locale, None
         section_index = 1
         section = segs[section_index] if len(segs) > section_index else None
     else:

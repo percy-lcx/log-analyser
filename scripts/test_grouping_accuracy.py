@@ -15,7 +15,6 @@ Run:
 """
 
 import json
-import re
 import subprocess
 import sys
 import tempfile
@@ -105,36 +104,42 @@ class TestHighPriorityRules:
         assert locale == NO_LOCALE_LABEL
 
 
-class TestLocaleHomepageRegex:
-    """
-    IMPORTANT: Locale homepages like /en/ match the high-priority Home regex
-    rule *before* locale detection runs, so they get locale=no-locale.
+class TestLocaleHomepages:
+    """Bare locale homepages like /en/ and /en should be group=Home with the real locale."""
 
-    This is the biggest structural contributor to alarming no-locale counts
-    because every bot/crawler that hits /<locale>/ lands here.
-    """
-
-    @pytest.mark.parametrize("path", [
-        "/en", "/en/",
-        "/fr", "/fr/",
-        "/zh-hans", "/zh-hans/",
-        "/zh-hant", "/zh-hant/",
-        "/pt", "/pt/",
-        "/ko", "/ko/",
-        "/ar", "/ar/",
-        "/de", "/de/",
-        "/es", "/es/",
-        "/en-au", "/en-au/",
-        "/zh-hans-cn", "/zh-hans-cn/",
-        "/zh-hans-au", "/zh-hans-au/",
-        "/zh-hant-au", "/zh-hant-au/",
+    @pytest.mark.parametrize("path,expected_locale", [
+        ("/en",         "en"),
+        ("/en/",        "en"),
+        ("/fr",         "fr"),
+        ("/fr/",        "fr"),
+        ("/zh-hans",    "zh-hans"),
+        ("/zh-hans/",   "zh-hans"),
+        ("/zh-hant",    "zh-hant"),
+        ("/zh-hant/",   "zh-hant"),
+        ("/pt",         "pt"),
+        ("/pt/",        "pt"),
+        ("/ko",         "ko"),
+        ("/ko/",        "ko"),
+        ("/ar",         "ar"),
+        ("/ar/",        "ar"),
+        ("/de",         "de"),
+        ("/de/",        "de"),
+        ("/es",         "es"),
+        ("/es/",        "es"),
+        ("/en-au",      "en-au"),
+        ("/en-au/",     "en-au"),
+        ("/zh-hans-cn", "zh-hans-cn"),
+        ("/zh-hans-cn/","zh-hans-cn"),
+        ("/zh-hans-au", "zh-hans-au"),
+        ("/zh-hans-au/","zh-hans-au"),
+        ("/zh-hant-au", "zh-hant-au"),
+        ("/zh-hant-au/","zh-hant-au"),
     ])
-    def test_locale_home_classified(self, cfg, path):
+    def test_locale_home_classified(self, cfg, path, expected_locale):
         group, locale, section = apply_url_grouping(path, cfg)
         assert group == "Home", f"{path!r}: expected group='Home', got {group!r}"
-        assert locale == NO_LOCALE_LABEL, (
-            f"Locale homepage {path!r} gets locale=no-locale because the "
-            "high-priority Home regex fires before locale detection."
+        assert locale == expected_locale, (
+            f"{path!r}: expected locale={expected_locale!r}, got {locale!r}"
         )
 
 
@@ -256,7 +261,7 @@ def print_no_locale_breakdown(cfg: UrlGroupingConfig) -> None:
     cases = [
         # (description, sample_paths)
         ("Root /",               ["/"]),
-        ("Locale homepages (Home regex fires before locale detection)",
+        ("Locale homepages (detected via locale whitelist → real locale)",
          ["/en/", "/fr/", "/zh-hans/", "/zh-hant/", "/ko/", "/ar/"]),
         ("_nuxt/ assets",        ["/_nuxt/app.js"]),
         ("API endpoints",        ["/api/v1/foo"]),
@@ -273,20 +278,6 @@ def print_no_locale_breakdown(cfg: UrlGroupingConfig) -> None:
             print(f"  {path:<40} group={g!r:<20} {tag}")
     print()
 
-    # Locale codes not covered by the Home regex – these DO get locale detection.
-    home_rule_locales = set(re.findall(
-        r'\(([^)]+)\)',
-        "^/(en|zh-hans|en-in|zh-hant|pt|it|th|vi|tl|fr|id|ms|ko|de|ar|zh-hant-tw|en-eu|en-tw|cht|eng|zh-hant-mo|en-mo|es|en-au|zh-hans-cn|zh-hans-au|zh-hant-au)/?$"
-    )[0].split("|")
-    )
-    in_whitelist_not_in_regex = cfg.locales - home_rule_locales
-    if in_whitelist_not_in_regex:
-        print(
-            "⚠  Locale codes in whitelist but NOT covered by the Home regex\n"
-            "   (their /‹locale›/ homepage falls through to locale detection → correct locale,\n"
-            "    but may show as 'Other Content' instead of 'Home'):\n"
-            "   " + ", ".join(sorted(in_whitelist_not_in_regex))
-        )
     print()
 
 
