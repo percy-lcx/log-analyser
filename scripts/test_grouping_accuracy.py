@@ -123,23 +123,19 @@ class TestLocaleHomepageRegex:
         "/ko", "/ko/",
         "/ar", "/ar/",
         "/de", "/de/",
-        "/es",          # NOT in Home regex → locale detection fires instead
+        "/es", "/es/",
+        "/en-au", "/en-au/",
+        "/zh-hans-cn", "/zh-hans-cn/",
+        "/zh-hans-au", "/zh-hans-au/",
+        "/zh-hant-au", "/zh-hant-au/",
     ])
     def test_locale_home_classified(self, cfg, path):
         group, locale, section = apply_url_grouping(path, cfg)
-        # Locale homepages that ARE in the Home regex → no-locale.
-        # /es/ is NOT in the Home regex so it falls through to locale detection.
-        if path.rstrip("/") in ("/es",):
-            assert locale == "es", (
-                f"{path} should detect locale 'es' (not in Home regex).\n"
-                "If this fails the Home regex and locale whitelist are out of sync."
-            )
-        else:
-            assert group == "Home"
-            assert locale == NO_LOCALE_LABEL, (
-                f"Locale homepage {path!r} gets locale=no-locale because the "
-                "high-priority Home regex fires before locale detection."
-            )
+        assert group == "Home", f"{path!r}: expected group='Home', got {group!r}"
+        assert locale == NO_LOCALE_LABEL, (
+            f"Locale homepage {path!r} gets locale=no-locale because the "
+            "high-priority Home regex fires before locale detection."
+        )
 
 
 class TestLocaleContentPages:
@@ -280,7 +276,7 @@ def print_no_locale_breakdown(cfg: UrlGroupingConfig) -> None:
     # Locale codes not covered by the Home regex – these DO get locale detection.
     home_rule_locales = set(re.findall(
         r'\(([^)]+)\)',
-        "^/(en|zh-hans|en-in|zh-hant|pt|it|th|vi|tl|fr|id|ms|ko|de|ar|zh-hant-tw|en-eu|en-tw|cht|eng|zh-hant-mo|en-mo)/?$"
+        "^/(en|zh-hans|en-in|zh-hant|pt|it|th|vi|tl|fr|id|ms|ko|de|ar|zh-hant-tw|en-eu|en-tw|cht|eng|zh-hant-mo|en-mo|es|en-au|zh-hans-cn|zh-hans-au|zh-hant-au)/?$"
     )[0].split("|")
     )
     in_whitelist_not_in_regex = cfg.locales - home_rule_locales
@@ -342,22 +338,43 @@ def _python_results(cfg: UrlGroupingConfig):
 def _go_results() -> Optional[dict]:
     """Run the Go binary on synthetic log lines and return {path: (group, locale, section)}.
 
-    Returns None if the binary is not built.
+    Returns None if the binary is not built or config files are missing.
+
+    The Go binary interface:
+        log-parser --date DATE --out OUT --bots bots.yml --urls url_groups.yml FILE...
+    NDJSON is written to --out; stdout only contains the row count.
     """
     if not GO_BINARY.exists():
+        return None
+
+    bots_yml = ROOT / "detectors" / "bots.yml"
+    urls_yml = ROOT / "detectors" / "url_groups.yml"
+    if not bots_yml.exists() or not urls_yml.exists():
+        print("Go parity: detectors config files missing")
         return None
 
     lines = []
     for path in PARITY_PATHS:
         lines.append(_LOG_TEMPLATE.format(method="GET", path=path))
 
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
-        f.write("\n".join(lines) + "\n")
-        log_file = f.name
-
+    log_tmp = ndjson_tmp = None
     try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".log", delete=False) as f:
+            f.write("\n".join(lines) + "\n")
+            log_tmp = f.name
+
+        with tempfile.NamedTemporaryFile(suffix=".ndjson", delete=False) as f:
+            ndjson_tmp = f.name
+
         result = subprocess.run(
-            [str(GO_BINARY), "--input", log_file, "--output", "-", "--format", "ndjson"],
+            [
+                str(GO_BINARY),
+                "--date", "2026-03-07",
+                "--out", ndjson_tmp,
+                "--bots", str(bots_yml),
+                "--urls", str(urls_yml),
+                log_tmp,
+            ],
             capture_output=True, text=True, timeout=30,
         )
         if result.returncode != 0:
@@ -365,22 +382,25 @@ def _go_results() -> Optional[dict]:
             return None
 
         go_map = {}
-        for line in result.stdout.splitlines():
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            path = row.get("path") or row.get("request_path", "")
-            go_map[path] = (
-                row.get("url_group"),
-                row.get("locale"),
-                row.get("section"),
-            )
+        with open(ndjson_tmp) as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                path = row.get("path", "")
+                go_map[path] = (
+                    row.get("url_group"),
+                    row.get("locale"),
+                    row.get("section"),
+                )
         return go_map
     except Exception as e:
         print(f"Could not run Go binary: {e}")
         return None
     finally:
-        Path(log_file).unlink(missing_ok=True)
+        for tmp in (log_tmp, ndjson_tmp):
+            if tmp:
+                Path(tmp).unlink(missing_ok=True)
 
 
 @pytest.mark.skipif(not GO_BINARY.exists(), reason="Go binary not built")
