@@ -166,6 +166,10 @@ class TestLocaleHomepages:
         ("/en-nz/",     "en-nz"),
         ("/en-sg",      "en-sg"),
         ("/en-sg/",     "en-sg"),
+        ("/tw",         "tw"),
+        ("/tw/",        "tw"),
+        ("/au",         "au"),
+        ("/au/",        "au"),
         ("/zh-hant-au", "zh-hant-au"),
         ("/zh-hant-au/","zh-hant-au"),
     ])

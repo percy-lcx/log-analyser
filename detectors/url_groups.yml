@@ -32,6 +32,8 @@ locales:
   - zh-hans-nz
   - en-nz
   - en-sg
+  - tw
+  - au
 
 # First match wins. These are high-priority buckets.
 rules:
