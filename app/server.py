@@ -145,7 +145,8 @@ def line_chart(rows, columns, x_col, y_cols, title):
     return f"<div class='card'>{chart_html}</div>"
 
 
-def bar_chart(rows, columns, x_col, y_col, title):
+def bar_chart(rows, columns, x_col, y_col, title, y_cols=None, barmode="group"):
+    """Bar chart. Pass y_cols (list) for grouped/stacked multi-series; y_col for single series."""
     if not rows:
         return "<p>No data.</p>"
 
@@ -154,19 +155,63 @@ def bar_chart(rows, columns, x_col, y_col, title):
     x_series = df[x_col] if x_col in df.columns else pd.Series([])
     x = ["" if v is None or pd.isna(v) else str(v) for v in x_series.tolist()]
 
-    y_raw = df[y_col].tolist() if y_col in df.columns else []
-    y = []
-    for v in y_raw:
-        if v is None or (isinstance(v, float) and pd.isna(v)) or pd.isna(v):
-            y.append(None)
-        else:
-            try:
-                y.append(float(v))
-            except Exception:
-                y.append(None)
+    series_cols = y_cols if y_cols else [y_col]
 
-    fig = go.Figure(data=[go.Bar(x=x, y=y)])
-    fig.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20), title=title)
+    fig = go.Figure()
+    for yc in series_cols:
+        if yc not in df.columns:
+            continue
+        y_raw = df[yc].tolist()
+        y = []
+        for v in y_raw:
+            if v is None or (isinstance(v, float) and pd.isna(v)) or pd.isna(v):
+                y.append(None)
+            else:
+                try:
+                    y.append(float(v))
+                except Exception:
+                    y.append(None)
+        fig.add_trace(go.Bar(name=yc, x=x, y=y))
+
+    fig.update_layout(
+        height=400,
+        margin=dict(l=20, r=20, t=40, b=20),
+        title=title,
+        barmode=barmode,
+    )
+    chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
+    return f"<div class='card'>{chart_html}</div>"
+
+
+def heatmap_chart(rows, columns, x_col, y_col, z_col, title):
+    """Heatmap where x_col=columns, y_col=rows, z_col=values (e.g. locale × url_group)."""
+    if not rows:
+        return "<p>No data.</p>"
+
+    df = pd.DataFrame(rows, columns=columns)
+
+    def _safe_float(v):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return 0.0
+        try:
+            return float(v)
+        except Exception:
+            return 0.0
+
+    pivot = df.pivot_table(index=y_col, columns=x_col, values=z_col, aggfunc="sum", fill_value=0)
+    z = [[_safe_float(v) for v in row] for row in pivot.values]
+    x_labels = [str(c) for c in pivot.columns]
+    y_labels = [str(r) for r in pivot.index]
+
+    fig = go.Figure(data=go.Heatmap(
+        z=z, x=x_labels, y=y_labels,
+        colorscale="Blues", hoverongaps=False,
+    ))
+    fig.update_layout(
+        height=max(300, 30 * len(y_labels) + 80),
+        margin=dict(l=20, r=20, t=40, b=60),
+        title=title,
+    )
     chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
     return f"<div class='card'>{chart_html}</div>"
 
@@ -764,10 +809,27 @@ def locales(date_from: Optional[str] = Query(None, alias="from"), date_to: Optio
     body = date_filters_html(date_from, date_to)
     body += f"<p><a href='/export?report=locales&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
 
+    chart_limit = 20
     body += "<h2>All hits (includes Nuxt/static resources)</h2>"
+    body += bar_chart(
+        rows1[:chart_limit], cols1,
+        x_col="locale", y_col="hits_human",
+        y_cols=["hits_human", "hits_bot"],
+        title=f"Top {chart_limit} locales — human vs bot",
+        barmode="stack",
+    )
+    body += "<br>"
     body += html_table(rows1, cols1)
 
     body += "<h2>Non-resource hits (excludes Nuxt/static resources)</h2>"
+    body += bar_chart(
+        rows2[:chart_limit], cols2,
+        x_col="locale", y_col="hits_human_non_resource",
+        y_cols=["hits_human_non_resource", "hits_bot_non_resource"],
+        title=f"Top {chart_limit} locales (non-resource) — human vs bot",
+        barmode="stack",
+    )
+    body += "<br>"
     body += html_table(rows2, cols2)
 
     return page("Locale breakdown", body)
@@ -795,6 +857,14 @@ def url_groups(date_from: Optional[str] = Query(None, alias="from"), date_to: Op
     cols, rows = run_query(paths, sql)
     body = date_filters_html(date_from, date_to)
     body += f"<p><a href='/export?report=url-groups&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
+    body += bar_chart(
+        rows, cols,
+        x_col="url_group", y_col="hits_human",
+        y_cols=["hits_human", "hits_bot"],
+        title="URL groups — human vs bot",
+        barmode="stack",
+    )
+    body += "<br>"
     body += html_table(rows, cols)
     return page("URL group breakdown", body)
 
@@ -847,6 +917,10 @@ def locale_groups(
     </form>
     """
     body += f"<p><a href='/export?report=locale-groups&from={date_from or ''}&to={date_to or ''}&locale={locale or ''}&url_group={url_group or ''}&limit={limit}'>Export CSV</a></p>"
+    # Only show heatmap when not filtered to a single locale or url_group (would be a 1-row/col matrix)
+    if not locale and not url_group:
+        body += heatmap_chart(rows, cols, x_col="url_group", y_col="locale", z_col="hits", title="Hits heatmap — locale × URL group")
+        body += "<br>"
     body += html_table(rows, cols, max_rows=min(int(limit), 500))
     return page("Locale x URL group", body)
 
@@ -867,9 +941,12 @@ def crawl_volume(date_from: Optional[str] = Query(None, alias="from"), date_to: 
         y_cols=["hits", "hits_bot", "hits_human"],
         title="Daily Crawl Volume"
     )
+    bytes_chart = line_chart(rows, cols, x_col="date", y_cols=["bytes_sent"], title="Daily bytes sent")
     body = date_filters_html(date_from, date_to)
     body += f"<p><a href='/export?report=daily&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
     body += chart_html
+    body += "<br>"
+    body += bytes_chart
     body += "<br>"
     body += html_table(rows, cols)
     return page("Crawl volume (daily)", body)
@@ -967,6 +1044,16 @@ def top_urls(
               + (f"&url_group={url_group}" if url_group else "")
               + f"&limit={int(limit)}"
     )
+    chart_limit = min(int(limit), 30)
+    if rows:
+        body += bar_chart(
+            rows[:chart_limit], cols,
+            x_col="path", y_col="hits_total",
+            y_cols=["hits_total", "hits_bot"],
+            title=f"Top {chart_limit} URLs — total vs bot",
+            barmode="group",
+        )
+        body += "<br>"
     body += html_table(rows, cols)
     return page("Top URLs", body)
 
@@ -1158,16 +1245,33 @@ def bots(date_from: Optional[str] = Query(None, alias="from"),
     """
     cols, rows = run_query(paths, sql)
 
-    chart_html = bar_chart(
-        rows,
-        cols,
-        x_col="bot_family",
-        y_col="hits",
-        title="Bot hits by family"
-    )
+    # Trend: top-10 bots over time (one line per family)
+    top_families = [r[0] for r in rows[:10]]
+    families_in = ", ".join(f"'{sql_escape_string(f)}'" for f in top_families)
+    trend_sql = f"""
+    SELECT date, bot_family, SUM(hits) AS hits
+    FROM t
+    WHERE bot_family IN ({families_in})
+    GROUP BY date, bot_family
+    ORDER BY date, bot_family;
+    """
+    cols_t, rows_t = run_query(paths, trend_sql)
+    trend_html = ""
+    if rows_t:
+        import pandas as _pd
+        df_t = _pd.DataFrame(rows_t, columns=cols_t)
+        df_pivot = df_t.pivot_table(index="date", columns="bot_family", values="hits", fill_value=0).reset_index()
+        pivot_cols = list(df_pivot.columns)
+        pivot_rows = [tuple(r) for r in df_pivot.itertuples(index=False, name=None)]
+        y_families = [c for c in pivot_cols if c != "date"]
+        trend_html = line_chart(pivot_rows, pivot_cols, x_col="date", y_cols=y_families, title="Bot hits over time (top 10 families)")
 
     body += f"<p><a href='/export?report=bots&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
-    body += chart_html
+    body += "<h2>Bot activity over time</h2>"
+    body += trend_html
+    body += "<br>"
+    body += "<h2>Total hits by bot family</h2>"
+    body += bar_chart(rows, cols, x_col="bot_family", y_col="hits", title="Bot hits by family")
     body += "<br>"
     body += html_table(rows, cols)
     return page("Bots", body)
@@ -1234,6 +1338,17 @@ def wasted_crawl(
     """
     cols, rows = run_query(paths, sql)
 
+    # Trend: total waste score per day
+    trend_sql = f"""
+    SELECT date, SUM({score_col}) AS waste_score, SUM(bot_hits) AS bot_hits
+    FROM t
+    {where}
+    GROUP BY date
+    ORDER BY date;
+    """
+    cols_t, rows_t = run_query(paths, trend_sql)
+    trend_html = line_chart(rows_t, cols_t, x_col="date", y_cols=["waste_score", "bot_hits"], title="Waste score over time")
+
     chart_html = bar_chart(rows, cols, x_col="path", y_col="waste_score", title="Highest waste score (top paths)")
 
     body += (
@@ -1244,6 +1359,10 @@ def wasted_crawl(
         f"{'&url_group=' + url_group if url_group else ''}"
         f"&limit={int(limit)}'>Export CSV</a></p>"
     )
+    body += "<h2>Waste score trend (daily)</h2>"
+    body += trend_html
+    body += "<br>"
+    body += "<h2>Top wasted paths</h2>"
     body += chart_html
     body += "<br>"
     body += html_table(rows, cols)
@@ -1333,6 +1452,9 @@ def human_urls(
         extra=f"&include_assets={'true' if include_assets else 'false'}"
               + f"&limit={int(limit)}"
     )
+    chart_limit = min(int(limit), 30)
+    body += bar_chart(rows[:chart_limit], cols, x_col="path", y_col="hits", title=f"Top {chart_limit} human URLs")
+    body += "<br>"
     body += html_table(rows, cols)
     return page("Human URLs", body)
 
@@ -1385,6 +1507,9 @@ def bot_urls(
               + (f"&bot={bot}" if bot else "")
               + f"&limit={int(limit)}"
     )
+    chart_limit = min(int(limit), 30)
+    body += bar_chart(rows[:chart_limit], cols, x_col="path", y_col="hits", title=f"Top {chart_limit} bot URLs")
+    body += "<br>"
     body += html_table(rows, cols)
     return page("Bot URLs", body)
 
