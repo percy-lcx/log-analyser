@@ -1551,7 +1551,7 @@ def utm_report(
     date_from: Optional[str] = Query(None, alias="from"),
     date_to: Optional[str] = Query(None, alias="to"),
     utm_source: Optional[str] = None,
-    group_by: str = "url_group",   # url_group | path
+    group_by: str = "path",        # url_group | path
     traffic: str = "all",          # all | human | bot
     limit: int = 200,
 ):
@@ -1575,9 +1575,9 @@ def utm_report(
     utm_options = distinct_values(sources_table, "utm_source", date_from, date_to)
 
     # controls
-    group_by = (group_by or "url_group").strip().lower()
+    group_by = (group_by or "path").strip().lower()
     if group_by not in ("url_group", "path"):
-        group_by = "url_group"
+        group_by = "path"
 
     traffic = (traffic or "all").strip().lower()
     if traffic not in ("all", "human", "bot"):
