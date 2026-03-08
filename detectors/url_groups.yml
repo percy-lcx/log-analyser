@@ -123,3 +123,7 @@ section_map:
   trading: "Trading"
 
 fallback_group: "Other Content"
+
+# Group assigned to bare locale-root paths like /en, /fr/, /zh-hans, etc.
+# These have a known locale but no content section beneath them.
+locale_homepage_group: "Locale Homepage"

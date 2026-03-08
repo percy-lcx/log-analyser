@@ -70,6 +70,7 @@ class UrlGroupingConfig:
     rules: List[UrlRule]
     section_map: Dict[str, str]
     fallback_group: str
+    locale_homepage_group: str = "Locale Homepage"
 
 
 def ensure_dirs() -> None:
@@ -116,7 +117,8 @@ def load_url_grouping() -> UrlGroupingConfig:
 
     section_map = {k.lower(): v for k, v in (cfg.get("section_map") or {}).items()}
     fallback = cfg.get("fallback_group", "Other Content")
-    return UrlGroupingConfig(locales=locales, rules=rules, section_map=section_map, fallback_group=fallback)
+    locale_homepage_group = cfg.get("locale_homepage_group", "Locale Homepage")
+    return UrlGroupingConfig(locales=locales, rules=rules, section_map=section_map, fallback_group=fallback, locale_homepage_group=locale_homepage_group)
 
 
 def init_manifest() -> None:
@@ -227,7 +229,7 @@ def apply_url_grouping(path: str, cfg: UrlGroupingConfig) -> Tuple[str, Optional
     if first in cfg.locales:
         locale = first
         if len(segs) == 1:
-            return "Home", locale, None
+            return cfg.locale_homepage_group, locale, None
         section_index = 1
         section = segs[section_index] if len(segs) > section_index else None
     else:
