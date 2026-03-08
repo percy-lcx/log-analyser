@@ -138,6 +138,7 @@ class TestLocaleHomepages:
     """Bare locale homepages like /en/ and /en should be group=Locale Homepage with the real locale."""
 
     @pytest.mark.parametrize("path,expected_locale", [
+        # --- Whitelisted locales ---
         ("/en",         "en"),
         ("/en/",        "en"),
         ("/fr",         "fr"),
@@ -174,6 +175,32 @@ class TestLocaleHomepages:
         ("/au/",        "au"),
         ("/zh-hant-au", "zh-hant-au"),
         ("/zh-hant-au/","zh-hant-au"),
+        # --- Non-whitelisted locale-like codes caught by locale_homepage_pattern ---
+        ("/en-gb",      "en-gb"),    # British English – not whitelisted
+        ("/en-gb/",     "en-gb"),
+        ("/zh-tw",      "zh-tw"),    # Traditional Chinese Taiwan alias
+        ("/zh-tw/",     "zh-tw"),
+        ("/zh-cn",      "zh-cn"),    # Simplified Chinese alias
+        ("/zh-cn/",     "zh-cn"),
+        ("/zh",         "zh"),       # Generic Chinese
+        ("/zh/",        "zh"),
+        ("/ja",         "ja"),       # Japanese
+        ("/ja/",        "ja"),
+        ("/ru",         "ru"),       # Russian
+        ("/ru/",        "ru"),
+        ("/tr",         "tr"),       # Turkish
+        ("/nl",         "nl"),       # Dutch
+        ("/pl",         "pl"),       # Polish
+        ("/sv",         "sv"),       # Swedish
+        ("/en-us",      "en-us"),    # US English variant
+        ("/en-hk",      "en-hk"),    # Hong Kong English
+        ("/zh-hant-hk", "zh-hant-hk"),  # Traditional Chinese HK
+        ("/de-at",      "de-at"),    # Austrian German
+        ("/de-ch",      "de-ch"),    # Swiss German
+        ("/fr-ch",      "fr-ch"),    # Swiss French
+        ("/pt-br",      "pt-br"),    # Brazilian Portuguese
+        ("/es-mx",      "es-mx"),    # Mexican Spanish
+        ("/es-la",      "es-la"),    # Latin American Spanish
     ])
     def test_locale_home_classified(self, cfg, path, expected_locale):
         group, locale, section = apply_url_grouping(path, cfg)
@@ -182,6 +209,22 @@ class TestLocaleHomepages:
         )
         assert locale == expected_locale, (
             f"{path!r}: expected locale={expected_locale!r}, got {locale!r}"
+        )
+
+    @pytest.mark.parametrize("path", [
+        "/about",
+        "/admin",
+        "/healthz",
+        "/wp-login.php",
+        "/cdn-cgi",
+        "/checkout",
+        "/login",
+    ])
+    def test_non_locale_single_segments_not_classified_as_homepage(self, cfg, path):
+        """Single-segment paths that are clearly not locale codes must not become Locale Homepage."""
+        group, locale, section = apply_url_grouping(path, cfg)
+        assert group != cfg.locale_homepage_group, (
+            f"{path!r} should NOT be Locale Homepage, got {group!r}"
         )
 
 

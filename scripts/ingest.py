@@ -71,6 +71,7 @@ class UrlGroupingConfig:
     section_map: Dict[str, str]
     fallback_group: str
     locale_homepage_group: str = "Locale Homepage"
+    locale_homepage_pattern: Optional[re.Pattern] = None  # fallback for unlisted locale-like segments
 
 
 def ensure_dirs() -> None:
@@ -118,7 +119,9 @@ def load_url_grouping() -> UrlGroupingConfig:
     section_map = {k.lower(): v for k, v in (cfg.get("section_map") or {}).items()}
     fallback = cfg.get("fallback_group", "Other Content")
     locale_homepage_group = cfg.get("locale_homepage_group", "Locale Homepage")
-    return UrlGroupingConfig(locales=locales, rules=rules, section_map=section_map, fallback_group=fallback, locale_homepage_group=locale_homepage_group)
+    raw_pattern = cfg.get("locale_homepage_pattern", "")
+    locale_homepage_pattern = re.compile(raw_pattern, re.IGNORECASE) if raw_pattern else None
+    return UrlGroupingConfig(locales=locales, rules=rules, section_map=section_map, fallback_group=fallback, locale_homepage_group=locale_homepage_group, locale_homepage_pattern=locale_homepage_pattern)
 
 
 def init_manifest() -> None:
@@ -232,6 +235,11 @@ def apply_url_grouping(path: str, cfg: UrlGroupingConfig) -> Tuple[str, Optional
             return cfg.locale_homepage_group, locale, None
         section_index = 1
         section = segs[section_index] if len(segs) > section_index else None
+    elif len(segs) == 1 and cfg.locale_homepage_pattern and cfg.locale_homepage_pattern.fullmatch(first):
+        # Single-segment path whose segment looks like a locale code but isn't
+        # in the explicit whitelist (e.g. /en-gb, /ja, /zh-tw).  Classify as
+        # Locale Homepage so these don't pollute Other Content.
+        return cfg.locale_homepage_group, first, None
     else:
         locale = NO_LOCALE_LABEL
         section_index = 0

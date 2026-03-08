@@ -127,3 +127,10 @@ fallback_group: "Other Content"
 # Group assigned to bare locale-root paths like /en, /fr/, /zh-hans, etc.
 # These have a known locale but no content section beneath them.
 locale_homepage_group: "Locale Homepage"
+
+# Regex matched against the first (and only) path segment of single-segment
+# paths whose segment is NOT in the locales whitelist above.  Catches locale
+# codes that aren't explicitly listed (e.g. /en-gb, /zh-tw, /ja, /ru) so they
+# are classified as Locale Homepage rather than falling back to Other Content.
+# Pattern is applied to the bare segment without the leading slash.
+locale_homepage_pattern: "^[a-z]{2,3}(-[a-z]{4})?(-([a-z]{2}|[0-9]{3}))?$"
