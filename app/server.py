@@ -875,6 +875,7 @@ def locale_groups(
     date_to: Optional[str] = Query(None, alias="to"),
     locale: Optional[str] = None,
     url_group: Optional[str] = None,
+    content_only: bool = False,
     limit: int = 999,
 ):
     paths = list_partitions("locale_group_daily", date_from, date_to)
@@ -913,13 +914,22 @@ def locale_groups(
     {select_html("locale", locale_options, locale, "Locale")}
     {select_html("url_group", group_options, url_group, "URL group")}
     <label>Limit: <input name="limit" value="{limit}" size="6"></label>
+    <label style="margin-left:1em"><input type="checkbox" name="content_only" value="true"{"checked" if content_only else ""}> Content only (heatmap)</label>
     <button type="submit">Apply</button>
     </form>
     """
     body += f"<p><a href='/export?report=locale-groups&from={date_from or ''}&to={date_to or ''}&locale={locale or ''}&url_group={url_group or ''}&limit={limit}'>Export CSV</a></p>"
+
+    NON_CONTENT = {"Static Assets", "Nuxt Assets", "API", "Feeds", "Robots", "Sitemaps", "Well-Known"}
+    url_group_idx = cols.index("url_group") if "url_group" in cols else None
+
     # Only show heatmap when not filtered to a single locale or url_group (would be a 1-row/col matrix)
     if not locale and not url_group:
-        body += heatmap_chart(rows, cols, x_col="url_group", y_col="locale", z_col="hits", title="Hits heatmap — locale × URL group")
+        heatmap_rows = rows
+        if content_only and url_group_idx is not None:
+            heatmap_rows = [r for r in rows if r[url_group_idx] not in NON_CONTENT]
+        title = "Hits heatmap — locale × URL group" + (" (content only)" if content_only else "")
+        body += heatmap_chart(heatmap_rows, cols, x_col="url_group", y_col="locale", z_col="hits", title=title)
         body += "<br>"
     body += html_table(rows, cols, max_rows=min(int(limit), 500))
     return page("Locale x URL group", body)
