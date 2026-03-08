@@ -135,7 +135,7 @@ class TestHighPriorityRules:
 
 
 class TestLocaleHomepages:
-    """Bare locale homepages like /en/ and /en should be group=Home with the real locale."""
+    """Bare locale homepages like /en/ and /en should be group=Locale Homepage with the real locale."""
 
     @pytest.mark.parametrize("path,expected_locale", [
         ("/en",         "en"),
@@ -177,7 +177,9 @@ class TestLocaleHomepages:
     ])
     def test_locale_home_classified(self, cfg, path, expected_locale):
         group, locale, section = apply_url_grouping(path, cfg)
-        assert group == "Home", f"{path!r}: expected group='Home', got {group!r}"
+        assert group == cfg.locale_homepage_group, (
+            f"{path!r}: expected group={cfg.locale_homepage_group!r}, got {group!r}"
+        )
         assert locale == expected_locale, (
             f"{path!r}: expected locale={expected_locale!r}, got {locale!r}"
         )
@@ -301,7 +303,7 @@ def print_no_locale_breakdown(cfg: UrlGroupingConfig) -> None:
     cases = [
         # (description, sample_paths)
         ("Root /",               ["/"]),
-        ("Locale homepages (detected via locale whitelist → real locale)",
+        ("Locale homepages (group=Locale Homepage, locale=real locale)",
          ["/en/", "/fr/", "/zh-hans/", "/zh-hant/", "/ko/", "/ar/"]),
         ("_nuxt/ assets",        ["/_nuxt/app.js"]),
         ("API endpoints",        ["/api/v1/foo"]),

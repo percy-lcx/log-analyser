@@ -85,10 +85,11 @@ type botRuleYAML struct {
 }
 
 type urlGroupsYAML struct {
-	Locales       []string          `yaml:"locales"`
-	Rules         []urlRuleYAML     `yaml:"rules"`
-	SectionMap    map[string]string `yaml:"section_map"`
-	FallbackGroup string            `yaml:"fallback_group"`
+	Locales              []string          `yaml:"locales"`
+	Rules                []urlRuleYAML     `yaml:"rules"`
+	SectionMap           map[string]string `yaml:"section_map"`
+	FallbackGroup        string            `yaml:"fallback_group"`
+	LocaleHomepageGroup  string            `yaml:"locale_homepage_group"`
 }
 
 type urlRuleYAML struct {
@@ -115,10 +116,11 @@ type urlRule struct {
 }
 
 type urlConfig struct {
-	locales       map[string]struct{}
-	rules         []urlRule
-	sectionMap    map[string]string
-	fallbackGroup string
+	locales              map[string]struct{}
+	rules                []urlRule
+	sectionMap           map[string]string
+	fallbackGroup        string
+	localeHomepageGroup  string
 }
 
 // ---------------------------------------------------------------------------
@@ -252,11 +254,17 @@ func loadURLConfig(path string) (*urlConfig, error) {
 		fallback = "Other Content"
 	}
 
+	localeHomepageGroup := cfg.LocaleHomepageGroup
+	if localeHomepageGroup == "" {
+		localeHomepageGroup = "Locale Homepage"
+	}
+
 	return &urlConfig{
-		locales:       locales,
-		rules:         rules,
-		sectionMap:    sectionMap,
-		fallbackGroup: fallback,
+		locales:             locales,
+		rules:               rules,
+		sectionMap:          sectionMap,
+		fallbackGroup:       fallback,
+		localeHomepageGroup: localeHomepageGroup,
 	}, nil
 }
 
@@ -357,7 +365,7 @@ func applyURLGrouping(path string, cfg *urlConfig) (group, locale string, sectio
 	if _, ok := cfg.locales[first]; ok {
 		detectedLocale = first
 		if len(segs) == 1 {
-			return "Home", detectedLocale, nil
+			return cfg.localeHomepageGroup, detectedLocale, nil
 		}
 		sectionIdx = 1
 	} else {
