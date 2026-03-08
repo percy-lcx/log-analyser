@@ -376,7 +376,18 @@ body {
     top: 0;
     z-index: 50;
 }
+.topbar { display: flex; align-items: center; justify-content: space-between; }
 .topbar h1 { font-size: 18px; font-weight: 700; color: #1e293b; }
+.scroll-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 500; color: #64748b;
+    cursor: pointer; padding: 4px 10px;
+    border: 1px solid #e2e8f0; border-radius: 6px;
+    background: #fff; transition: background 0.12s, color 0.12s;
+    user-select: none;
+}
+.scroll-toggle:hover { background: #f1f5f9; color: #1e293b; }
+.scroll-toggle.active { background: #eff6ff; color: #3b82f6; border-color: #bfdbfe; }
 .content { padding: 20px 24px; flex: 1; }
 
 /* Hide raw <br> separators between cards */
@@ -492,7 +503,15 @@ a[href^='/export']:hover { background: #e2e8f0; color: #1e293b; }
 .content p:has(a[href^='/export']) { margin-bottom: 0; }
 
 /* ── Tables ── */
-.table-wrapper { overflow-x: auto; }
+.table-wrapper { overflow-x: auto; max-height: 400px; overflow-y: auto; }
+.table-wrapper.expanded { max-height: none; overflow-y: visible; }
+.table-wrapper:not(.expanded) table.sortable thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: #f8fafc;
+    box-shadow: 0 1px 0 #e2e8f0;
+}
 table.sortable {
     width: 100%;
     border-collapse: collapse;
@@ -677,6 +696,24 @@ function attachSortable(table) {
 document.addEventListener("DOMContentLoaded", () => {
     document.querySelectorAll("table.sortable").forEach(attachSortable);
 
+    // Table scroll toggle (scrollable by default; "Expand tables" opts out)
+    (function() {
+        var STORAGE_KEY = 'tablesExpanded';
+        function applyExpanded(expanded) {
+            document.querySelectorAll('.table-wrapper').forEach(function(el) {
+                el.classList.toggle('expanded', expanded);
+            });
+            var btn = document.getElementById('scrollToggle');
+            if (btn) btn.classList.toggle('active', expanded);
+            localStorage.setItem(STORAGE_KEY, expanded ? '1' : '0');
+        }
+        window.toggleTableScroll = function() {
+            applyExpanded(localStorage.getItem(STORAGE_KEY) !== '1');
+        };
+        // Restore preference on load; default is scrollable (not expanded)
+        if (localStorage.getItem(STORAGE_KEY) === '1') applyExpanded(true);
+    })();
+
     // Click a schema pill to insert the column name at the textarea cursor
     document.querySelectorAll(".schema-pill").forEach(function(pill) {
         pill.addEventListener("click", function() {
@@ -709,7 +746,7 @@ document.addEventListener("DOMContentLoaded", () => {
         {nav_links}
     </nav>
     <div class="main">
-        <div class="topbar"><h1>{title}</h1></div>
+        <div class="topbar"><h1>{title}</h1><button class="scroll-toggle" id="scrollToggle" onclick="toggleTableScroll()">&#8597; Expand tables</button></div>
         <div class="content">
             {body}
         </div>
