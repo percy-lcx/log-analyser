@@ -34,6 +34,8 @@ from ingest import (  # noqa: E402
     NO_LOCALE_LABEL,
     UrlGroupingConfig,
     apply_url_grouping,
+    classify_bot,
+    load_bot_rules,
     load_url_grouping,
 )
 
@@ -93,6 +95,34 @@ class TestHighPriorityRules:
         assert group == "API"
         assert locale == NO_LOCALE_LABEL
 
+    @pytest.mark.parametrize("path", [
+        "/getMenuStructure",
+        "/getMenuStructure/foo",
+        "/getSubMenuStructure",
+        "/getMenusTranslations",
+    ])
+    def test_api_menu_endpoints(self, cfg, path):
+        group, locale, _ = apply_url_grouping(path, cfg)
+        assert group == "API"
+        assert locale == NO_LOCALE_LABEL
+
+    @pytest.mark.parametrize("path", ["/feed", "/rss"])
+    def test_feeds(self, cfg, path):
+        group, locale, _ = apply_url_grouping(path, cfg)
+        assert group == "Feeds"
+        assert locale == NO_LOCALE_LABEL
+
+    @pytest.mark.parametrize("path", [
+        "/.well-known/passkey-endpoints",
+        "/.well-known/assetlinks.json",
+        "/.well-known/traffic-advice",
+        "/autodiscover/autodiscover.xml",
+    ])
+    def test_well_known(self, cfg, path):
+        group, locale, _ = apply_url_grouping(path, cfg)
+        assert group == "Well-Known"
+        assert locale == NO_LOCALE_LABEL
+
     @pytest.mark.parametrize("ext", [
         "css", "js", "png", "jpg", "jpeg", "gif", "webp",
         "svg", "ico", "woff", "woff2", "ttf", "eot",
@@ -132,6 +162,16 @@ class TestLocaleHomepages:
         ("/zh-hans-cn/","zh-hans-cn"),
         ("/zh-hans-au", "zh-hans-au"),
         ("/zh-hans-au/","zh-hans-au"),
+        ("/zh-hans-nz", "zh-hans-nz"),
+        ("/zh-hans-nz/","zh-hans-nz"),
+        ("/en-nz",      "en-nz"),
+        ("/en-nz/",     "en-nz"),
+        ("/en-sg",      "en-sg"),
+        ("/en-sg/",     "en-sg"),
+        ("/tw",         "tw"),
+        ("/tw/",        "tw"),
+        ("/au",         "au"),
+        ("/au/",        "au"),
         ("/zh-hant-au", "zh-hant-au"),
         ("/zh-hant-au/","zh-hant-au"),
     ])
@@ -282,7 +322,63 @@ def print_no_locale_breakdown(cfg: UrlGroupingConfig) -> None:
 
 
 # ===========================================================================
-# 3. PYTHON / GO PARITY CHECK
+# 3. BOT DETECTION
+# ===========================================================================
+
+@pytest.fixture(scope="module")
+def bot_rules():
+    return load_bot_rules()
+
+
+class TestBotDetection:
+    """Spot-checks for bots.yml patterns."""
+
+    @pytest.mark.parametrize("ua,expected_family", [
+        # Empty / missing UA (nginx logs as "-")
+        ("-",                                        "Unknown Bot"),
+        # Google crawlers
+        ("Googlebot/2.1 (+http://www.google.com/bot.html)", "Googlebot"),
+        ("AdsBot-Google (+http://www.google.com/adsbot.html)", "AdsBot-Google"),
+        ("GoogleAssociationService/1.0",             "Google Special Crawlers"),
+        # Security scanners
+        ("python-requests/2.31.0",                  "Security Scanner"),
+        ("Go-http-client/2.0",                       "Security Scanner"),
+        ("curl/7.88.1",                              "Security Scanner"),
+        ("zgrab/0.x",                                "Security Scanner"),
+        ("Nikto/2.1.6",                              "Security Scanner"),
+        ("Adobe Application Manager 2.0",            "Security Scanner"),
+        # Feed crawlers
+        ("AHC/2.1",                                  "Feed Crawler"),
+        ("FeedFetcher-Google/1.0",                  "Feed Crawler"),
+        # Synthetic monitors
+        ("PTST/3.0",                                 "Synthetic Monitor"),
+        ("Lighthouse/10.0",                          "Synthetic Monitor"),
+        # Misc crawlers
+        ("7Siters/1.1 (+https://7ooo.ru/siters/)",  "7Siters"),
+        # Normal browser is NOT a bot
+        ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+         "(KHTML, like Gecko) Chrome/124.0.6367.155 Safari/537.36", "Browser/Other"),
+    ])
+    def test_ua_classification(self, bot_rules, ua, expected_family):
+        is_bot, family = classify_bot(ua, bot_rules)
+        assert family == expected_family, f"UA={ua!r}: got {family!r}, want {expected_family!r}"
+        if expected_family != "Browser/Other":
+            assert is_bot, f"UA={ua!r} should be flagged as bot"
+
+    def test_empty_ua_is_bot(self, bot_rules):
+        is_bot, family = classify_bot("-", bot_rules)
+        assert is_bot
+        assert family == "Unknown Bot"
+
+    def test_real_browser_is_not_bot(self, bot_rules):
+        ua = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+              "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
+        is_bot, _ = classify_bot(ua, bot_rules)
+        assert not is_bot
+
+
+# ===========================================================================
+# 4. PYTHON / GO PARITY CHECK
 # ===========================================================================
 
 GO_BINARY = ROOT / "parser" / "log-parser"

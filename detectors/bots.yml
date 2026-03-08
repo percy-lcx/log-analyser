@@ -10,6 +10,12 @@ rules:
   - family: "Googlebot"
     match: "regex"
     pattern: "googlebot"
+  - family: "AdsBot-Google"
+    match: "regex"
+    pattern: "adsbot-google|adsbot"
+  - family: "Google Special Crawlers"
+    match: "regex"
+    pattern: "googleassociationservice|google-safety|googleproducer|google-inspectiontool|storebot-google|google-site-verification"
   - family: "Bingbot"
     match: "regex"
     pattern: "bingbot"
@@ -139,6 +145,26 @@ rules:
   - family: "Cloudflare"
     match: "regex"
     pattern: "cloudflare"
+  - family: "7Siters"
+    match: "regex"
+    pattern: "7siters"
+  - family: "Feed Crawler"
+    match: "regex"
+    pattern: "\\bahc/\\d|feedfetcher|feedparser|rss|feedly|inoreader|newsblur|theoldreader|netvibes|bloglines"
+  - family: "Synthetic Monitor"
+    match: "regex"
+    pattern: "\\bptst/|lighthouse|webpagetest|calibreapp|speedcurve|gtmetrix"
+
+  # Security scanners and exploit probes
+  - family: "Security Scanner"
+    match: "regex"
+    pattern: "masscan|zgrab|nuclei|dirbuster|nikto|sqlmap|whatweb|nmap|acunetix|nessus|openvas|wfuzz|gobuster|adobe application manager|python-requests/|go-http-client/|curl/[0-9]"
+
+  # No User-Agent header — nginx/CDN logs these as a bare "-".
+  # No real browser or SDK omits the header entirely.
+  - family: "Unknown Bot"
+    match: "regex"
+    pattern: "^-$"
 
   # Fake browser UAs — truncated version numbers (e.g. Chrome/124.0.0 without patch)
   - family: "Fake Browser UA"

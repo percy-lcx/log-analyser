@@ -29,6 +29,11 @@ locales:
   - en-au
   - zh-hans-au
   - zh-hant-au
+  - zh-hans-nz
+  - en-nz
+  - en-sg
+  - tw
+  - au
 
 # First match wins. These are high-priority buckets.
 rules:
@@ -51,6 +56,34 @@ rules:
   - group: "API"
     match: "prefix"
     value: "/api/"
+
+  - group: "API"
+    match: "prefix"
+    value: "/getMenuStructure"
+
+  - group: "API"
+    match: "prefix"
+    value: "/getSubMenuStructure"
+
+  - group: "API"
+    match: "prefix"
+    value: "/getMenusTranslations"
+
+  - group: "Feeds"
+    match: "exact"
+    value: "/feed"
+
+  - group: "Feeds"
+    match: "exact"
+    value: "/rss"
+
+  - group: "Well-Known"
+    match: "prefix"
+    value: "/.well-known/"
+
+  - group: "Well-Known"
+    match: "prefix"
+    value: "/autodiscover/"
 
   # Extension-based assets that still hit origin.
   - group: "Static Assets"
