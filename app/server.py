@@ -286,8 +286,10 @@ def page(title: str, body: str) -> HTMLResponse:
         ("URL group breakdown", "/reports/url-groups"),
         ("Locale x URL group", "/reports/locale-groups"),
         ("Top URLs", "/reports/top-urls"),
+        ("Top 3xx", "/reports/top-3xx"),
         ("Top 404", "/reports/top-404"),
         ("Top 5xx", "/reports/top-5xx"),
+        ("URL byte size", "/reports/url-bytes"),
         ("Bots", "/reports/bots"),
         ("Wasted crawl", "/reports/wasted-crawl"),
         ("Top resource waste", "/reports/top-resource-waste"),
@@ -738,8 +740,10 @@ def index():
         ("URL group breakdown", "/reports/url-groups", "Hits aggregated by URL group"),
         ("Locale x URL group", "/reports/locale-groups", "Cross-tab of locale and URL group"),
         ("Top URLs", "/reports/top-urls", "Most-requested paths, filterable by group"),
+        ("Top 3xx redirects", "/reports/top-3xx", "URLs that redirect visitors, with daily trend"),
         ("Top 404s", "/reports/top-404", "Paths returning 404, with daily trend"),
         ("Top 5xx errors", "/reports/top-5xx", "Paths returning 5xx, with daily trend"),
+        ("URL byte size", "/reports/url-bytes", "Which URLs have the largest average response size"),
         ("Bots", "/reports/bots", "Bot traffic by family with hit counts"),
         ("Wasted crawl", "/reports/wasted-crawl", "Bot requests that yielded no value"),
         ("Top resource waste", "/reports/top-resource-waste", "Paths with highest waste score"),
@@ -1230,6 +1234,150 @@ def top_5xx(
 
     body += html_table(rows, cols, max_rows=min(int(limit), 500))
     return page("Top 5xx", body)
+
+
+@app.get("/reports/top-3xx", response_class=HTMLResponse)
+def top_3xx(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    include_assets: bool = False,
+    url_group: Optional[str] = None,
+    limit: int = 500,
+):
+    paths = list_partitions("top_urls_daily", date_from, date_to)
+    body = date_filters_html(date_from, date_to)
+
+    groups = distinct_values("top_urls_daily", "url_group", date_from, date_to)
+    body += "<form method='get'>"
+    body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
+    body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
+    body += select_html("url_group", groups, url_group, "URL group")
+    checked = "checked" if include_assets else ""
+    body += f" <label><input type='checkbox' name='include_assets' value='true' {checked}> Include assets</label>"
+    body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
+    body += " <button type='submit'>Apply</button></form>"
+
+    if not paths:
+        return page("Top 3xx (redirects)", body + no_data_notice())
+
+    clauses = []
+    if not include_assets:
+        clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+    if url_group:
+        clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    daily_sql = f"""
+    SELECT date,
+           SUM(s3xx) AS s3xx
+    FROM t
+    {where}
+    GROUP BY date
+    ORDER BY date;
+    """
+    cols_d, rows_d = run_query(paths, daily_sql)
+
+    sql = f"""
+    SELECT path, url_group,
+           SUM(s3xx)        AS s3xx,
+           SUM(hits_total)  AS hits_total,
+           ROUND(100.0 * SUM(s3xx) / NULLIF(SUM(hits_total), 0), 1) AS redirect_pct
+    FROM t
+    {where}
+    GROUP BY path, url_group
+    HAVING SUM(s3xx) > 0
+    ORDER BY s3xx DESC
+    LIMIT {int(limit)};
+    """
+    cols, rows = run_query(paths, sql)
+
+    body += export_link(
+        "top-3xx", date_from, date_to,
+        extra=f"&include_assets={'true' if include_assets else 'false'}"
+              + (f"&url_group={url_group}" if url_group else "")
+              + f"&limit={int(limit)}"
+    )
+
+    body += "<h2>Redirect trend (daily)</h2>"
+    body += line_chart(rows_d, cols_d, x_col="date", y_cols=["s3xx"], title="3xx responses by day")
+    body += "<br>"
+    body += html_table(rows_d, cols_d, max_rows=500)
+
+    chart_limit = min(int(limit), 30)
+    if rows:
+        body += "<h2>Top redirecting URLs</h2>"
+        body += bar_chart(rows[:chart_limit], cols, x_col="path", y_col="s3xx", title=f"Top {chart_limit} redirecting URLs")
+        body += "<br>"
+
+    body += html_table(rows, cols, max_rows=min(int(limit), 500))
+    return page("Top 3xx (redirects)", body)
+
+
+@app.get("/reports/url-bytes", response_class=HTMLResponse)
+def url_bytes(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    include_assets: bool = False,
+    url_group: Optional[str] = None,
+    limit: int = 500,
+):
+    paths = list_partitions("top_urls_daily", date_from, date_to)
+    body = date_filters_html(date_from, date_to)
+
+    groups = distinct_values("top_urls_daily", "url_group", date_from, date_to)
+    body += "<form method='get'>"
+    body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
+    body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
+    body += select_html("url_group", groups, url_group, "URL group")
+    checked = "checked" if include_assets else ""
+    body += f" <label><input type='checkbox' name='include_assets' value='true' {checked}> Include assets</label>"
+    body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
+    body += " <button type='submit'>Apply</button></form>"
+
+    if not paths:
+        return page("URL byte size", body + no_data_notice())
+
+    clauses = []
+    if not include_assets:
+        clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+    if url_group:
+        clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    sql = f"""
+    SELECT path, url_group,
+           SUM(bytes_sent)                                                      AS bytes_total,
+           SUM(hits_total)                                                      AS hits_total,
+           ROUND(SUM(bytes_sent) / NULLIF(SUM(hits_total), 0))                 AS avg_bytes_per_hit,
+           ROUND(SUM(bytes_sent) / NULLIF(SUM(hits_total), 0) / 1024.0, 1)    AS avg_kb_per_hit
+    FROM t
+    {where}
+    GROUP BY path, url_group
+    HAVING SUM(bytes_sent) > 0
+    ORDER BY avg_bytes_per_hit DESC
+    LIMIT {int(limit)};
+    """
+    cols, rows = run_query(paths, sql)
+
+    body += export_link(
+        "url-bytes", date_from, date_to,
+        extra=f"&include_assets={'true' if include_assets else 'false'}"
+              + (f"&url_group={url_group}" if url_group else "")
+              + f"&limit={int(limit)}"
+    )
+
+    chart_limit = min(int(limit), 30)
+    if rows:
+        body += "<h2>Largest pages by average response size</h2>"
+        body += bar_chart(
+            rows[:chart_limit], cols,
+            x_col="path", y_col="avg_kb_per_hit",
+            title=f"Top {chart_limit} URLs by avg KB per hit",
+        )
+        body += "<br>"
+
+    body += html_table(rows, cols, max_rows=min(int(limit), 500))
+    return page("URL byte size", body)
 
 
 @app.get("/reports/bots", response_class=HTMLResponse)
@@ -1999,6 +2147,51 @@ def export(
         """
         return stream_csv(sql, paths, "top_5xx.csv")
 
+    if report == "top-3xx":
+        paths = list_partitions("top_urls_daily", date_from, date_to)
+        clauses = []
+        if not include_assets:
+            clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+        if url_group:
+            clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = f"""
+        SELECT path, url_group,
+               SUM(s3xx) AS s3xx,
+               SUM(hits_total) AS hits_total,
+               ROUND(100.0 * SUM(s3xx) / NULLIF(SUM(hits_total), 0), 1) AS redirect_pct
+        FROM t
+        {where}
+        GROUP BY path, url_group
+        HAVING SUM(s3xx) > 0
+        ORDER BY s3xx DESC
+        LIMIT {int(limit)};
+        """
+        return stream_csv(sql, paths, "top_3xx.csv")
+
+    if report == "url-bytes":
+        paths = list_partitions("top_urls_daily", date_from, date_to)
+        clauses = []
+        if not include_assets:
+            clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+        if url_group:
+            clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = f"""
+        SELECT path, url_group,
+               SUM(bytes_sent) AS bytes_total,
+               SUM(hits_total) AS hits_total,
+               ROUND(SUM(bytes_sent) / NULLIF(SUM(hits_total), 0)) AS avg_bytes_per_hit,
+               ROUND(SUM(bytes_sent) / NULLIF(SUM(hits_total), 0) / 1024.0, 1) AS avg_kb_per_hit
+        FROM t
+        {where}
+        GROUP BY path, url_group
+        HAVING SUM(bytes_sent) > 0
+        ORDER BY avg_bytes_per_hit DESC
+        LIMIT {int(limit)};
+        """
+        return stream_csv(sql, paths, "url_bytes.csv")
+
     if report == "bots":
         paths = list_partitions("bot_daily", date_from, date_to)
         sql = f"""
@@ -2190,6 +2383,6 @@ def export(
         return stream_csv(sql, paths, f"utm_{utm_source}_{dim}.csv")
 
     return PlainTextResponse(
-        "Unknown report. Try report=daily, daily-status, locales, url-groups, locale-groups, top-urls, top-404, top-5xx, bots, wasted-crawl, top-resource-waste, bot-urls, utm-sources, utm, utm-urls",
+        "Unknown report. Try report=daily, daily-status, locales, url-groups, locale-groups, top-urls, top-3xx, top-404, top-5xx, url-bytes, bots, wasted-crawl, top-resource-waste, bot-urls, utm-sources, utm, utm-urls",
         status_code=400,
     )
