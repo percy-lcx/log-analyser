@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import List, Optional
+import json
+from typing import Dict, List, Optional, Tuple
 
 import duckdb
 from fastapi import FastAPI, Query
@@ -272,6 +273,69 @@ TABLE_DESCRIPTIONS = {
     "human_urls_daily": "URLs visited by human traffic",
     "utm_sources_daily": "UTM source hit counts by day",
     "utm_source_urls_daily": "UTM source URL distribution",
+}
+
+
+TABLE_QUERIES: Dict[str, List[Tuple[str, str]]] = {
+    "daily": [
+        ("Hits over time", "SELECT date, hits, hits_human, hits_bot\nFROM t\nORDER BY date"),
+        ("Status breakdown", "SELECT date, s2xx, s3xx, s4xx, s5xx\nFROM t\nORDER BY date"),
+        ("Bytes over time", "SELECT date, bytes_sent\nFROM t\nORDER BY date"),
+        ("Bot % per day", "SELECT date, hits_bot, hits,\n  ROUND(100.0*hits_bot/hits,1) AS bot_pct\nFROM t\nORDER BY date"),
+    ],
+    "locale_daily": [
+        ("Top locales", "SELECT locale, SUM(hits) AS hits\nFROM t\nGROUP BY locale\nORDER BY hits DESC\nLIMIT 20"),
+        ("Human hits by locale", "SELECT date, locale, hits_human\nFROM t\nORDER BY date, hits_human DESC"),
+    ],
+    "group_daily": [
+        ("Top URL groups", "SELECT url_group, SUM(hits) AS hits\nFROM t\nGROUP BY url_group\nORDER BY hits DESC"),
+        ("Error rate by group", "SELECT url_group,\n  SUM(s4xx+s5xx) AS errors,\n  ROUND(100.0*SUM(s4xx+s5xx)/SUM(hits),1) AS error_pct\nFROM t\nGROUP BY url_group\nORDER BY errors DESC"),
+    ],
+    "locale_group_daily": [
+        ("Locale \u00d7 group traffic", "SELECT locale, url_group, SUM(hits) AS hits\nFROM t\nGROUP BY locale, url_group\nORDER BY hits DESC\nLIMIT 50"),
+    ],
+    "bot_daily": [
+        ("Top bots by hits", "SELECT bot_family, SUM(hits) AS hits\nFROM t\nGROUP BY bot_family\nORDER BY hits DESC\nLIMIT 20"),
+        ("Bot error rates", "SELECT bot_family, SUM(hits) AS hits, SUM(s4xx) AS s4xx, SUM(s5xx) AS s5xx\nFROM t\nGROUP BY bot_family\nORDER BY hits DESC\nLIMIT 20"),
+    ],
+    "hourly": [
+        ("Hourly traffic pattern", "SELECT hour_local, SUM(hits) AS hits, SUM(hits_human) AS human, SUM(hits_bot) AS bot\nFROM t\nGROUP BY hour_local\nORDER BY hour_local"),
+        ("Peak hours", "SELECT hour_local, SUM(hits) AS hits\nFROM t\nGROUP BY hour_local\nORDER BY hits DESC"),
+    ],
+    "top_urls_daily": [
+        ("Top URLs overall", "SELECT path, SUM(hits_total) AS hits\nFROM t\nGROUP BY path\nORDER BY hits DESC\nLIMIT 20"),
+        ("Top URLs with errors", "SELECT path, SUM(s4xx) AS s4xx, SUM(s5xx) AS s5xx\nFROM t\nGROUP BY path\nORDER BY s4xx+s5xx DESC\nLIMIT 20"),
+    ],
+    "top_404_daily": [
+        ("Top 404 paths", "SELECT path, SUM(hits_404) AS hits_404\nFROM t\nGROUP BY path\nORDER BY hits_404 DESC\nLIMIT 20"),
+        ("Bot vs human 404s", "SELECT path, SUM(hits_404) AS total, SUM(hits_404_bot) AS bot\nFROM t\nGROUP BY path\nORDER BY total DESC\nLIMIT 20"),
+    ],
+    "top_5xx_daily": [
+        ("Top 5xx paths", "SELECT path, SUM(hits_5xx) AS hits_5xx\nFROM t\nGROUP BY path\nORDER BY hits_5xx DESC\nLIMIT 20"),
+        ("Bot-caused 5xx", "SELECT path, SUM(hits_5xx_bot) AS bot_5xx\nFROM t\nGROUP BY path\nORDER BY bot_5xx DESC\nLIMIT 20"),
+    ],
+    "wasted_crawl_daily": [
+        ("Worst bots by waste", "SELECT bot_family, SUM(bot_hits) AS hits,\n  SUM(error_bot_hits) AS errors,\n  ROUND(AVG(waste_score),2) AS avg_waste\nFROM t\nGROUP BY bot_family\nORDER BY avg_waste DESC\nLIMIT 20"),
+        ("Top wasted paths", "SELECT path, SUM(bot_hits) AS bot_hits, SUM(error_bot_hits) AS errors\nFROM t\nGROUP BY path\nORDER BY errors DESC\nLIMIT 20"),
+    ],
+    "top_resource_waste_daily": [
+        ("Top resource waste", "SELECT path, SUM(bot_hits) AS bot_hits,\n  SUM(resource_error_bot_hits) AS resource_errors,\n  ROUND(AVG(waste_score_strict),2) AS avg_waste\nFROM t\nGROUP BY path\nORDER BY avg_waste DESC\nLIMIT 20"),
+    ],
+    "bot_urls_daily": [
+        ("Top paths by bot", "SELECT bot_family, path, SUM(hits) AS hits\nFROM t\nGROUP BY bot_family, path\nORDER BY hits DESC\nLIMIT 30"),
+        ("Most crawled paths", "SELECT path, SUM(hits) AS total_bot_hits\nFROM t\nGROUP BY path\nORDER BY total_bot_hits DESC\nLIMIT 20"),
+    ],
+    "human_urls_daily": [
+        ("Top human traffic paths", "SELECT path, SUM(hits) AS hits\nFROM t\nGROUP BY path\nORDER BY hits DESC\nLIMIT 20"),
+        ("Traffic by URL group", "SELECT url_group, SUM(hits) AS hits\nFROM t\nGROUP BY url_group\nORDER BY hits DESC"),
+    ],
+    "utm_sources_daily": [
+        ("Top UTM sources", "SELECT utm_source, SUM(hits) AS hits, SUM(hits_human) AS human_hits\nFROM t\nGROUP BY utm_source\nORDER BY hits DESC\nLIMIT 20"),
+        ("UTM sources over time", "SELECT date, utm_source, hits\nFROM t\nORDER BY date, hits DESC"),
+    ],
+    "utm_source_urls_daily": [
+        ("Top URLs by UTM source", "SELECT utm_source, path, SUM(hits) AS hits\nFROM t\nGROUP BY utm_source, path\nORDER BY hits DESC\nLIMIT 30"),
+    ],
 }
 
 
@@ -634,6 +698,19 @@ label.sql-label { width: 100%; flex: 0 0 100%; }
 .schema-pill:hover { background: #dbeafe; }
 .schema-pill small { color: #60a5fa; margin-left: 3px; }
 
+.query-suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.query-suggestion {
+    background: #f0fdf4;
+    color: #166534;
+    border: 1px solid #bbf7d0;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    font-family: inherit;
+}
+.query-suggestion:hover { background: #dcfce7; border-color: #86efac; }
+
 .query-meta { font-size: 12px; color: #64748b; margin-bottom: 10px; }
 .query-error {
     background: #fef2f2;
@@ -740,6 +817,14 @@ document.addEventListener("DOMContentLoaded", () => {
             ta.value = ta.value.slice(0, start) + col + ta.value.slice(end);
             ta.selectionStart = ta.selectionEnd = start + col.length;
             ta.focus();
+        });
+    });
+
+    // Click a common query button to populate the SQL textarea
+    document.querySelectorAll(".query-suggestion").forEach(function(btn) {
+        btn.addEventListener("click", function() {
+            var ta = document.querySelector("textarea[name='sql']");
+            if (ta) { ta.value = this.dataset.sql; ta.focus(); }
         });
     });
 });
@@ -1984,6 +2069,23 @@ def query_page(
             except Exception:
                 pass
 
+    # ── Common query suggestions ─────────────────────────────────────
+    common_queries_html = ""
+    if safe_table:
+        queries = TABLE_QUERIES.get(safe_table, [])
+        if queries:
+            btns = "".join(
+                f"<button type='button' class='query-suggestion' data-sql={json.dumps(q_sql)}>"
+                f"{q_label}</button>"
+                for q_label, q_sql in queries
+            )
+            common_queries_html = (
+                "<div style='margin-top:8px;margin-bottom:4px;font-size:11px;"
+                "color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.4px'>"
+                "Common queries</div>"
+                f"<div class='query-suggestions'>{btns}</div>"
+            )
+
     # ── Table hint on landing (no table selected) ───────────────────
     hint_html = ""
     if not safe_table and tables:
@@ -2026,6 +2128,7 @@ def query_page(
         <label>To<input type="date" name="to" value="{date_to or ''}"></label>
         <label>Limit<input type="number" name="limit" value="{limit}" min="1" max="5000" style="width:80px"></label>
         {schema_html}
+        {common_queries_html}
         <label class="sql-label">SQL
             <textarea name="sql" spellcheck="false">{default_sql}</textarea>
         </label>
