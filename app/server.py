@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import duckdb
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Query
 from fastapi.responses import (
     HTMLResponse,
     StreamingResponse,
@@ -22,6 +22,23 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 AGG = ROOT / "data" / "aggregates"
+
+CHART_BAR_LIMIT = 30
+
+NON_CONTENT_GROUPS = {"Static Assets", "Nuxt Assets", "API", "Feeds", "Robots", "Sitemaps", "Well-Known"}
+
+
+def fmt_bytes(n) -> str:
+    """Format a byte count as a human-readable string (B / KB / MB / GB)."""
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return ""
+    for unit in ("B", "KB", "MB", "GB"):
+        if abs(n) < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
 
 app = FastAPI(title="Local Log Dashboard")
 
@@ -145,7 +162,7 @@ def line_chart(rows, columns, x_col, y_cols, title):
     return f"<div class='card'>{chart_html}</div>"
 
 
-def bar_chart(rows, columns, x_col, y_col, title, y_cols=None, barmode="group"):
+def bar_chart(rows, columns, x_col, y_col=None, title="", y_cols=None, barmode="group"):
     """Bar chart. Pass y_cols (list) for grouped/stacked multi-series; y_col for single series."""
     if not rows:
         return "<p>No data.</p>"
@@ -190,16 +207,8 @@ def heatmap_chart(rows, columns, x_col, y_col, z_col, title):
 
     df = pd.DataFrame(rows, columns=columns)
 
-    def _safe_float(v):
-        if v is None or (isinstance(v, float) and pd.isna(v)):
-            return 0.0
-        try:
-            return float(v)
-        except Exception:
-            return 0.0
-
     pivot = df.pivot_table(index=y_col, columns=x_col, values=z_col, aggfunc="sum", fill_value=0)
-    z = [[_safe_float(v) for v in row] for row in pivot.values]
+    z = [[0.0 if (v is None or (isinstance(v, float) and pd.isna(v))) else float(v) for v in row] for row in pivot.values]
     x_labels = [str(c) for c in pivot.columns]
     y_labels = [str(r) for r in pivot.index]
 
@@ -208,7 +217,7 @@ def heatmap_chart(rows, columns, x_col, y_col, z_col, title):
         colorscale="Blues", hoverongaps=False,
     ))
     fig.update_layout(
-        height=max(300, 30 * len(y_labels) + 80),
+        height=min(max(300, 30 * len(y_labels) + 80), 1800),
         margin=dict(l=20, r=20, t=40, b=60),
         title=title,
     )
@@ -922,14 +931,13 @@ def locale_groups(
     """
     body += f"<p><a href='/export?report=locale-groups&from={date_from or ''}&to={date_to or ''}&locale={locale or ''}&url_group={url_group or ''}&limit={limit}'>Export CSV</a></p>"
 
-    NON_CONTENT = {"Static Assets", "Nuxt Assets", "API", "Feeds", "Robots", "Sitemaps", "Well-Known"}
     url_group_idx = cols.index("url_group") if "url_group" in cols else None
 
     # Only show heatmap when not filtered to a single locale or url_group (would be a 1-row/col matrix)
     if not locale and not url_group:
         heatmap_rows = rows
         if content_only and url_group_idx is not None:
-            heatmap_rows = [r for r in rows if r[url_group_idx] not in NON_CONTENT]
+            heatmap_rows = [r for r in rows if r[url_group_idx] not in NON_CONTENT_GROUPS]
         title = "Hits heatmap — locale × URL group" + (" (content only)" if content_only else "")
         body += heatmap_chart(heatmap_rows, cols, x_col="url_group", y_col="locale", z_col="hits", title=title)
         body += "<br>"
@@ -1056,7 +1064,7 @@ def top_urls(
               + (f"&url_group={url_group}" if url_group else "")
               + f"&limit={int(limit)}"
     )
-    chart_limit = min(int(limit), 30)
+    chart_limit = CHART_BAR_LIMIT
     if rows:
         body += bar_chart(
             rows[:chart_limit], cols,
@@ -1142,7 +1150,7 @@ def top_404(
     body += "<br>"
     body += html_table(rows_d, cols_d, max_rows=500)
 
-    chart_limit = min(int(limit), 30)
+    chart_limit = CHART_BAR_LIMIT
     if rows:
         rows_bar = [r[:len(cols)] for r in rows[:chart_limit]]
         body += "<h2>Top 404 URLs</h2>"
@@ -1223,7 +1231,7 @@ def top_5xx(
     body += "<br>"
     body += html_table(rows_d, cols_d, max_rows=500)
 
-    chart_limit = min(int(limit), 30)
+    chart_limit = CHART_BAR_LIMIT
     if rows:
         rows_bar = [r[:len(cols)] for r in rows[:chart_limit]]
         body += "<h2>Top 5xx URLs</h2>"
@@ -1301,7 +1309,7 @@ def top_3xx(
     body += "<br>"
     body += html_table(rows_d, cols_d, max_rows=500)
 
-    chart_limit = min(int(limit), 30)
+    chart_limit = CHART_BAR_LIMIT
     if rows:
         body += "<h2>Top redirecting URLs</h2>"
         body += bar_chart(rows[:chart_limit], cols, x_col="path", y_col="s3xx", title=f"Top {chart_limit} redirecting URLs")
@@ -1344,10 +1352,9 @@ def url_bytes(
 
     sql = f"""
     SELECT path, url_group,
-           SUM(bytes_sent)                                                      AS bytes_total,
-           SUM(hits_total)                                                      AS hits_total,
-           ROUND(SUM(bytes_sent) / NULLIF(SUM(hits_total), 0))                 AS avg_bytes_per_hit,
-           ROUND(SUM(bytes_sent) / NULLIF(SUM(hits_total), 0) / 1024.0, 1)    AS avg_kb_per_hit
+           SUM(bytes_sent)                                            AS bytes_total,
+           SUM(hits_total)                                            AS hits_total,
+           ROUND(SUM(bytes_sent) / NULLIF(SUM(hits_total), 0))       AS avg_bytes_per_hit
     FROM t
     {where}
     GROUP BY path, url_group
@@ -1364,17 +1371,26 @@ def url_bytes(
               + f"&limit={int(limit)}"
     )
 
-    chart_limit = min(int(limit), 30)
     if rows:
         body += "<h2>Largest pages by average response size</h2>"
         body += bar_chart(
-            rows[:chart_limit], cols,
-            x_col="path", y_col="avg_kb_per_hit",
-            title=f"Top {chart_limit} URLs by avg KB per hit",
+            rows[:CHART_BAR_LIMIT], cols,
+            x_col="path", y_col="avg_bytes_per_hit",
+            title=f"Top {CHART_BAR_LIMIT} URLs by avg response size",
         )
         body += "<br>"
 
-    body += html_table(rows, cols, max_rows=min(int(limit), 500))
+    # Format byte columns for readability before rendering the table
+    bytes_total_idx = cols.index("bytes_total")
+    avg_idx = cols.index("avg_bytes_per_hit")
+    display_rows = [
+        tuple(
+            fmt_bytes(v) if i in (bytes_total_idx, avg_idx) else v
+            for i, v in enumerate(r)
+        )
+        for r in rows
+    ]
+    body += html_table(display_rows, cols, max_rows=min(int(limit), 500))
     return page("URL byte size", body)
 
 
@@ -1431,8 +1447,7 @@ def bots(
         """
         cols_t, rows_t = run_query(paths_summary, trend_sql)
         if rows_t:
-            import pandas as _pd
-            df_t = _pd.DataFrame(rows_t, columns=cols_t)
+            df_t = pd.DataFrame(rows_t, columns=cols_t)
             df_pivot = df_t.pivot_table(index="date", columns="bot_family", values="hits", fill_value=0).reset_index()
             pivot_cols = list(df_pivot.columns)
             pivot_rows = [tuple(r) for r in df_pivot.itertuples(index=False, name=None)]
@@ -1497,7 +1512,7 @@ def bots(
                 extra=f"&include_assets={'true' if include_assets else 'false'}"
                       + f"&bot={bot}&limit={int(limit)}"
             )
-            chart_limit = min(int(limit), 30)
+            chart_limit = CHART_BAR_LIMIT
             body += bar_chart(rows_u[:chart_limit], cols_u, x_col="path", y_col="hits",
                               title=f"Top {chart_limit} URLs crawled by {bot}")
             body += "<br>"
@@ -1684,7 +1699,7 @@ def human_urls(
         extra=f"&include_assets={'true' if include_assets else 'false'}"
               + f"&limit={int(limit)}"
     )
-    chart_limit = min(int(limit), 30)
+    chart_limit = CHART_BAR_LIMIT
     body += bar_chart(rows[:chart_limit], cols, x_col="path", y_col="hits", title=f"Top {chart_limit} human URLs")
     body += "<br>"
     body += html_table(rows, cols)
@@ -1692,7 +1707,6 @@ def human_urls(
 
 @app.get("/reports/bot-urls")
 def bot_urls_redirect(
-    request: "Request",
     bot: Optional[str] = None,
     include_assets: bool = False,
     limit: int = 500,
@@ -2219,8 +2233,7 @@ def export(
         SELECT path, url_group,
                SUM(bytes_sent) AS bytes_total,
                SUM(hits_total) AS hits_total,
-               ROUND(SUM(bytes_sent) / NULLIF(SUM(hits_total), 0)) AS avg_bytes_per_hit,
-               ROUND(SUM(bytes_sent) / NULLIF(SUM(hits_total), 0) / 1024.0, 1) AS avg_kb_per_hit
+               ROUND(SUM(bytes_sent) / NULLIF(SUM(hits_total), 0)) AS avg_bytes_per_hit
         FROM t
         {where}
         GROUP BY path, url_group
