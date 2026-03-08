@@ -667,9 +667,16 @@ document.querySelectorAll('.nav-link').forEach(function(a) {
     if (a.getAttribute('data-path') === path) a.classList.add('active');
 });
 
+const BYTE_UNITS = { B: 1, KB: 1024, MB: 1048576, GB: 1073741824, TB: 1099511627776 };
 function parseNumber(s) {
     const cleaned = s.replace(/[,\s]/g, "");
     if (!cleaned) return null;
+    const byteMatch = cleaned.match(/^([\d.]+)(B|KB|MB|GB|TB)$/i);
+    if (byteMatch) {
+        const n = parseFloat(byteMatch[1]);
+        const mult = BYTE_UNITS[byteMatch[2].toUpperCase()] ?? 1;
+        return Number.isFinite(n) ? n * mult : null;
+    }
     const n = Number(cleaned);
     return Number.isFinite(n) ? n : null;
 }
