@@ -339,6 +339,163 @@ TABLE_QUERIES: Dict[str, List[Tuple[str, str]]] = {
 }
 
 
+GUIDED_INSIGHTS: List[Dict] = [
+    # Traffic
+    {
+        "id": "busiest-days",
+        "category": "Traffic",
+        "question": "What were my busiest days?",
+        "table": "daily",
+        "sql": "SELECT date, hits, hits_human, hits_bot FROM t ORDER BY hits DESC LIMIT 20",
+        "chart": "bar", "x": "date", "y": "hits",
+    },
+    {
+        "id": "bot-vs-human",
+        "category": "Traffic",
+        "question": "How much of my traffic is bots vs humans?",
+        "table": "daily",
+        "sql": "SELECT date, hits_human, hits_bot FROM t ORDER BY date",
+        "chart": "line", "x": "date", "y": ["hits_human", "hits_bot"],
+    },
+    {
+        "id": "traffic-trend",
+        "category": "Traffic",
+        "question": "How has my traffic trended over time?",
+        "table": "daily",
+        "sql": "SELECT date, hits FROM t ORDER BY date",
+        "chart": "line", "x": "date", "y": "hits",
+    },
+    {
+        "id": "error-rate-trend",
+        "category": "Traffic",
+        "question": "Is my error rate getting worse over time?",
+        "table": "daily",
+        "sql": "SELECT date, ROUND(100.0*(s4xx+s5xx)/hits,1) AS error_pct FROM t WHERE hits > 0 ORDER BY date",
+        "chart": "line", "x": "date", "y": "error_pct",
+    },
+    # Content
+    {
+        "id": "top-pages",
+        "category": "Content",
+        "question": "What are my most popular pages?",
+        "table": "human_urls_daily",
+        "sql": "SELECT path, SUM(hits) AS hits FROM t GROUP BY path ORDER BY hits DESC LIMIT 20",
+        "chart": "bar", "x": "path", "y": "hits",
+    },
+    {
+        "id": "top-url-groups",
+        "category": "Content",
+        "question": "Which sections of my site get the most traffic?",
+        "table": "group_daily",
+        "sql": "SELECT url_group, SUM(hits_human) AS human_hits FROM t GROUP BY url_group ORDER BY human_hits DESC LIMIT 20",
+        "chart": "bar", "x": "url_group", "y": "human_hits",
+    },
+    {
+        "id": "heaviest-pages",
+        "category": "Content",
+        "question": "Which pages have the largest response sizes?",
+        "table": "top_urls_daily",
+        "sql": "SELECT path, ROUND(SUM(bytes_sent)*1.0/SUM(hits_total),0) AS avg_bytes FROM t WHERE hits_total > 0 GROUP BY path ORDER BY avg_bytes DESC LIMIT 20",
+        "chart": "bar", "x": "path", "y": "avg_bytes",
+    },
+    # Errors
+    {
+        "id": "top-404",
+        "category": "Errors",
+        "question": "Which pages are returning 404 errors?",
+        "table": "top_404_daily",
+        "sql": "SELECT path, SUM(hits_404) AS errors FROM t GROUP BY path ORDER BY errors DESC LIMIT 20",
+        "chart": "bar", "x": "path", "y": "errors",
+    },
+    {
+        "id": "top-5xx",
+        "category": "Errors",
+        "question": "Which pages have server errors (5xx)?",
+        "table": "top_5xx_daily",
+        "sql": "SELECT path, SUM(hits_5xx) AS errors FROM t GROUP BY path ORDER BY errors DESC LIMIT 20",
+        "chart": "bar", "x": "path", "y": "errors",
+    },
+    {
+        "id": "top-redirects",
+        "category": "Errors",
+        "question": "Which pages are causing the most redirects?",
+        "table": "top_urls_daily",
+        "sql": "SELECT path, SUM(s3xx) AS redirects FROM t GROUP BY path ORDER BY redirects DESC LIMIT 20",
+        "chart": "bar", "x": "path", "y": "redirects",
+    },
+    # Bots
+    {
+        "id": "top-bots",
+        "category": "Bots",
+        "question": "Which bots are crawling my site the most?",
+        "table": "bot_daily",
+        "sql": "SELECT bot_family, SUM(hits) AS hits FROM t GROUP BY bot_family ORDER BY hits DESC LIMIT 20",
+        "chart": "bar", "x": "bot_family", "y": "hits",
+    },
+    {
+        "id": "wasted-bot-crawl",
+        "category": "Bots",
+        "question": "Which bots are wasting their crawl budget?",
+        "table": "wasted_crawl_daily",
+        "sql": "SELECT bot_family, SUM(bot_hits) AS hits, SUM(error_bot_hits) AS errors, ROUND(AVG(waste_score),2) AS avg_waste FROM t GROUP BY bot_family ORDER BY avg_waste DESC LIMIT 20",
+        "chart": "bar", "x": "bot_family", "y": "avg_waste",
+    },
+    {
+        "id": "bot-trend",
+        "category": "Bots",
+        "question": "How has bot traffic changed over time?",
+        "table": "daily",
+        "sql": "SELECT date, hits_bot FROM t ORDER BY date",
+        "chart": "line", "x": "date", "y": "hits_bot",
+    },
+    {
+        "id": "bot-error-rates",
+        "category": "Bots",
+        "question": "Which bots generate the most errors?",
+        "table": "bot_daily",
+        "sql": "SELECT bot_family, SUM(s4xx) AS s4xx, SUM(s5xx) AS s5xx, SUM(hits) AS hits FROM t GROUP BY bot_family ORDER BY s4xx+s5xx DESC LIMIT 20",
+        "chart": "bar", "x": "bot_family", "y": "s4xx",
+    },
+    # Geography
+    {
+        "id": "top-locales",
+        "category": "Geography",
+        "question": "Where does my traffic come from?",
+        "table": "locale_daily",
+        "sql": "SELECT locale, SUM(hits_human) AS human_hits FROM t GROUP BY locale ORDER BY human_hits DESC LIMIT 20",
+        "chart": "bar", "x": "locale", "y": "human_hits",
+    },
+    {
+        "id": "locale-error-rates",
+        "category": "Geography",
+        "question": "Which locales have the highest error rates?",
+        "table": "locale_daily",
+        "sql": "SELECT locale, SUM(s4xx+s5xx) AS errors, SUM(hits) AS hits, ROUND(100.0*SUM(s4xx+s5xx)/SUM(hits),1) AS error_pct FROM t WHERE hits > 0 GROUP BY locale ORDER BY error_pct DESC LIMIT 20",
+        "chart": "bar", "x": "locale", "y": "error_pct",
+    },
+    # Campaigns
+    {
+        "id": "utm-sources",
+        "category": "Campaigns",
+        "question": "Which campaigns are driving the most traffic?",
+        "table": "utm_sources_daily",
+        "sql": "SELECT utm_source, SUM(hits_human) AS hits FROM t GROUP BY utm_source ORDER BY hits DESC LIMIT 20",
+        "chart": "bar", "x": "utm_source", "y": "hits",
+    },
+    {
+        "id": "utm-top-pages",
+        "category": "Campaigns",
+        "question": "Which pages do campaign visitors land on?",
+        "table": "utm_source_urls_daily",
+        "sql": "SELECT path, SUM(hits_human) AS hits FROM t GROUP BY path ORDER BY hits DESC LIMIT 20",
+        "chart": "bar", "x": "path", "y": "hits",
+    },
+]
+
+_INSIGHT_BY_ID: Dict[str, Dict] = {i["id"]: i for i in GUIDED_INSIGHTS}
+_INSIGHT_CATEGORIES: List[str] = list(dict.fromkeys(i["category"] for i in GUIDED_INSIGHTS))
+
+
 def select_html(name: str, options: List[str], current: Optional[str], label: str) -> str:
     opts = ["<option value=''>All</option>"]
     for opt in options:
@@ -353,6 +510,7 @@ def page(title: str, body: str) -> HTMLResponse:
 
     nav_items = [
         ("Home", "/"),
+        ("Guided Insights", "/insights"),
         ("Crawl volume", "/reports/crawl-volume"),
         ("Status over time", "/reports/status-over-time"),
         ("Locale breakdown", "/reports/locales"),
@@ -710,6 +868,19 @@ label.sql-label { width: 100%; flex: 0 0 100%; }
     font-family: inherit;
 }
 .query-suggestion:hover { background: #dcfce7; border-color: #86efac; }
+
+.insights-date-bar { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 20px; }
+.insights-date-bar label { display: flex; flex-direction: column; font-size: 12px; font-weight: 600; color: #64748b; gap: 4px; }
+.insights-date-bar input { padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; }
+.insights-date-bar button { padding: 6px 14px; background: #3b82f6; color: #fff; border: none; border-radius: 4px; font-size: 13px; cursor: pointer; }
+.insights-date-bar button:hover { background: #2563eb; }
+.insights-back { font-size: 13px; color: #3b82f6; text-decoration: none; margin-left: auto; align-self: center; }
+.insights-back:hover { text-decoration: underline; }
+.insights-section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; margin: 20px 0 8px; }
+.insights-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; margin-bottom: 4px; }
+.insight-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px 14px; font-size: 13px; color: #1e293b; text-decoration: none; display: block; line-height: 1.4; }
+.insight-card:hover { background: #eff6ff; border-color: #93c5fd; color: #1d4ed8; }
+.insight-result-title { font-size: 17px; font-weight: 700; color: #1e293b; margin-bottom: 16px; }
 
 .query-meta { font-size: 12px; color: #64748b; margin-bottom: 10px; }
 .query-error {
@@ -2022,6 +2193,105 @@ def utm_chatgpt(
     # Keep legacy URL but send to the generic UTM report
     target = f"/reports/utm?from={date_from or ''}&to={date_to or ''}&utm_source=chatgpt.com"
     return RedirectResponse(url=target, status_code=302)
+
+
+# ----------------------------
+# Guided Insights page
+# ----------------------------
+
+@app.get("/insights", response_class=HTMLResponse)
+def insights_page(
+    q: Optional[str] = None,
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+):
+    import time as _time
+    import urllib.parse as _urlparse
+
+    available = set(list_tables())
+
+    # Date bar (shared across landing and result views)
+    back_qs = _urlparse.urlencode({k: v for k, v in [("from", date_from or ""), ("to", date_to or "")] if v})
+    date_bar = (
+        f"<form class='insights-date-bar' method='get'>"
+        f"<input type='hidden' name='q' value='{q or ''}'>"
+        f"<label>From<input type='date' name='from' value='{date_from or ''}'></label>"
+        f"<label>To<input type='date' name='to' value='{date_to or ''}'></label>"
+        f"<button type='submit'>Apply dates</button>"
+        + (f"<a class='insights-back' href='/insights?{back_qs}'>&#8592; All questions</a>" if q else "")
+        + f"</form>"
+    )
+
+    # ── Landing: show question cards grouped by category ────────────
+    if not q:
+        sections = []
+        for cat in _INSIGHT_CATEGORIES:
+            cards = "".join(
+                f"<a class='insight-card' href='/insights?q={ins['id']}"
+                + (f"&from={date_from}" if date_from else "")
+                + (f"&to={date_to}" if date_to else "")
+                + f"'>{ins['question']}</a>"
+                for ins in GUIDED_INSIGHTS
+                if ins["category"] == cat and ins["table"] in available
+            )
+            if cards:
+                sections.append(
+                    f"<div class='insights-section-title'>{cat}</div>"
+                    f"<div class='insights-grid'>{cards}</div>"
+                )
+        grid_html = "".join(sections) if sections else no_data_notice()
+        body = date_bar + grid_html
+        return page("Guided Insights", body)
+
+    # ── Result view ─────────────────────────────────────────────────
+    insight = _INSIGHT_BY_ID.get(q)
+    if not insight:
+        return page("Guided Insights", "<p>Unknown question.</p>")
+
+    paths = list_partitions(insight["table"], date_from, date_to)
+    if not paths:
+        body = date_bar + f"<div class='insight-result-title'>{insight['question']}</div>" + no_data_notice()
+        return page("Guided Insights", body)
+
+    try:
+        t0 = _time.monotonic()
+        cols, rows = run_query(paths, insight["sql"])
+        elapsed = _time.monotonic() - t0
+    except Exception as exc:
+        body = date_bar + f"<div class='insight-result-title'>{insight['question']}</div><div class='query-error'>{exc}</div>"
+        return page("Guided Insights", body)
+
+    # Chart
+    chart_type = insight.get("chart")
+    x_col = insight.get("x", cols[0] if cols else "")
+    y = insight.get("y")
+    if chart_type == "line":
+        y_cols = y if isinstance(y, list) else [y]
+        chart_html = line_chart(rows, cols, x_col, y_cols, insight["question"])
+    elif chart_type == "bar":
+        y_col = y[0] if isinstance(y, list) else y
+        chart_html = bar_chart(rows, cols, x_col, y_col, insight["question"])
+    else:
+        chart_html = ""
+
+    n = len(rows)
+    export_qs = _urlparse.urlencode({
+        "table": insight["table"],
+        "from": date_from or "",
+        "to": date_to or "",
+        "sql": insight["sql"],
+        "limit": 5000,
+    })
+    export_link = f"<a href='/query/export?{export_qs}'>&#8595; Export CSV</a>"
+
+    body = (
+        date_bar
+        + f"<div class='insight-result-title'>{insight['question']}</div>"
+        + chart_html
+        + f"<p class='query-meta'>{n:,} row{'s' if n != 1 else ''} &middot; {elapsed:.2f}s &nbsp; {export_link}</p>"
+        + html_table(rows, cols, max_rows=500)
+    )
+    return page("Guided Insights", body)
 
 
 # ----------------------------
