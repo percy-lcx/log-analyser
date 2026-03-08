@@ -93,6 +93,34 @@ class TestHighPriorityRules:
         assert group == "API"
         assert locale == NO_LOCALE_LABEL
 
+    @pytest.mark.parametrize("path", [
+        "/getMenuStructure",
+        "/getMenuStructure/foo",
+        "/getSubMenuStructure",
+        "/getMenusTranslations",
+    ])
+    def test_api_menu_endpoints(self, cfg, path):
+        group, locale, _ = apply_url_grouping(path, cfg)
+        assert group == "API"
+        assert locale == NO_LOCALE_LABEL
+
+    @pytest.mark.parametrize("path", ["/feed", "/rss"])
+    def test_feeds(self, cfg, path):
+        group, locale, _ = apply_url_grouping(path, cfg)
+        assert group == "Feeds"
+        assert locale == NO_LOCALE_LABEL
+
+    @pytest.mark.parametrize("path", [
+        "/.well-known/passkey-endpoints",
+        "/.well-known/assetlinks.json",
+        "/.well-known/traffic-advice",
+        "/autodiscover/autodiscover.xml",
+    ])
+    def test_well_known(self, cfg, path):
+        group, locale, _ = apply_url_grouping(path, cfg)
+        assert group == "Well-Known"
+        assert locale == NO_LOCALE_LABEL
+
     @pytest.mark.parametrize("ext", [
         "css", "js", "png", "jpg", "jpeg", "gif", "webp",
         "svg", "ico", "woff", "woff2", "ttf", "eot",
@@ -132,6 +160,12 @@ class TestLocaleHomepages:
         ("/zh-hans-cn/","zh-hans-cn"),
         ("/zh-hans-au", "zh-hans-au"),
         ("/zh-hans-au/","zh-hans-au"),
+        ("/zh-hans-nz", "zh-hans-nz"),
+        ("/zh-hans-nz/","zh-hans-nz"),
+        ("/en-nz",      "en-nz"),
+        ("/en-nz/",     "en-nz"),
+        ("/en-sg",      "en-sg"),
+        ("/en-sg/",     "en-sg"),
         ("/zh-hant-au", "zh-hant-au"),
         ("/zh-hant-au/","zh-hant-au"),
     ])
