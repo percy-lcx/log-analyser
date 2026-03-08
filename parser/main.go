@@ -85,11 +85,12 @@ type botRuleYAML struct {
 }
 
 type urlGroupsYAML struct {
-	Locales              []string          `yaml:"locales"`
-	Rules                []urlRuleYAML     `yaml:"rules"`
-	SectionMap           map[string]string `yaml:"section_map"`
-	FallbackGroup        string            `yaml:"fallback_group"`
-	LocaleHomepageGroup  string            `yaml:"locale_homepage_group"`
+	Locales                []string          `yaml:"locales"`
+	Rules                  []urlRuleYAML     `yaml:"rules"`
+	SectionMap             map[string]string `yaml:"section_map"`
+	FallbackGroup          string            `yaml:"fallback_group"`
+	LocaleHomepageGroup    string            `yaml:"locale_homepage_group"`
+	LocaleHomepagePattern  string            `yaml:"locale_homepage_pattern"`
 }
 
 type urlRuleYAML struct {
@@ -116,11 +117,12 @@ type urlRule struct {
 }
 
 type urlConfig struct {
-	locales              map[string]struct{}
-	rules                []urlRule
-	sectionMap           map[string]string
-	fallbackGroup        string
-	localeHomepageGroup  string
+	locales                map[string]struct{}
+	rules                  []urlRule
+	sectionMap             map[string]string
+	fallbackGroup          string
+	localeHomepageGroup    string
+	localeHomepagePattern  *regexp.Regexp // fallback for unlisted locale-like segments
 }
 
 // ---------------------------------------------------------------------------
@@ -259,12 +261,22 @@ func loadURLConfig(path string) (*urlConfig, error) {
 		localeHomepageGroup = "Locale Homepage"
 	}
 
+	var localeHomepagePattern *regexp.Regexp
+	if cfg.LocaleHomepagePattern != "" {
+		pat, err := regexp.Compile("(?i)" + cfg.LocaleHomepagePattern)
+		if err != nil {
+			return nil, fmt.Errorf("bad locale_homepage_pattern %q: %w", cfg.LocaleHomepagePattern, err)
+		}
+		localeHomepagePattern = pat
+	}
+
 	return &urlConfig{
-		locales:             locales,
-		rules:               rules,
-		sectionMap:          sectionMap,
-		fallbackGroup:       fallback,
-		localeHomepageGroup: localeHomepageGroup,
+		locales:               locales,
+		rules:                 rules,
+		sectionMap:            sectionMap,
+		fallbackGroup:         fallback,
+		localeHomepageGroup:   localeHomepageGroup,
+		localeHomepagePattern: localeHomepagePattern,
 	}, nil
 }
 
@@ -368,6 +380,11 @@ func applyURLGrouping(path string, cfg *urlConfig) (group, locale string, sectio
 			return cfg.localeHomepageGroup, detectedLocale, nil
 		}
 		sectionIdx = 1
+	} else if len(segs) == 1 && cfg.localeHomepagePattern != nil && cfg.localeHomepagePattern.MatchString(first) {
+		// Single-segment path whose segment looks like a locale code but isn't
+		// in the explicit whitelist (e.g. /en-gb, /ja, /zh-tw).  Classify as
+		// Locale Homepage so these don't pollute Other Content.
+		return cfg.localeHomepageGroup, first, nil
 	} else {
 		detectedLocale = noLocaleLabel
 		sectionIdx = 0
