@@ -219,6 +219,18 @@ class TestLocaleHomepages:
         "/cdn-cgi",
         "/checkout",
         "/login",
+        # 3-letter tech terms that must NOT be mistaken for ISO 639 language codes
+        "/mcp",
+        "/img",
+        "/php",
+        "/bin",
+        "/pms",
+        "/css",
+        "/api",
+        # hyphenated paths that looked like lang-script or lang-region
+        "/our-team",
+        "/api-docs",
+        "/wp-json",
     ])
     def test_non_locale_single_segments_not_classified_as_homepage(self, cfg, path):
         """Single-segment paths that are clearly not locale codes must not become Locale Homepage."""
