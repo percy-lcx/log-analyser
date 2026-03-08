@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import duckdb
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import (
     HTMLResponse,
     StreamingResponse,
@@ -290,10 +290,9 @@ def page(title: str, body: str) -> HTMLResponse:
         ("Top 404", "/reports/top-404"),
         ("Top 5xx", "/reports/top-5xx"),
         ("URL byte size", "/reports/url-bytes"),
-        ("Bots", "/reports/bots"),
+        ("Bot traffic", "/reports/bots"),
         ("Wasted crawl", "/reports/wasted-crawl"),
         ("Top resource waste", "/reports/top-resource-waste"),
-        ("Bot URLs", "/reports/bot-urls"),
         ("Human URLs", "/reports/human-urls"),
         ("UTM sources", "/reports/utm"),
         ("SQL Query", "/query"),
@@ -744,10 +743,9 @@ def index():
         ("Top 404s", "/reports/top-404", "Paths returning 404, with daily trend"),
         ("Top 5xx errors", "/reports/top-5xx", "Paths returning 5xx, with daily trend"),
         ("URL byte size", "/reports/url-bytes", "Which URLs have the largest average response size"),
-        ("Bots", "/reports/bots", "Bot traffic by family with hit counts"),
+        ("Bot traffic", "/reports/bots", "Bot families summary + per-bot URL drill-down"),
         ("Wasted crawl", "/reports/wasted-crawl", "Bot requests that yielded no value"),
         ("Top resource waste", "/reports/top-resource-waste", "Paths with highest waste score"),
-        ("Bot URLs", "/reports/bot-urls?bot=Googlebot", "URLs crawled by a specific bot"),
         ("Human URLs", "/reports/human-urls", "Top paths visited by real users"),
         ("UTM sources", "/reports/utm", "Traffic from UTM-tagged campaigns"),
         ("SQL Query", "/query", "Ad-hoc SQL against any aggregate table"),
@@ -1381,58 +1379,134 @@ def url_bytes(
 
 
 @app.get("/reports/bots", response_class=HTMLResponse)
-def bots(date_from: Optional[str] = Query(None, alias="from"),
-         date_to: Optional[str] = Query(None, alias="to")):
-
-    paths = list_partitions("bot_daily", date_from, date_to)
+def bots(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    bot: Optional[str] = None,
+    include_assets: bool = False,
+    limit: int = 500,
+):
+    bots_list = distinct_values("bot_urls_daily", "bot_family", date_from, date_to)
     body = date_filters_html(date_from, date_to)
-
-    if not paths:
-        return page("Bots", body + no_data_notice())
-
-    sql = """
-    SELECT bot_family,
-           SUM(hits) AS hits,
-           SUM(resource_hits) AS resource_hits,
-           AVG(resource_hits_pct) AS resource_hits_pct,
-           SUM(s4xx) AS s4xx,
-           SUM(s5xx) AS s5xx
-    FROM t
-    GROUP BY bot_family
-    ORDER BY hits DESC;
+    checked_assets = "checked" if include_assets else ""
+    body += f"""
+    <form method="get">
+    <input type="hidden" name="from" value="{date_from or ''}">
+    <input type="hidden" name="to" value="{date_to or ''}">
+    {select_html("bot", bots_list, bot, "Bot family")}
+    <label><input type="checkbox" name="include_assets" value="true" {checked_assets}> Include assets</label>
+    <label style="margin-left:1em">Limit: <input name="limit" value="{int(limit)}" size="6"></label>
+    <button type="submit">Apply</button>
+    </form>
     """
-    cols, rows = run_query(paths, sql)
 
-    # Trend: top-10 bots over time (one line per family)
-    top_families = [r[0] for r in rows[:10]]
-    families_in = ", ".join(f"'{sql_escape_string(f)}'" for f in top_families)
-    trend_sql = f"""
-    SELECT date, bot_family, SUM(hits) AS hits
-    FROM t
-    WHERE bot_family IN ({families_in})
-    GROUP BY date, bot_family
-    ORDER BY date, bot_family;
-    """
-    cols_t, rows_t = run_query(paths, trend_sql)
-    trend_html = ""
-    if rows_t:
-        import pandas as _pd
-        df_t = _pd.DataFrame(rows_t, columns=cols_t)
-        df_pivot = df_t.pivot_table(index="date", columns="bot_family", values="hits", fill_value=0).reset_index()
-        pivot_cols = list(df_pivot.columns)
-        pivot_rows = [tuple(r) for r in df_pivot.itertuples(index=False, name=None)]
-        y_families = [c for c in pivot_cols if c != "date"]
-        trend_html = line_chart(pivot_rows, pivot_cols, x_col="date", y_cols=y_families, title="Bot hits over time (top 10 families)")
+    # ── Summary section (bot_daily) ──────────────────────────────────────────
+    paths_summary = list_partitions("bot_daily", date_from, date_to)
+    body += "<h2>Bot activity summary</h2>"
+    if not paths_summary:
+        body += no_data_notice()
+    else:
+        sql_summary = """
+        SELECT bot_family,
+               SUM(hits) AS hits,
+               SUM(resource_hits) AS resource_hits,
+               AVG(resource_hits_pct) AS resource_hits_pct,
+               SUM(s4xx) AS s4xx,
+               SUM(s5xx) AS s5xx
+        FROM t
+        GROUP BY bot_family
+        ORDER BY hits DESC;
+        """
+        cols, rows = run_query(paths_summary, sql_summary)
 
-    body += f"<p><a href='/export?report=bots&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
-    body += "<h2>Bot activity over time</h2>"
-    body += trend_html
-    body += "<br>"
-    body += "<h2>Total hits by bot family</h2>"
-    body += bar_chart(rows, cols, x_col="bot_family", y_col="hits", title="Bot hits by family")
-    body += "<br>"
-    body += html_table(rows, cols)
-    return page("Bots", body)
+        # Trend: top-10 bots over time
+        top_families = [r[0] for r in rows[:10]]
+        families_in = ", ".join(f"'{sql_escape_string(f)}'" for f in top_families)
+        trend_sql = f"""
+        SELECT date, bot_family, SUM(hits) AS hits
+        FROM t
+        WHERE bot_family IN ({families_in})
+        GROUP BY date, bot_family
+        ORDER BY date, bot_family;
+        """
+        cols_t, rows_t = run_query(paths_summary, trend_sql)
+        if rows_t:
+            import pandas as _pd
+            df_t = _pd.DataFrame(rows_t, columns=cols_t)
+            df_pivot = df_t.pivot_table(index="date", columns="bot_family", values="hits", fill_value=0).reset_index()
+            pivot_cols = list(df_pivot.columns)
+            pivot_rows = [tuple(r) for r in df_pivot.itertuples(index=False, name=None)]
+            y_families = [c for c in pivot_cols if c != "date"]
+            body += "<h3>Activity over time (top 10 families)</h3>"
+            body += line_chart(pivot_rows, pivot_cols, x_col="date", y_cols=y_families, title="Bot hits over time (top 10 families)")
+            body += "<br>"
+
+        body += "<h3>Total hits by bot family</h3>"
+        body += bar_chart(rows, cols, x_col="bot_family", y_col="hits", title="Bot hits by family")
+        body += "<br>"
+
+        # Bot family names are links that pre-select the bot in the URL section below
+        bot_idx = cols.index("bot_family")
+        def _bot_link_qs(family):
+            parts = [f"bot={family}"]
+            if date_from: parts.append(f"from={date_from}")
+            if date_to:   parts.append(f"to={date_to}")
+            if include_assets: parts.append("include_assets=true")
+            parts.append(f"limit={int(limit)}")
+            return "&".join(parts)
+        linked_rows = [
+            tuple(
+                f"<a href='/reports/bots?{_bot_link_qs(v)}#urls'>{v}</a>" if i == bot_idx else v
+                for i, v in enumerate(r)
+            )
+            for r in rows
+        ]
+        body += export_link("bots", date_from, date_to)
+        body += html_table(linked_rows, cols)
+
+    # ── URL drill-down section (bot_urls_daily) ───────────────────────────────
+    paths_urls = list_partitions("bot_urls_daily", date_from, date_to)
+    url_title = f"URLs crawled by {bot}" if bot else "URLs crawled — preview (click a bot above for full breakdown)"
+    body += f"<h2 id='urls'>{url_title}</h2>"
+
+    if not paths_urls:
+        body += no_data_notice()
+    else:
+        clauses = []
+        if bot:
+            clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
+        if not include_assets:
+            clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        url_limit = int(limit) if bot else 20
+
+        sql_urls = f"""
+        SELECT bot_family, url_group, path,
+               SUM(hits) AS hits
+        FROM t
+        {where}
+        GROUP BY bot_family, url_group, path
+        ORDER BY hits DESC
+        LIMIT {url_limit};
+        """
+        cols_u, rows_u = run_query(paths_urls, sql_urls)
+
+        if bot:
+            body += export_link(
+                "bot-urls", date_from, date_to,
+                extra=f"&include_assets={'true' if include_assets else 'false'}"
+                      + f"&bot={bot}&limit={int(limit)}"
+            )
+            chart_limit = min(int(limit), 30)
+            body += bar_chart(rows_u[:chart_limit], cols_u, x_col="path", y_col="hits",
+                              title=f"Top {chart_limit} URLs crawled by {bot}")
+            body += "<br>"
+        else:
+            body += "<p>Showing top 20 across all bots. Select a bot above for the full breakdown.</p>"
+
+        body += html_table(rows_u, cols_u)
+
+    return page("Bot traffic", body)
 
 
 @app.get("/reports/wasted-crawl", response_class=HTMLResponse)
@@ -1616,60 +1690,24 @@ def human_urls(
     body += html_table(rows, cols)
     return page("Human URLs", body)
 
-@app.get("/reports/bot-urls", response_class=HTMLResponse)
-def bot_urls(
-    date_from: Optional[str] = Query(None, alias="from"),
-    date_to: Optional[str] = Query(None, alias="to"),
+@app.get("/reports/bot-urls")
+def bot_urls_redirect(
+    request: "Request",
     bot: Optional[str] = None,
     include_assets: bool = False,
     limit: int = 500,
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
 ):
-    paths = list_partitions("bot_urls_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to)
-
-    bots_list = distinct_values("bot_urls_daily", "bot_family", date_from, date_to)
-    groups = distinct_values("bot_urls_daily", "url_group", date_from, date_to)
-
-    body += "<form method='get'>"
-    body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
-    body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
-    body += select_html("bot", bots_list, bot, "Bot family")
-    checked_assets = "checked" if include_assets else ""
-    body += f" <label><input type='checkbox' name='include_assets' value='true' {checked_assets}> Include assets</label>"
-    body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
-    body += " <button type='submit'>Apply</button></form>"
-
-    if not paths:
-        return page("Bot URLs", body + no_data_notice())
-
-    clauses = []
-    if bot:
-        clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
-    if not include_assets:
-        clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-
-    sql = f"""
-    SELECT bot_family, url_group, path,
-        SUM(hits) AS hits
-    FROM t
-    {where}
-    GROUP BY bot_family, url_group, path
-    ORDER BY hits DESC
-    LIMIT {int(limit)};
-    """
-    cols, rows = run_query(paths, sql)
-    body += export_link(
-        "bot-urls", date_from, date_to,
-        extra=f"&include_assets={'true' if include_assets else 'false'}"
-              + (f"&bot={bot}" if bot else "")
-              + f"&limit={int(limit)}"
-    )
-    chart_limit = min(int(limit), 30)
-    body += bar_chart(rows[:chart_limit], cols, x_col="path", y_col="hits", title=f"Top {chart_limit} bot URLs")
-    body += "<br>"
-    body += html_table(rows, cols)
-    return page("Bot URLs", body)
+    """Redirects to the combined /reports/bots page, preserving all query params."""
+    parts = []
+    if bot:           parts.append(f"bot={bot}")
+    if date_from:     parts.append(f"from={date_from}")
+    if date_to:       parts.append(f"to={date_to}")
+    if include_assets: parts.append("include_assets=true")
+    parts.append(f"limit={limit}")
+    qs = "&".join(parts)
+    return RedirectResponse(url=f"/reports/bots?{qs}#urls", status_code=301)
 
 # ----------------------------
 # NEW: Generic UTM report
