@@ -65,6 +65,34 @@ def list_partitions(table: str, date_from: Optional[str], date_to: Optional[str]
         out.append(p.as_posix())
     return sorted(out)
 
+STATUS_CODE_LABELS = {
+    # 3xx
+    "s301": "301 Moved Permanently",
+    "s302": "302 Found (temporary redirect)",
+    "s303": "303 See Other",
+    "s307": "307 Temporary Redirect",
+    "s308": "308 Permanent Redirect",
+    # 4xx
+    "s400": "400 Bad Request",
+    "s401": "401 Unauthorized",
+    "s403": "403 Forbidden",
+    "s404": "404 Not Found",
+    "s405": "405 Method Not Allowed",
+    "s410": "410 Gone",
+    "s422": "422 Unprocessable Entity",
+    "s429": "429 Too Many Requests",
+    # 5xx
+    "s500": "500 Internal Server Error",
+    "s502": "502 Bad Gateway",
+    "s503": "503 Service Unavailable",
+    "s504": "504 Gateway Timeout",
+    # aggregate bands
+    "s2xx": "2xx Success",
+    "s3xx": "3xx Redirects",
+    "s4xx": "4xx Client Errors",
+    "s5xx": "5xx Server Errors",
+}
+
 
 def html_table(rows, columns, max_rows: int = 999) -> str:
     """
@@ -72,7 +100,7 @@ def html_table(rows, columns, max_rows: int = 999) -> str:
     Click a header to sort; click again to reverse.
     """
     head = "".join(
-        f"<th scope='col' data-col='{i}'>{c}</th>"
+        f"<th scope='col' data-col='{i}' title='{STATUS_CODE_LABELS.get(c, '')}'>{c}</th>"
         for i, c in enumerate(columns)
     )
 
@@ -140,6 +168,7 @@ def line_chart(rows, columns, x_col, y_cols, title):
         "s5xx": "#ff2a07",
     }
 
+
     # y: force float conversion; invalid -> None (so Plotly will gap)
     for yc in y_cols:
         if yc not in df.columns:
@@ -156,7 +185,7 @@ def line_chart(rows, columns, x_col, y_cols, title):
                     y.append(None)
 
         color = status_colors.get(yc)
-        fig.add_trace(go.Scatter(x=x, y=y, mode="lines", name=yc, line=dict(color=color) if color else {}))
+        fig.add_trace(go.Scatter(x=x, y=y, mode="lines", name=STATUS_CODE_LABELS.get(yc, yc), line=dict(color=color) if color else {}))
 
     fig.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20), title=title)
     chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
@@ -189,7 +218,7 @@ def bar_chart(rows, columns, x_col, y_col=None, title="", y_cols=None, barmode="
                     y.append(float(v))
                 except Exception:
                     y.append(None)
-        fig.add_trace(go.Bar(name=yc, x=x, y=y))
+        fig.add_trace(go.Bar(name=STATUS_CODE_LABELS.get(yc, yc), x=x, y=y))
 
     fig.update_layout(
         height=400,
