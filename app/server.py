@@ -65,6 +65,18 @@ def list_partitions(table: str, date_from: Optional[str], date_to: Optional[str]
         out.append(p.as_posix())
     return sorted(out)
 
+def available_dates() -> List[str]:
+    """Return sorted list of dates that have at least one aggregate partition."""
+    dates: set[str] = set()
+    if not AGG.exists():
+        return []
+    for p in AGG.glob("*/date=*/part.parquet"):
+        date_dir = p.parent.name
+        if date_dir.startswith("date="):
+            dates.add(date_dir.split("=", 1)[1])
+    return sorted(dates)
+
+
 STATUS_CODE_LABELS = {
     # 3xx
     "s301": "301 Moved Permanently",
@@ -1058,13 +1070,33 @@ document.addEventListener("DOMContentLoaded", () => {
     return HTMLResponse(html)
 
 
-def date_filters_html(date_from, date_to):
+def date_filters_html(date_from, date_to, available: List[str] = []):
+    min_date = available[0] if available else ""
+    max_date = available[-1] if available else ""
+    available_json = json.dumps(available)
     return f"""
-    <form method="get">
-    <label>From<input type="date" name="from" value="{date_from or ''}"></label>
-    <label>To<input type="date" name="to" value="{date_to or ''}"></label>
+    <form method="get" onsubmit="return validateDates(this, {available_json})">
+    <label>From<input type="date" name="from" value="{date_from or ''}"
+           min="{min_date}" max="{max_date}"></label>
+    <label>To<input type="date" name="to" value="{date_to or ''}"
+           min="{min_date}" max="{max_date}"></label>
     <button type="submit">Apply dates</button>
     </form>
+    <script>
+    function validateDates(form, available) {{
+      const from = form.elements['from'].value;
+      const to   = form.elements['to'].value;
+      if (from && available.length && !available.includes(from)) {{
+        alert('No data for ' + from + '. Available range: {min_date}\u2013{max_date}');
+        return false;
+      }}
+      if (to && available.length && !available.includes(to)) {{
+        alert('No data for ' + to + '. Available range: {min_date}\u2013{max_date}');
+        return false;
+      }}
+      return true;
+    }}
+    </script>
     """
 
 
@@ -1109,7 +1141,7 @@ def index():
 def locales(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
     paths = list_partitions("locale_daily", date_from, date_to)
     if not paths:
-        body = date_filters_html(date_from, date_to) + no_data_notice()
+        body = date_filters_html(date_from, date_to, available_dates()) + no_data_notice()
         return page("Locale breakdown", body)
 
     sql_totals = """
@@ -1146,7 +1178,7 @@ def locales(date_from: Optional[str] = Query(None, alias="from"), date_to: Optio
     """
     cols2, rows2 = run_query(paths, sql_non_resource)
 
-    body = date_filters_html(date_from, date_to)
+    body = date_filters_html(date_from, date_to, available_dates())
     body += f"<p><a href='/export?report=locales&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
 
     chart_limit = 20
@@ -1179,7 +1211,7 @@ def locales(date_from: Optional[str] = Query(None, alias="from"), date_to: Optio
 def url_groups(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
     paths = list_partitions("group_daily", date_from, date_to)
     if not paths:
-        body = date_filters_html(date_from, date_to) + no_data_notice()
+        body = date_filters_html(date_from, date_to, available_dates()) + no_data_notice()
         return page("URL group breakdown", body)
     sql = """
     SELECT url_group,
@@ -1195,7 +1227,7 @@ def url_groups(date_from: Optional[str] = Query(None, alias="from"), date_to: Op
     ORDER BY hits DESC;
     """
     cols, rows = run_query(paths, sql)
-    body = date_filters_html(date_from, date_to)
+    body = date_filters_html(date_from, date_to, available_dates())
     body += f"<p><a href='/export?report=url-groups&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
     body += bar_chart(
         rows, cols,
@@ -1220,7 +1252,7 @@ def locale_groups(
 ):
     paths = list_partitions("locale_group_daily", date_from, date_to)
     if not paths:
-        body = date_filters_html(date_from, date_to) + no_data_notice()
+        body = date_filters_html(date_from, date_to, available_dates()) + no_data_notice()
         return page("Locale x URL group", body)
     clauses = []
     if locale:
@@ -1246,7 +1278,7 @@ def locale_groups(
     cols, rows = run_query(paths, sql)
     locale_options = distinct_values("locale_daily", "locale", date_from, date_to)
     group_options = distinct_values("group_daily", "url_group", date_from, date_to)
-    body = date_filters_html(date_from, date_to)
+    body = date_filters_html(date_from, date_to, available_dates())
     body += f"""
     <form method="get">
     <input type="hidden" name="from" value="{date_from or ''}">
@@ -1291,7 +1323,7 @@ def crawl_volume(date_from: Optional[str] = Query(None, alias="from"), date_to: 
         title="Daily Crawl Volume"
     )
     bytes_chart = line_chart(rows, cols, x_col="date", y_cols=["bytes_sent"], title="Daily bytes sent")
-    body = date_filters_html(date_from, date_to)
+    body = date_filters_html(date_from, date_to, available_dates())
     body += f"<p><a href='/export?report=daily&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
     body += chart_html
     body += "<br>"
@@ -1317,7 +1349,7 @@ def status_over_time(date_from: Optional[str] = Query(None, alias="from"), date_
         y_cols=["s2xx", "s3xx", "s4xx", "s5xx"],
         title="Status Codes Over Time"
     )
-    body = date_filters_html(date_from, date_to)
+    body = date_filters_html(date_from, date_to, available_dates())
     body += f"<p><a href='/export?report=daily-status&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
     body += chart_html
     body += "<br>"
@@ -1349,7 +1381,7 @@ def top_urls(
     limit: int = 500,
 ):
     paths = list_partitions("top_urls_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to)
+    body = date_filters_html(date_from, date_to, available_dates())
 
     # filters
     groups = distinct_values("top_urls_daily", "url_group", date_from, date_to)
@@ -1434,7 +1466,7 @@ def top_4xx(
     limit: int = 500,
 ):
     paths = list_partitions("top_4xx_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to)
+    body = date_filters_html(date_from, date_to, available_dates())
 
     groups = distinct_values("top_4xx_daily", "url_group", date_from, date_to)
     body += "<form method='get'>"
@@ -1532,7 +1564,7 @@ def top_5xx(
     limit: int = 500,
 ):
     paths = list_partitions("top_5xx_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to)
+    body = date_filters_html(date_from, date_to, available_dates())
 
     groups = distinct_values("top_5xx_daily", "url_group", date_from, date_to)
     body += "<form method='get'>"
@@ -1622,7 +1654,7 @@ def top_3xx(
     limit: int = 500,
 ):
     paths = list_partitions("top_urls_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to)
+    body = date_filters_html(date_from, date_to, available_dates())
 
     groups = distinct_values("top_urls_daily", "url_group", date_from, date_to)
     body += "<form method='get'>"
@@ -1710,7 +1742,7 @@ def url_bytes(
     limit: int = 500,
 ):
     paths = list_partitions("top_urls_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to)
+    body = date_filters_html(date_from, date_to, available_dates())
 
     groups = distinct_values("top_urls_daily", "url_group", date_from, date_to)
     body += "<form method='get'>"
@@ -1785,7 +1817,7 @@ def bots(
     limit: int = 500,
 ):
     bots_list = distinct_values("bot_urls_daily", "bot_family", date_from, date_to)
-    body = date_filters_html(date_from, date_to)
+    body = date_filters_html(date_from, date_to, available_dates())
     checked_assets = "checked" if include_assets else ""
     body += f"""
     <form method="get">
@@ -1917,7 +1949,7 @@ def wasted_crawl(
     limit: int = 500,
 ):
     paths = list_partitions("wasted_crawl_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to)
+    body = date_filters_html(date_from, date_to, available_dates())
 
     # Filters: these columns DO exist here
     bots_list = distinct_values("wasted_crawl_daily", "bot_family", date_from, date_to)
@@ -2005,7 +2037,7 @@ def top_resource_waste(
     limit: int = 500,
 ):
     paths = list_partitions("top_resource_waste_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to)
+    body = date_filters_html(date_from, date_to, available_dates())
 
     body += "<form method='get'>"
     body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
@@ -2046,7 +2078,7 @@ def human_urls(
     limit: int = 500,
 ):
     paths = list_partitions("human_urls_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to)
+    body = date_filters_html(date_from, date_to, available_dates())
 
     groups = distinct_values("human_urls_daily", "url_group", date_from, date_to)
 
@@ -2144,7 +2176,7 @@ def utm_report(
     sources_paths = list_partitions(sources_table, date_from, date_to)
     urls_paths = list_partitions(urls_table, date_from, date_to)
 
-    body = date_filters_html(date_from, date_to)
+    body = date_filters_html(date_from, date_to, available_dates())
 
     if not sources_paths:
         body += (
