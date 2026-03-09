@@ -204,6 +204,48 @@ def line_chart(rows, columns, x_col, y_cols, title):
     return f"<div class='card'>{chart_html}</div>"
 
 
+def bytes_line_chart(rows, columns, x_col, y_col, title):
+    """Line chart for a single byte-valued series; hover shows KB/MB/GB."""
+    if not rows:
+        return "<p>No data.</p>"
+    df = pd.DataFrame(rows, columns=columns)
+    x = [None if pd.isna(v) else str(v) for v in df[x_col].tolist()]
+    y, text = [], []
+    for v in df[y_col].tolist():
+        try:
+            fv = float(v) if v is not None and not (isinstance(v, float) and pd.isna(v)) else None
+        except Exception:
+            fv = None
+        y.append(fv)
+        text.append(fmt_bytes(fv) if fv is not None else "")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=x, y=y, mode="lines", name=y_col,
+                             text=text, hovertemplate="%{x}<br>%{text}<extra></extra>"))
+    fig.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20), title=title)
+    return f"<div class='card'>{fig.to_html(full_html=False, include_plotlyjs=False)}</div>"
+
+
+def bytes_bar_chart(rows, columns, x_col, y_col, title):
+    """Bar chart for a single byte-valued series; hover shows KB/MB/GB."""
+    if not rows:
+        return "<p>No data.</p>"
+    df = pd.DataFrame(rows, columns=columns)
+    x = ["" if v is None or pd.isna(v) else str(v) for v in df[x_col].tolist()]
+    y, text = [], []
+    for v in df[y_col].tolist():
+        try:
+            fv = float(v) if v is not None and not (isinstance(v, float) and pd.isna(v)) else None
+        except Exception:
+            fv = None
+        y.append(fv)
+        text.append(fmt_bytes(fv) if fv is not None else "")
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name=y_col, x=x, y=y,
+                         text=text, hovertemplate="%{x}<br>%{text}<extra></extra>"))
+    fig.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20), title=title)
+    return f"<div class='card'>{fig.to_html(full_html=False, include_plotlyjs=False)}</div>"
+
+
 def bar_chart(rows, columns, x_col, y_col=None, title="", y_cols=None, barmode="group"):
     """Bar chart. Pass y_cols (list) for grouped/stacked multi-series; y_col for single series."""
     if not rows:
@@ -1322,7 +1364,7 @@ def crawl_volume(date_from: Optional[str] = Query(None, alias="from"), date_to: 
         y_cols=["hits", "hits_bot", "hits_human"],
         title="Daily Crawl Volume"
     )
-    bytes_chart = line_chart(rows, cols, x_col="date", y_cols=["bytes_sent"], title="Daily bytes sent")
+    bytes_chart = bytes_line_chart(rows, cols, x_col="date", y_col="bytes_sent", title="Daily bytes sent")
     body = date_filters_html(date_from, date_to, available_dates())
     body += f"<p><a href='/export?report=daily&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
     body += chart_html
@@ -1787,7 +1829,7 @@ def url_bytes(
 
     if rows:
         body += "<h2>Largest pages by average response size</h2>"
-        body += bar_chart(
+        body += bytes_bar_chart(
             rows[:CHART_BAR_LIMIT], cols,
             x_col="path", y_col="avg_bytes_per_hit",
             title=f"Top {CHART_BAR_LIMIT} URLs by avg response size",
