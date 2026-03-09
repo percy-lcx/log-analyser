@@ -743,6 +743,11 @@ def build_aggregates_for_date(log_date: str) -> None:
       SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS hits_bot,
       SUM(CASE WHEN NOT is_bot THEN 1 ELSE 0 END) AS hits_human,
       SUM(CASE WHEN status_class = 3 THEN 1 ELSE 0 END) AS s3xx,
+      SUM(CASE WHEN status = 301 THEN 1 ELSE 0 END) AS s301,
+      SUM(CASE WHEN status = 302 THEN 1 ELSE 0 END) AS s302,
+      SUM(CASE WHEN status = 303 THEN 1 ELSE 0 END) AS s303,
+      SUM(CASE WHEN status = 307 THEN 1 ELSE 0 END) AS s307,
+      SUM(CASE WHEN status = 308 THEN 1 ELSE 0 END) AS s308,
       SUM(CASE WHEN status_class = 4 THEN 1 ELSE 0 END) AS s4xx,
       SUM(CASE WHEN status_class = 5 THEN 1 ELSE 0 END) AS s5xx,
       SUM(CASE WHEN is_parameterized THEN 1 ELSE 0 END) AS parameterized_hits,
@@ -751,16 +756,24 @@ def build_aggregates_for_date(log_date: str) -> None:
     GROUP BY date, path, url_group
     """
 
-    top_404_daily_sql = """
+    top_4xx_daily_sql = """
     SELECT
       date,
       path,
       url_group,
-      COUNT(*) AS hits_404,
-      SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS hits_404_bot,
-      SUM(bytes_sent) AS bytes_sent_404
+      COUNT(*) AS hits_4xx,
+      SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS hits_4xx_bot,
+      SUM(bytes_sent) AS bytes_sent_4xx,
+      SUM(CASE WHEN status = 400 THEN 1 ELSE 0 END) AS s400,
+      SUM(CASE WHEN status = 401 THEN 1 ELSE 0 END) AS s401,
+      SUM(CASE WHEN status = 403 THEN 1 ELSE 0 END) AS s403,
+      SUM(CASE WHEN status = 404 THEN 1 ELSE 0 END) AS s404,
+      SUM(CASE WHEN status = 405 THEN 1 ELSE 0 END) AS s405,
+      SUM(CASE WHEN status = 410 THEN 1 ELSE 0 END) AS s410,
+      SUM(CASE WHEN status = 422 THEN 1 ELSE 0 END) AS s422,
+      SUM(CASE WHEN status = 429 THEN 1 ELSE 0 END) AS s429
     FROM parsed
-    WHERE status = 404
+    WHERE status_class = 4
     GROUP BY date, path, url_group
     """
 
@@ -770,7 +783,11 @@ def build_aggregates_for_date(log_date: str) -> None:
       path,
       url_group,
       COUNT(*) AS hits_5xx,
-      SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS hits_5xx_bot
+      SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS hits_5xx_bot,
+      SUM(CASE WHEN status = 500 THEN 1 ELSE 0 END) AS s500,
+      SUM(CASE WHEN status = 502 THEN 1 ELSE 0 END) AS s502,
+      SUM(CASE WHEN status = 503 THEN 1 ELSE 0 END) AS s503,
+      SUM(CASE WHEN status = 504 THEN 1 ELSE 0 END) AS s504
     FROM parsed
     WHERE status_class = 5
     GROUP BY date, path, url_group
@@ -918,7 +935,7 @@ def build_aggregates_for_date(log_date: str) -> None:
     agg_write_one(conn, group_daily_sql, out("group_daily"))
     agg_write_one(conn, locale_group_daily_sql, out("locale_group_daily"))
     agg_write_one(conn, top_urls_daily_sql, out("top_urls_daily"))
-    agg_write_one(conn, top_404_daily_sql, out("top_404_daily"))
+    agg_write_one(conn, top_4xx_daily_sql, out("top_4xx_daily"))
     agg_write_one(conn, top_5xx_daily_sql, out("top_5xx_daily"))
     agg_write_one(conn, wasted_crawl_daily_sql, out("wasted_crawl_daily"))
     agg_write_one(conn, top_resource_waste_daily_sql, out("top_resource_waste_daily"))

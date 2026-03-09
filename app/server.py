@@ -265,7 +265,7 @@ TABLE_DESCRIPTIONS = {
     "locale_group_daily": "Daily hits by locale × URL group",
     "bot_daily": "Daily hits by bot family",
     "top_urls_daily": "Top requested paths per day",
-    "top_404_daily": "Top 404 paths per day",
+    "top_4xx_daily": "Top 4xx paths per day (all client errors, broken down by code)",
     "top_5xx_daily": "Top 5xx paths per day",
     "wasted_crawl_daily": "Wasted bot crawl by bot and path",
     "top_resource_waste_daily": "Resource waste score by path",
@@ -518,7 +518,7 @@ def page(title: str, body: str) -> HTMLResponse:
         ("Locale x URL group", "/reports/locale-groups"),
         ("Top URLs", "/reports/top-urls"),
         ("Top 3xx", "/reports/top-3xx"),
-        ("Top 404", "/reports/top-404"),
+        ("Top 4xx", "/reports/top-4xx"),
         ("Top 5xx", "/reports/top-5xx"),
         ("URL byte size", "/reports/url-bytes"),
         ("Bot traffic", "/reports/bots"),
@@ -1048,9 +1048,9 @@ def index():
         ("URL group breakdown", "/reports/url-groups", "Hits aggregated by URL group"),
         ("Locale x URL group", "/reports/locale-groups", "Cross-tab of locale and URL group"),
         ("Top URLs", "/reports/top-urls", "Most-requested paths, filterable by group"),
-        ("Top 3xx redirects", "/reports/top-3xx", "URLs that redirect visitors, with daily trend"),
-        ("Top 404s", "/reports/top-404", "Paths returning 404, with daily trend"),
-        ("Top 5xx errors", "/reports/top-5xx", "Paths returning 5xx, with daily trend"),
+        ("Top 3xx redirects", "/reports/top-3xx", "URLs that redirect visitors, broken down by code"),
+        ("Top 4xx errors", "/reports/top-4xx", "Paths returning 4xx, broken down by code (400/401/403/404…)"),
+        ("Top 5xx errors", "/reports/top-5xx", "Paths returning 5xx, broken down by code (500/502/503/504)"),
         ("URL byte size", "/reports/url-bytes", "Which URLs have the largest average response size"),
         ("Bot traffic", "/reports/bots", "Bot families summary + per-bot URL drill-down"),
         ("Wasted crawl", "/reports/wasted-crawl", "Bot requests that yielded no value"),
@@ -1378,18 +1378,36 @@ def top_urls(
     return page("Top URLs", body)
 
 
-@app.get("/reports/top-404", response_class=HTMLResponse)
-def top_404(
+@app.get("/reports/top-404")
+def top_404_redirect(
     date_from: Optional[str] = Query(None, alias="from"),
     date_to: Optional[str] = Query(None, alias="to"),
     include_assets: bool = False,
     url_group: Optional[str] = None,
     limit: int = 500,
 ):
-    paths = list_partitions("top_404_daily", date_from, date_to)
+    """Redirects old /reports/top-404 links to /reports/top-4xx."""
+    parts = []
+    if date_from:      parts.append(f"from={date_from}")
+    if date_to:        parts.append(f"to={date_to}")
+    if include_assets: parts.append("include_assets=true")
+    if url_group:      parts.append(f"url_group={url_group}")
+    parts.append(f"limit={limit}")
+    return RedirectResponse(url=f"/reports/top-4xx?{'&'.join(parts)}", status_code=301)
+
+
+@app.get("/reports/top-4xx", response_class=HTMLResponse)
+def top_4xx(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    include_assets: bool = False,
+    url_group: Optional[str] = None,
+    limit: int = 500,
+):
+    paths = list_partitions("top_4xx_daily", date_from, date_to)
     body = date_filters_html(date_from, date_to)
 
-    groups = distinct_values("top_404_daily", "url_group", date_from, date_to)
+    groups = distinct_values("top_4xx_daily", "url_group", date_from, date_to)
     body += "<form method='get'>"
     body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
     body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
@@ -1400,7 +1418,7 @@ def top_404(
     body += " <button type='submit'>Apply</button></form>"
 
     if not paths:
-        return page("Top 404", body + no_data_notice())
+        return page("Top 4xx", body + no_data_notice())
 
     clauses = []
     if not include_assets:
@@ -1409,13 +1427,20 @@ def top_404(
         clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
-    # 1) Trend over time (total 404s per day)
     daily_sql = f"""
     SELECT
         date,
-        SUM(hits_404) AS hits_404,
-        SUM(hits_404_bot) AS hits_404_bot,
-        (SUM(hits_404) - SUM(hits_404_bot)) AS hits_404_non_bot
+        SUM(hits_4xx)     AS hits_4xx,
+        SUM(hits_4xx_bot) AS hits_4xx_bot,
+        (SUM(hits_4xx) - SUM(hits_4xx_bot)) AS hits_4xx_non_bot,
+        SUM(s400) AS s400,
+        SUM(s401) AS s401,
+        SUM(s403) AS s403,
+        SUM(s404) AS s404,
+        SUM(s405) AS s405,
+        SUM(s410) AS s410,
+        SUM(s422) AS s422,
+        SUM(s429) AS s429
     FROM t
     {where}
     GROUP BY date
@@ -1423,42 +1448,51 @@ def top_404(
     """
     cols_d, rows_d = run_query(paths, daily_sql)
 
-    # 2) Top URLs (table + bar chart)
     sql = f"""
     SELECT path, url_group,
-        SUM(hits_404) AS hits_404,
-        SUM(hits_404_bot) AS hits_404_bot,
-        (SUM(hits_404) - SUM(hits_404_bot)) AS hits_404_non_bot,
-        SUM(bytes_sent_404) AS bytes_sent_404
+        SUM(hits_4xx)     AS hits_4xx,
+        SUM(hits_4xx_bot) AS hits_4xx_bot,
+        (SUM(hits_4xx) - SUM(hits_4xx_bot)) AS hits_4xx_non_bot,
+        SUM(bytes_sent_4xx) AS bytes_sent_4xx,
+        SUM(s400) AS s400,
+        SUM(s401) AS s401,
+        SUM(s403) AS s403,
+        SUM(s404) AS s404,
+        SUM(s405) AS s405,
+        SUM(s410) AS s410,
+        SUM(s422) AS s422,
+        SUM(s429) AS s429
     FROM t
     {where}
     GROUP BY path, url_group
-    ORDER BY hits_404 DESC
+    ORDER BY hits_4xx DESC
     LIMIT {int(limit)};
     """
     cols, rows = run_query(paths, sql)
 
     body += export_link(
-        "top-404", date_from, date_to,
+        "top-4xx", date_from, date_to,
         extra=f"&include_assets={'true' if include_assets else 'false'}"
               + (f"&url_group={url_group}" if url_group else "")
               + f"&limit={int(limit)}"
     )
 
-    body += "<h2>404 trend (daily)</h2>"
-    body += line_chart(rows_d, cols_d, x_col="date", y_cols=["hits_404", "hits_404_bot", "hits_404_non_bot"], title="404s by day")
+    body += "<h2>4xx trend (daily)</h2>"
+    body += line_chart(rows_d, cols_d, x_col="date",
+                       y_cols=["s400", "s401", "s403", "s404", "s405", "s410", "s422", "s429"],
+                       title="4xx responses by day (per code)")
     body += "<br>"
     body += html_table(rows_d, cols_d, max_rows=500)
 
-    chart_limit = CHART_BAR_LIMIT
     if rows:
-        rows_bar = [r[:len(cols)] for r in rows[:chart_limit]]
-        body += "<h2>Top 404 URLs</h2>"
-        body += bar_chart(rows_bar, cols, x_col="path", y_col="hits_404", title=f"Top {chart_limit} 404 URLs")
+        body += "<h2>Top 4xx URLs</h2>"
+        body += bar_chart(rows[:CHART_BAR_LIMIT], cols, x_col="path",
+                          y_cols=["s400", "s401", "s403", "s404", "s405", "s410", "s422", "s429"],
+                          title=f"Top {CHART_BAR_LIMIT} 4xx URLs by code", barmode="stack")
         body += "<br>"
 
     body += html_table(rows, cols, max_rows=min(int(limit), 500))
-    return page("Top 404", body)
+    return page("Top 4xx", body)
 
 @app.get("/reports/top-5xx", response_class=HTMLResponse)
 def top_5xx(
@@ -1491,13 +1525,16 @@ def top_5xx(
         clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
-    # 1) Trend over time (total 5xx per day)
     daily_sql = f"""
     SELECT
         date,
-        SUM(hits_5xx) AS hits_5xx,
+        SUM(hits_5xx)     AS hits_5xx,
         SUM(hits_5xx_bot) AS hits_5xx_bot,
-        (SUM(hits_5xx) - SUM(hits_5xx_bot)) AS hits_5xx_non_bot
+        (SUM(hits_5xx) - SUM(hits_5xx_bot)) AS hits_5xx_non_bot,
+        SUM(s500) AS s500,
+        SUM(s502) AS s502,
+        SUM(s503) AS s503,
+        SUM(s504) AS s504
     FROM t
     {where}
     GROUP BY date
@@ -1505,12 +1542,15 @@ def top_5xx(
     """
     cols_d, rows_d = run_query(paths, daily_sql)
 
-    # 2) Top URLs (table + bar chart)
     sql = f"""
     SELECT path, url_group,
-        SUM(hits_5xx) AS hits_5xx,
+        SUM(hits_5xx)     AS hits_5xx,
         SUM(hits_5xx_bot) AS hits_5xx_bot,
-        (SUM(hits_5xx) - SUM(hits_5xx_bot)) AS hits_5xx_non_bot
+        (SUM(hits_5xx) - SUM(hits_5xx_bot)) AS hits_5xx_non_bot,
+        SUM(s500) AS s500,
+        SUM(s502) AS s502,
+        SUM(s503) AS s503,
+        SUM(s504) AS s504
     FROM t
     {where}
     GROUP BY path, url_group
@@ -1527,15 +1567,17 @@ def top_5xx(
     )
 
     body += "<h2>5xx trend (daily)</h2>"
-    body += line_chart(rows_d, cols_d, x_col="date", y_cols=["hits_5xx", "hits_5xx_bot", "hits_5xx_non_bot"], title="5xx by day")
+    body += line_chart(rows_d, cols_d, x_col="date",
+                       y_cols=["s500", "s502", "s503", "s504"],
+                       title="5xx responses by day (per code)")
     body += "<br>"
     body += html_table(rows_d, cols_d, max_rows=500)
 
-    chart_limit = CHART_BAR_LIMIT
     if rows:
-        rows_bar = [r[:len(cols)] for r in rows[:chart_limit]]
         body += "<h2>Top 5xx URLs</h2>"
-        body += bar_chart(rows_bar, cols, x_col="path", y_col="hits_5xx", title=f"Top {chart_limit} 5xx URLs")
+        body += bar_chart(rows[:CHART_BAR_LIMIT], cols, x_col="path",
+                          y_cols=["s500", "s502", "s503", "s504"],
+                          title=f"Top {CHART_BAR_LIMIT} 5xx URLs by code", barmode="stack")
         body += "<br>"
 
     body += html_table(rows, cols, max_rows=min(int(limit), 500))
@@ -1575,7 +1617,12 @@ def top_3xx(
 
     daily_sql = f"""
     SELECT date,
-           SUM(s3xx) AS s3xx
+           SUM(s3xx) AS s3xx,
+           SUM(s301)  AS s301,
+           SUM(s302)  AS s302,
+           SUM(s303)  AS s303,
+           SUM(s307)  AS s307,
+           SUM(s308)  AS s308
     FROM t
     {where}
     GROUP BY date
@@ -1585,8 +1632,13 @@ def top_3xx(
 
     sql = f"""
     SELECT path, url_group,
-           SUM(s3xx)        AS s3xx,
-           SUM(hits_total)  AS hits_total,
+           SUM(s3xx)  AS s3xx,
+           SUM(s301)  AS s301,
+           SUM(s302)  AS s302,
+           SUM(s303)  AS s303,
+           SUM(s307)  AS s307,
+           SUM(s308)  AS s308,
+           SUM(hits_total) AS hits_total,
            ROUND(100.0 * SUM(s3xx) / NULLIF(SUM(hits_total), 0), 1) AS redirect_pct
     FROM t
     {where}
@@ -1605,14 +1657,15 @@ def top_3xx(
     )
 
     body += "<h2>Redirect trend (daily)</h2>"
-    body += line_chart(rows_d, cols_d, x_col="date", y_cols=["s3xx"], title="3xx responses by day")
+    body += line_chart(rows_d, cols_d, x_col="date", y_cols=["s301", "s302", "s303", "s307", "s308"], title="3xx responses by day (per code)")
     body += "<br>"
     body += html_table(rows_d, cols_d, max_rows=500)
 
-    chart_limit = CHART_BAR_LIMIT
     if rows:
         body += "<h2>Top redirecting URLs</h2>"
-        body += bar_chart(rows[:chart_limit], cols, x_col="path", y_col="s3xx", title=f"Top {chart_limit} redirecting URLs")
+        body += bar_chart(rows[:CHART_BAR_LIMIT], cols, x_col="path",
+                          y_cols=["s301", "s302", "s303", "s307", "s308"],
+                          title=f"Top {CHART_BAR_LIMIT} redirecting URLs by code", barmode="stack")
         body += "<br>"
 
     body += html_table(rows, cols, max_rows=min(int(limit), 500))
@@ -2576,8 +2629,8 @@ def export(
         """
         return stream_csv(sql, paths, "top_urls.csv")
 
-    if report == "top-404":
-        paths = list_partitions("top_404_daily", date_from, date_to)
+    if report in ("top-404", "top-4xx"):
+        paths = list_partitions("top_4xx_daily", date_from, date_to)
         clauses = []
         if not include_assets:
             clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
@@ -2586,15 +2639,23 @@ def export(
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"""
         SELECT path, url_group,
-                SUM(hits_404) AS hits_404,
-                SUM(hits_404_bot) AS hits_404_bot
+                SUM(hits_4xx) AS hits_4xx,
+                SUM(hits_4xx_bot) AS hits_4xx_bot,
+                SUM(s400) AS s400,
+                SUM(s401) AS s401,
+                SUM(s403) AS s403,
+                SUM(s404) AS s404,
+                SUM(s405) AS s405,
+                SUM(s410) AS s410,
+                SUM(s422) AS s422,
+                SUM(s429) AS s429
         FROM t
         {where}
         GROUP BY path, url_group
-        ORDER BY hits_404 DESC
+        ORDER BY hits_4xx DESC
         LIMIT {int(limit)};
         """
-        return stream_csv(sql, paths, "top_404.csv")
+        return stream_csv(sql, paths, "top_4xx.csv")
 
     if report == "top-5xx":
         paths = list_partitions("top_5xx_daily", date_from, date_to)
@@ -2607,7 +2668,11 @@ def export(
         sql = f"""
         SELECT path, url_group,
                 SUM(hits_5xx) AS hits_5xx,
-                SUM(hits_5xx_bot) AS hits_5xx_bot
+                SUM(hits_5xx_bot) AS hits_5xx_bot,
+                SUM(s500) AS s500,
+                SUM(s502) AS s502,
+                SUM(s503) AS s503,
+                SUM(s504) AS s504
         FROM t
         {where}
         GROUP BY path, url_group
@@ -2627,6 +2692,8 @@ def export(
         sql = f"""
         SELECT path, url_group,
                SUM(s3xx) AS s3xx,
+               SUM(s301) AS s301, SUM(s302) AS s302, SUM(s303) AS s303,
+               SUM(s307) AS s307, SUM(s308) AS s308,
                SUM(hits_total) AS hits_total,
                ROUND(100.0 * SUM(s3xx) / NULLIF(SUM(hits_total), 0), 1) AS redirect_pct
         FROM t
@@ -2851,6 +2918,6 @@ def export(
         return stream_csv(sql, paths, f"utm_{utm_source}_{dim}.csv")
 
     return PlainTextResponse(
-        "Unknown report. Try report=daily, daily-status, locales, url-groups, locale-groups, top-urls, top-3xx, top-404, top-5xx, url-bytes, bots, wasted-crawl, top-resource-waste, bot-urls, utm-sources, utm, utm-urls",
+        "Unknown report. Try report=daily, daily-status, locales, url-groups, locale-groups, top-urls, top-3xx, top-4xx, top-5xx, url-bytes, bots, wasted-crawl, top-resource-waste, bot-urls, utm-sources, utm, utm-urls",
         status_code=400,
     )
