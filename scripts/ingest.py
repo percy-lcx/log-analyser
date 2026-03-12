@@ -338,12 +338,65 @@ def parse_utm_fields(query_string: Optional[str]) -> Tuple[bool, Optional[str], 
 
     return has_utm, utm_source, utm_source_norm, utm_medium, utm_campaign, utm_term, utm_content
 
+def _find_go_binary() -> Optional[str]:
+    """Return an absolute path to the 'go' executable, or None."""
+    import shutil
+    for p in ["/usr/local/go/bin/go", "/usr/local/bin/go", "/usr/bin/go"]:
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return shutil.which("go")
+
+
+def _try_build_native_parser() -> Optional[Path]:
+    """Compile the Go parser from source if Go is available. Returns binary path or None."""
+    parser_dir = ROOT / "parser"
+    candidate = parser_dir / "log-parser"
+    if candidate.exists() and os.access(candidate, os.X_OK):
+        return candidate
+    if not (parser_dir / "main.go").exists():
+        return None
+    go_bin = _find_go_binary()
+    if go_bin is None:
+        print("[parser] Go toolchain not found — using Python parser.", flush=True)
+        return None
+    print("[parser] Compiling native parser (this runs once)...", flush=True)
+    t0 = time.monotonic()
+    try:
+        result = subprocess.run(
+            [go_bin, "build", "-o", str(candidate), "."],
+            cwd=str(parser_dir),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "GONOSUMDB": "*"},
+        )
+    except subprocess.TimeoutExpired:
+        print("[parser] Go build timed out — using Python parser.", flush=True)
+        return None
+    except Exception as exc:
+        print(f"[parser] Go build error ({exc}) — using Python parser.", flush=True)
+        return None
+    elapsed = time.monotonic() - t0
+    if result.returncode != 0:
+        print(
+            f"[parser] Go build failed (exit {result.returncode}) — using Python parser.\n"
+            f"  stderr: {(result.stderr or '').strip()[:300]}",
+            flush=True,
+        )
+        return None
+    if not candidate.exists() or not os.access(candidate, os.X_OK):
+        print("[parser] Go build appeared to succeed but binary not found — using Python parser.", flush=True)
+        return None
+    print(f"[parser] Native parser built in {elapsed:.1f}s \u2192 {candidate}", flush=True)
+    return candidate
+
+
 def _find_native_parser() -> Optional[Path]:
-    """Return the path to the pre-built native log-parser binary, or None."""
+    """Return the path to the native log-parser binary, compiling it if needed."""
     candidate = ROOT / "parser" / "log-parser"
     if candidate.exists() and os.access(candidate, os.X_OK):
         return candidate
-    return None
+    return _try_build_native_parser()
 
 
 def _build_parsed_native(log_date: str, files: List[Path], native_bin: Path) -> int:
@@ -1004,11 +1057,12 @@ def ingest(dry_run: bool = False) -> None:
 
         t0 = time.monotonic()
         n_rows = build_parsed_for_date(d, day_files, bot_rules, url_cfg, referer_rules)
-        t_agg = time.monotonic()
+        t_parsed = time.monotonic()
+        print(f"[DATE {d}] Parsed rows: {n_rows} ({t_parsed - t0:.1f}s)", flush=True)
 
         build_aggregates_for_date(d)
         t_done = time.monotonic()
-        print(f"[DATE {d}] Aggregates done ({t_done - t_agg:.1f}s, total {t_done - t0:.1f}s)")
+        print(f"[DATE {d}] Aggregates done ({t_done - t_parsed:.1f}s, total {t_done - t0:.1f}s)")
 
         for fp in day_files:
             size_b, mtime = file_meta(fp)
