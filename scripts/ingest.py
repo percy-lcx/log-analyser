@@ -689,7 +689,7 @@ def build_aggregates_for_date(log_date: str) -> None:
     hourly_sql = """
     SELECT
       date,
-      date_trunc('hour', ts_local) AS hour_local,
+      date_trunc('hour', ts_local::TIMESTAMP) AS hour_local,
       COUNT(*) AS hits,
       SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS hits_bot,
       SUM(CASE WHEN NOT is_bot THEN 1 ELSE 0 END) AS hits_human,
