@@ -51,7 +51,8 @@ const noLocaleLabel = "no-locale"
 // ---------------------------------------------------------------------------
 
 var nginxRE = regexp.MustCompile(
-	`^(?P<ip>\S+)\s+\S+\s+\S+\s+\[(?P<time>[^\]]+)\]\s+` +
+	`^(?P<ip>\S+)\s+\S+\s+(?:(?P<country>[A-Z]{2})\s+)?\S+\s+\[(?P<time>[^\]]+)\]\s+` +
+		`(?:-\s+)?` +
 		`"(?P<request>[^"]*)"\s+` +
 		`(?P<status>\d{3})\s+` +
 		`(?P<bytes>\d+)\s+` +
@@ -137,6 +138,7 @@ type logRowJSON struct {
 	TsLocal         string  `json:"ts_local"`
 	TsUtc           string  `json:"ts_utc"`
 	EdgeIP          string  `json:"edge_ip"`
+	Country         *string `json:"country"`
 	Method          *string `json:"method"`
 	Path            string  `json:"path"`
 	HttpVersion     *string `json:"http_version"`
@@ -610,6 +612,12 @@ func processFiles(date string, files []string, botRules, refererRules []botRule,
 			referer := m[nginxIdx["referer"]]
 			ua := m[nginxIdx["ua"]]
 
+			var countryPtr *string
+			if ci, ok := nginxIdx["country"]; ok && m[ci] != "" {
+				c := m[ci]
+				countryPtr = &c
+			}
+
 			statusInt, err := strconv.ParseInt(statusStr, 10, 32)
 			if err != nil {
 				nBad++
@@ -691,6 +699,7 @@ func processFiles(date string, files []string, botRules, refererRules []botRule,
 				TsLocal:         tsLocal.Format("2006-01-02T15:04:05Z07:00"),
 				TsUtc:           tsUTC.Format("2006-01-02T15:04:05"),
 				EdgeIP:          ip,
+				Country:         countryPtr,
 				Method:          method,
 				Path:            path,
 				HttpVersion:     httpVer,

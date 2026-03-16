@@ -37,7 +37,8 @@ NO_UTM_SOURCE_LABEL = "(none)"  # NEW
 # Nginx combined-ish:
 # $remote_addr - - [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent"
 NGINX_RE = re.compile(
-    r'^(?P<ip>\S+)\s+\S+\s+\S+\s+\[(?P<time>[^\]]+)\]\s+'
+    r'^(?P<ip>\S+)\s+\S+\s+(?:(?P<country>[A-Z]{2})\s+)?\S+\s+\[(?P<time>[^\]]+)\]\s+'
+    r'(?:-\s+)?'
     r'"(?P<request>[^"]*)"\s+'
     r'(?P<status>\d{3})\s+'
     r'(?P<bytes>\d+)\s+'
@@ -447,7 +448,7 @@ def _build_parsed_native(log_date: str, files: List[Path], native_bin: Path) -> 
         if n_rows == 0:
             # Write empty parquet with correct schema.
             df = pd.DataFrame(columns=[
-                "date", "ts_local", "ts_utc", "edge_ip", "method", "path", "http_version",
+                "date", "ts_local", "ts_utc", "edge_ip", "country", "method", "path", "http_version",
                 "status", "status_class", "bytes_sent", "referer", "user_agent",
                 "has_query", "is_parameterized", "locale", "section", "url_group", "is_resource",
                 "is_bot", "bot_family", "request_target", "query_string",
@@ -471,6 +472,7 @@ def _build_parsed_native(log_date: str, files: List[Path], native_bin: Path) -> 
                         ts_local::TIMESTAMPTZ  AS ts_local,
                         ts_utc::TIMESTAMP      AS ts_utc,
                         edge_ip,
+                        country,
                         method,
                         path,
                         http_version,
@@ -547,6 +549,7 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
                 bytes_sent = int(m.group("bytes"))
                 referer = m.group("referer")
                 ua = m.group("ua")
+                country = m.group("country")  # None for old-format logs
 
                 try:
                     ts_local, ts_utc = parse_time_local(time_s)
@@ -585,6 +588,7 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
                     "ts_local": ts_local,
                     "ts_utc": ts_utc.replace(tzinfo=None),
                     "edge_ip": ip,
+                    "country": country,
                     "method": method,
                     "path": path,
                     "http_version": http_ver,
@@ -617,7 +621,7 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
 
     if not rows:
         df = pd.DataFrame(columns=[
-            "date", "ts_local", "ts_utc", "edge_ip", "method", "path", "http_version",
+            "date", "ts_local", "ts_utc", "edge_ip", "country", "method", "path", "http_version",
             "status", "status_class", "bytes_sent", "referer", "user_agent",
             "has_query", "is_parameterized", "locale", "section", "url_group", "is_resource",
             "is_bot", "bot_family", "request_target", "query_string",
