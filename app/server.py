@@ -787,6 +787,7 @@ def page(title: str, body: str) -> HTMLResponse:
         ("Human URLs", "/reports/human-urls"),
         ("UTM sources", "/reports/utm"),
         ("SQL Query", "/query"),
+        ("Log Viewer", "/logs"),
     ]
     nav_links = "\n".join(
         f"<a href='{url}' class='nav-link' data-path='{url}'>{name}</a>"
@@ -3616,3 +3617,275 @@ def export(
         "Unknown report. Try report=daily, daily-status, locales, url-groups, locale-groups, top-urls, top-3xx, top-4xx, top-5xx, url-bytes, bots, wasted-crawl, top-resource-waste, bot-urls, utm-sources, utm, utm-urls",
         status_code=400,
     )
+
+
+# ---------------------------------------------------------------------------
+# Log Viewer — browse individual parsed log rows
+# ---------------------------------------------------------------------------
+
+PARSED_DIR = ROOT / "data" / "parsed"
+
+
+def list_parsed_partitions(date_from: Optional[str], date_to: Optional[str]) -> List[str]:
+    """Return sorted list of parquet paths in data/parsed/date=YYYY-MM-DD/."""
+    if not PARSED_DIR.exists():
+        return []
+    out = []
+    for p in PARSED_DIR.glob("date=*/access.parquet"):
+        date_dir = p.parent.name
+        if not date_dir.startswith("date="):
+            continue
+        d = date_dir.split("=", 1)[1]
+        if date_from and d < date_from:
+            continue
+        if date_to and d > date_to:
+            continue
+        out.append(p.as_posix())
+    return sorted(out)
+
+
+def available_parsed_dates() -> List[str]:
+    """Return sorted list of dates that have parsed parquet files."""
+    if not PARSED_DIR.exists():
+        return []
+    dates: set[str] = set()
+    for p in PARSED_DIR.glob("date=*/access.parquet"):
+        date_dir = p.parent.name
+        if date_dir.startswith("date="):
+            dates.add(date_dir.split("=", 1)[1])
+    return sorted(dates)
+
+
+@app.get("/logs", response_class=HTMLResponse)
+def log_viewer(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    page_num: int = Query(1, alias="page"),
+    per_page: int = Query(100, alias="per_page"),
+    search: Optional[str] = Query(None),
+    status: Optional[int] = Query(None),
+    method: Optional[str] = Query(None),
+    is_bot: Optional[str] = Query(None),
+    bot_family: Optional[str] = Query(None),
+    url_group: Optional[str] = Query(None),
+    locale: Optional[str] = Query(None),
+    country: Optional[str] = Query(None),
+    sort: str = Query("ts_utc"),
+    order: str = Query("desc"),
+):
+    avail = available_parsed_dates()
+
+    # Default to latest available date if no range specified
+    if not date_from and not date_to and avail:
+        date_from = avail[-1]
+        date_to = avail[-1]
+
+    # Enforce max 7-day range
+    if date_from and date_to:
+        try:
+            d_from = datetime.strptime(date_from, "%Y-%m-%d")
+            d_to = datetime.strptime(date_to, "%Y-%m-%d")
+            if (d_to - d_from).days > 7:
+                date_to = (d_from + timedelta(days=7)).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    paths = list_parsed_partitions(date_from, date_to)
+
+    # ── Filter form ──
+    body = ""
+
+    # Date filters
+    min_date = avail[0] if avail else ""
+    max_date = avail[-1] if avail else ""
+    body += "<form method='get'>"
+    body += f"<label>From<input type='date' name='from' value='{date_from or ''}' min='{min_date}' max='{max_date}'></label>"
+    body += f"<label>To<input type='date' name='to' value='{date_to or ''}' min='{min_date}' max='{max_date}'></label>"
+    body += f"<label>Search<input type='text' name='search' value='{search or ''}' placeholder='path, IP, UA, referer'></label>"
+    body += f"<label>Status<input type='number' name='status' value='{status or ''}' placeholder='e.g. 404' style='width:80px'></label>"
+
+    # Method select
+    method_opts = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]
+    body += "<label>Method<select name='method'><option value=''>All</option>"
+    for m in method_opts:
+        sel = "selected" if method == m else ""
+        body += f"<option value='{m}' {sel}>{m}</option>"
+    body += "</select></label>"
+
+    # Bot filter
+    body += "<label>Bot<select name='is_bot'><option value=''>All</option>"
+    for val, lbl in [("true", "Bots only"), ("false", "Humans only")]:
+        sel = "selected" if is_bot == val else ""
+        body += f"<option value='{val}' {sel}>{lbl}</option>"
+    body += "</select></label>"
+
+    body += f"<label>Per page<select name='per_page'>"
+    for pp in [50, 100, 200, 500]:
+        sel = "selected" if per_page == pp else ""
+        body += f"<option value='{pp}' {sel}>{pp}</option>"
+    body += "</select></label>"
+
+    body += " <button type='submit'>Apply</button></form>"
+
+    if not paths:
+        return page("Log Viewer", body + no_data_notice())
+
+    # ── Build SQL query ──
+    clauses: list[str] = []
+    if status:
+        clauses.append(f"status = {int(status)}")
+    if method:
+        clauses.append(f"method = '{sql_escape_string(method)}'")
+    if is_bot == "true":
+        clauses.append("is_bot = true")
+    elif is_bot == "false":
+        clauses.append("is_bot = false")
+    if bot_family:
+        clauses.append(f"bot_family = '{sql_escape_string(bot_family)}'")
+    if url_group:
+        clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+    if locale:
+        clauses.append(f"locale = '{sql_escape_string(locale)}'")
+    if country:
+        clauses.append(f"country = '{sql_escape_string(country)}'")
+    if search:
+        esc = sql_escape_string(search)
+        clauses.append(
+            f"(path ILIKE '%{esc}%' OR edge_ip ILIKE '%{esc}%'"
+            f" OR user_agent ILIKE '%{esc}%' OR referer ILIKE '%{esc}%')"
+        )
+
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    # Validate sort column
+    allowed_sort = {"ts_utc", "edge_ip", "method", "path", "status", "bytes_sent", "is_bot", "bot_family", "user_agent", "url_group", "locale"}
+    sort_col = sort if sort in allowed_sort else "ts_utc"
+    sort_dir = "ASC" if order.lower() == "asc" else "DESC"
+
+    # Clamp pagination
+    per_page = min(max(per_page, 10), 500)
+    page_num = max(page_num, 1)
+    offset = (page_num - 1) * per_page
+
+    # Count total rows
+    count_sql = f"SELECT COUNT(*) FROM t {where};"
+    _, count_rows = run_query(paths, count_sql)
+    total = count_rows[0][0] if count_rows else 0
+
+    # Fetch page
+    data_sql = f"""
+    SELECT ts_utc, edge_ip, method, path, status, bytes_sent,
+           is_bot, bot_family, user_agent, url_group, locale, country
+    FROM t
+    {where}
+    ORDER BY {sort_col} {sort_dir}
+    LIMIT {per_page} OFFSET {offset};
+    """
+    cols, rows = run_query(paths, data_sql)
+
+    # Format rows for display
+    display_rows = []
+    for r in rows:
+        row = list(r)
+        # ts_utc (idx 0): format nicely
+        if row[0] is not None:
+            row[0] = str(row[0])[:19]
+        # bytes_sent (idx 5): human-readable
+        row[5] = fmt_bytes(row[5])
+        # is_bot (idx 6): label
+        row[6] = "Bot" if row[6] else "Human"
+        # user_agent (idx 8): truncate
+        if row[8] and len(str(row[8])) > 80:
+            row[8] = str(row[8])[:80] + "\u2026"
+        display_rows.append(row)
+
+    # ── Pagination info ──
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page_num = min(page_num, total_pages)
+
+    # Build base query string for pagination links
+    params: dict[str, str] = {}
+    if date_from:
+        params["from"] = date_from
+    if date_to:
+        params["to"] = date_to
+    if search:
+        params["search"] = search
+    if status:
+        params["status"] = str(status)
+    if method:
+        params["method"] = method
+    if is_bot:
+        params["is_bot"] = is_bot
+    if bot_family:
+        params["bot_family"] = bot_family
+    if url_group:
+        params["url_group"] = url_group
+    if locale:
+        params["locale"] = locale
+    if country:
+        params["country"] = country
+    if per_page != 100:
+        params["per_page"] = str(per_page)
+    if sort != "ts_utc":
+        params["sort"] = sort
+    if order != "desc":
+        params["order"] = order
+
+    def page_link(p: int, label: str) -> str:
+        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        return f"<a href='/logs?page={p}&{qs}' style='padding:4px 10px;border:1px solid #cbd5e1;border-radius:4px;text-decoration:none;color:#3b82f6;font-size:13px;margin:0 2px;'>{label}</a>"
+
+    pagination = f"<div style='display:flex;align-items:center;gap:8px;margin:12px 0;flex-wrap:wrap;'>"
+    pagination += f"<span style='font-size:13px;color:#64748b;'>{total:,} rows &middot; page {page_num} of {total_pages:,}</span>"
+    if page_num > 1:
+        pagination += page_link(1, "&laquo; First")
+        pagination += page_link(page_num - 1, "&lsaquo; Prev")
+    if page_num < total_pages:
+        pagination += page_link(page_num + 1, "Next &rsaquo;")
+        pagination += page_link(total_pages, "Last &raquo;")
+    pagination += "</div>"
+
+    body += pagination
+    body += html_table(display_rows, cols, max_rows=per_page)
+    body += pagination
+
+    return page("Log Viewer", body)
+
+
+@app.get("/logs/detail", response_class=HTMLResponse)
+def log_detail(
+    date: str = Query(...),
+    row: int = Query(...),
+):
+    """Show all fields for a single log entry identified by date + row offset."""
+    paths = list_parsed_partitions(date, date)
+    if not paths:
+        return page("Log Detail", "<p class='no-data'>No data for this date.</p>")
+
+    sql = f"""
+    SELECT *
+    FROM t
+    LIMIT 1 OFFSET {max(0, int(row))};
+    """
+    cols, rows = run_query(paths, sql)
+    if not rows:
+        return page("Log Detail", "<p class='no-data'>Row not found.</p>")
+
+    entry = rows[0]
+    items = ""
+    for col_name, val in zip(cols, entry):
+        display_val = val if val is not None else "<em style='color:#94a3b8'>null</em>"
+        if col_name == "bytes_sent" and val is not None:
+            display_val = f"{val} ({fmt_bytes(val)})"
+        items += (
+            f"<tr>"
+            f"<td style='font-weight:600;color:#1e293b;padding:6px 16px 6px 0;white-space:nowrap;vertical-align:top;font-family:monospace;font-size:12px;'>{col_name}</td>"
+            f"<td style='padding:6px 0;word-break:break-all;font-size:13px;'>{display_val}</td>"
+            f"</tr>"
+        )
+
+    body = f"<p style='margin-bottom:12px;'><a href='/logs?from={date}&to={date}' style='color:#3b82f6;text-decoration:none;font-size:13px;'>&larr; Back to logs</a></p>"
+    body += f"<div class='card'><table style='width:100%;border-collapse:collapse;'>{items}</table></div>"
+
+    return page(f"Log Detail — {date}", body)
