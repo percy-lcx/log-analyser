@@ -777,6 +777,7 @@ body {
     display: flex;
     flex-direction: column;
     min-height: 100vh;
+    min-width: 0;
 }
 .topbar {
     background: #fff;
@@ -798,7 +799,7 @@ body {
 }
 .scroll-toggle:hover { background: #f1f5f9; color: #1e293b; }
 .scroll-toggle.active { background: #eff6ff; color: #3b82f6; border-color: #bfdbfe; }
-.content { padding: 20px 24px; flex: 1; }
+.content { padding: 20px 24px; flex: 1; overflow: hidden; }
 
 /* Hide raw <br> separators between cards */
 .content > br { display: none; }
