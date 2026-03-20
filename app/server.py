@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import json
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import duckdb
@@ -331,6 +332,181 @@ def no_data_notice() -> str:
     return "<p class='no-data'>No data found for the selected date range.</p>"
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers for actionable insights
+# ---------------------------------------------------------------------------
+
+def _compute_periods(
+    date_from: Optional[str],
+    date_to: Optional[str],
+    avail: List[str],
+) -> Tuple[str, str, str, str]:
+    """Return (curr_from, curr_to, prev_from, prev_to) date strings.
+
+    If a date range is given, the previous period is the same-length window
+    immediately before.  If no range, use the latest 7 days of available data
+    as current and the 7 days before that as previous.
+    """
+    if date_from and date_to:
+        d_from = datetime.strptime(date_from, "%Y-%m-%d")
+        d_to = datetime.strptime(date_to, "%Y-%m-%d")
+        span = (d_to - d_from).days + 1
+        prev_to = d_from - timedelta(days=1)
+        prev_from = prev_to - timedelta(days=span - 1)
+        return date_from, date_to, prev_from.strftime("%Y-%m-%d"), prev_to.strftime("%Y-%m-%d")
+
+    if not avail:
+        today = datetime.now().strftime("%Y-%m-%d")
+        return today, today, today, today
+
+    curr_to_dt = datetime.strptime(avail[-1], "%Y-%m-%d")
+    curr_from_dt = curr_to_dt - timedelta(days=6)
+    prev_to_dt = curr_from_dt - timedelta(days=1)
+    prev_from_dt = prev_to_dt - timedelta(days=6)
+    return (
+        curr_from_dt.strftime("%Y-%m-%d"),
+        curr_to_dt.strftime("%Y-%m-%d"),
+        prev_from_dt.strftime("%Y-%m-%d"),
+        prev_to_dt.strftime("%Y-%m-%d"),
+    )
+
+
+def _trend_arrow(current: float, previous: float, lower_is_better: bool = False) -> str:
+    """Return an HTML snippet with a colored arrow and percent change."""
+    if previous == 0:
+        if current == 0:
+            return "<span class='kpi-trend-flat'>&#8212; 0%</span>"
+        return "<span class='kpi-trend-up'>&#9650; new</span>" if not lower_is_better else "<span class='kpi-trend-down-bad'>&#9650; new</span>"
+    pct = (current - previous) / abs(previous) * 100
+    if abs(pct) < 0.5:
+        return f"<span class='kpi-trend-flat'>&#8212; {pct:+.0f}%</span>"
+    if pct > 0:
+        cls = "kpi-trend-up-bad" if lower_is_better else "kpi-trend-up-good"
+        return f"<span class='{cls}'>&#9650; {pct:+.0f}%</span>"
+    cls = "kpi-trend-down-good" if lower_is_better else "kpi-trend-down-bad"
+    return f"<span class='{cls}'>&#9660; {pct:+.0f}%</span>"
+
+
+def _fmt_number(n) -> str:
+    """Format a number with commas."""
+    try:
+        return f"{int(n):,}"
+    except (TypeError, ValueError):
+        return str(n)
+
+
+def kpi_card(label: str, current, previous, fmt_fn=None, lower_is_better: bool = False) -> str:
+    """Render a single KPI metric card with trend arrow."""
+    fn = fmt_fn or _fmt_number
+    try:
+        c = float(current or 0)
+        p = float(previous or 0)
+    except (TypeError, ValueError):
+        c, p = 0.0, 0.0
+    arrow = _trend_arrow(c, p, lower_is_better)
+    return (
+        f"<div class='kpi-card'>"
+        f"<div class='kpi-label'>{label}</div>"
+        f"<div class='kpi-value'>{fn(c)}</div>"
+        f"<div class='kpi-change'>{arrow}</div>"
+        f"</div>"
+    )
+
+
+def issue_card(severity: str, title: str, detail: str, link: str) -> str:
+    """Render a finding card with severity badge, description, and drill-down link."""
+    return (
+        f"<div class='issue-item issue-{severity}'>"
+        f"<span class='issue-severity'>{severity.upper()}</span>"
+        f"<div class='issue-body'>"
+        f"<div class='issue-title'>{title}</div>"
+        f"<div class='issue-detail'>{detail}</div>"
+        f"</div>"
+        f"<a class='issue-link' href='{link}'>View details &#8594;</a>"
+        f"</div>"
+    )
+
+
+def recommendations_section(items: List[Tuple[str, str, str]]) -> str:
+    """Render a 'Recommended Actions' box.
+
+    *items*: list of (action_type, description, code_suggestion).
+    """
+    if not items:
+        return ""
+    rows_html = ""
+    for i, (action, desc, suggestion) in enumerate(items, 1):
+        rows_html += (
+            f"<div class='rec-item'>"
+            f"<span class='rec-num'>{i}</span>"
+            f"<div class='rec-body'>"
+            f"<span class='rec-action'>{action}</span>"
+            f"<span class='rec-desc'>{desc}</span>"
+            + (f"<code class='rec-code'>{suggestion}</code>" if suggestion else "")
+            + f"</div></div>"
+        )
+    return (
+        f"<div class='recommendations-box'>"
+        f"<div class='rec-heading'>Recommended Actions</div>"
+        f"{rows_html}"
+        f"</div>"
+    )
+
+
+def add_trend_columns(
+    cols: List[str],
+    rows: list,
+    prev_cols: List[str],
+    prev_rows: list,
+    key_col: str,
+    metric_cols: List[str],
+) -> Tuple[List[str], list]:
+    """Merge current and previous period data, adding change columns with arrows.
+
+    Returns new (cols, rows) with additional columns named ``{metric}_chg``
+    inserted after each metric column.
+    """
+    # Build lookup: key -> {metric: value}
+    prev_idx = {c: i for i, c in enumerate(prev_cols)}
+    key_i = prev_idx.get(key_col)
+    if key_i is None:
+        return cols, rows
+    prev_map: Dict[str, dict] = {}
+    for pr in prev_rows:
+        k = pr[key_i]
+        prev_map[k] = {m: pr[prev_idx[m]] for m in metric_cols if m in prev_idx}
+
+    curr_idx = {c: i for i, c in enumerate(cols)}
+    key_ci = curr_idx.get(key_col)
+    if key_ci is None:
+        return cols, rows
+
+    # Build new column list with _chg columns interspersed
+    new_cols: List[str] = []
+    for c in cols:
+        new_cols.append(c)
+        if c in metric_cols:
+            new_cols.append(f"{c}_chg")
+
+    new_rows = []
+    for row in rows:
+        k = row[key_ci]
+        prev_vals = prev_map.get(k, {})
+        new_row: list = []
+        for c, v in zip(cols, row):
+            new_row.append(v)
+            if c in metric_cols:
+                try:
+                    curr_v = float(v or 0)
+                    prev_v = float(prev_vals.get(c, 0) or 0)
+                except (TypeError, ValueError):
+                    curr_v, prev_v = 0.0, 0.0
+                new_row.append(_trend_arrow(curr_v, prev_v))
+        new_rows.append(tuple(new_row))
+
+    return new_cols, new_rows
+
+
 def list_tables() -> List[str]:
     """Return aggregate table names that have at least one parquet partition."""
     if not AGG.exists():
@@ -593,6 +769,7 @@ def page(title: str, body: str) -> HTMLResponse:
 
     nav_items = [
         ("Home", "/"),
+        ("Executive Summary", "/reports/summary"),
         ("Guided Insights", "/insights"),
         ("Crawl volume", "/reports/crawl-volume"),
         ("Status over time", "/reports/status-over-time"),
@@ -988,6 +1165,50 @@ label.sql-label { width: 100%; flex: 0 0 100%; }
 .table-hint td { padding: 5px 12px 5px 0; color: #374151; vertical-align: top; }
 .table-hint td:first-child { font-family: monospace; color: #2563eb; font-weight: 600; white-space: nowrap; }
 .table-hint td:last-child { color: #64748b; }
+
+/* ── KPI cards (Executive Summary) ── */
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.kpi-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px 18px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+.kpi-label { font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 4px; }
+.kpi-value { font-size: 24px; font-weight: 700; color: #1e293b; margin-bottom: 4px; }
+.kpi-change { font-size: 12px; font-weight: 600; }
+.kpi-trend-up-good { color: #16a34a; }
+.kpi-trend-up-bad { color: #dc2626; }
+.kpi-trend-down-good { color: #16a34a; }
+.kpi-trend-down-bad { color: #dc2626; }
+.kpi-trend-flat { color: #64748b; }
+
+/* ── Issue cards (Executive Summary) ── */
+.issue-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+.issue-item { display: flex; align-items: flex-start; gap: 12px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 16px; border-left: 4px solid #94a3b8; }
+.issue-high { border-left-color: #dc2626; }
+.issue-medium { border-left-color: #f59e0b; }
+.issue-low { border-left-color: #3b82f6; }
+.issue-severity { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 4px; white-space: nowrap; flex-shrink: 0; margin-top: 2px; }
+.issue-high .issue-severity { background: #fef2f2; color: #dc2626; }
+.issue-medium .issue-severity { background: #fffbeb; color: #d97706; }
+.issue-low .issue-severity { background: #eff6ff; color: #2563eb; }
+.issue-body { flex: 1; min-width: 0; }
+.issue-title { font-size: 13px; font-weight: 600; color: #1e293b; }
+.issue-detail { font-size: 12px; color: #64748b; margin-top: 2px; }
+.issue-link { font-size: 12px; color: #3b82f6; text-decoration: none; white-space: nowrap; flex-shrink: 0; align-self: center; }
+.issue-link:hover { text-decoration: underline; }
+
+/* ── Summary sections ── */
+.summary-section { margin-bottom: 24px; }
+.summary-section h2 { margin-bottom: 12px; }
+.summary-period { font-size: 12px; color: #64748b; margin-bottom: 12px; }
+
+/* ── Recommendations box ── */
+.recommendations-box { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 16px 18px; margin-top: 16px; margin-bottom: 16px; }
+.rec-heading { font-size: 13px; font-weight: 700; color: #166534; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
+.rec-item { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 8px; }
+.rec-item:last-child { margin-bottom: 0; }
+.rec-num { flex-shrink: 0; width: 22px; height: 22px; background: #16a34a; color: #fff; border-radius: 50%; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+.rec-body { flex: 1; }
+.rec-action { display: inline-block; font-size: 11px; font-weight: 700; color: #166534; background: #dcfce7; padding: 1px 6px; border-radius: 3px; margin-right: 6px; }
+.rec-desc { font-size: 13px; color: #374151; }
+.rec-code { display: block; margin-top: 4px; font-size: 12px; padding: 4px 8px; background: #ecfdf5; border: 1px solid #bbf7d0; border-radius: 4px; color: #166534; white-space: pre-wrap; word-break: break-all; }
 </style>"""
 
     js = """<script>
@@ -1142,9 +1363,213 @@ def date_filters_html(date_from, date_to, available: List[str] = []):
     """
 
 
+# ---------------------------------------------------------------------------
+# Executive Summary — unified actionable overview
+# ---------------------------------------------------------------------------
+
+@app.get("/reports/summary", response_class=HTMLResponse)
+def executive_summary(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+):
+    avail = available_dates()
+    body = date_filters_html(date_from, date_to, avail)
+
+    if not avail:
+        return page("Executive Summary", body + no_data_notice())
+
+    curr_from, curr_to, prev_from, prev_to = _compute_periods(date_from, date_to, avail)
+
+    # ── KPI cards ──────────────────────────────────────────────────────
+    kpi_sql = """
+    SELECT
+        COALESCE(SUM(hits), 0) AS hits,
+        COALESCE(SUM(hits_human), 0) AS human,
+        COALESCE(SUM(hits_bot), 0) AS bot,
+        COALESCE(SUM(s4xx + s5xx), 0) AS errors,
+        ROUND(100.0 * SUM(s4xx + s5xx) / NULLIF(SUM(hits), 0), 1) AS error_pct,
+        COALESCE(SUM(bytes_sent), 0) AS bytes
+    FROM t;
+    """
+    curr_paths = list_partitions("daily", curr_from, curr_to)
+    prev_paths = list_partitions("daily", prev_from, prev_to)
+
+    def _get_kpi(paths):
+        if not paths:
+            return (0, 0, 0, 0, 0.0, 0)
+        _, rows = run_query(paths, kpi_sql)
+        return rows[0] if rows else (0, 0, 0, 0, 0.0, 0)
+
+    curr = _get_kpi(curr_paths)
+    prev = _get_kpi(prev_paths)
+
+    body += f"<div class='summary-period'>Comparing {curr_from} to {curr_to} vs previous period {prev_from} to {prev_to}</div>"
+    body += "<div class='summary-section'>"
+    body += "<h2>Key Metrics</h2>"
+    body += "<div class='kpi-grid'>"
+    body += kpi_card("Total Hits", curr[0], prev[0])
+    body += kpi_card("Human Hits", curr[1], prev[1])
+    body += kpi_card("Bot Hits", curr[2], prev[2], lower_is_better=True)
+    body += kpi_card("Errors (4xx+5xx)", curr[3], prev[3], lower_is_better=True)
+    body += kpi_card("Error Rate", curr[4], prev[4], fmt_fn=lambda v: f"{v:.1f}%", lower_is_better=True)
+    body += kpi_card("Bytes Sent", curr[5], prev[5], fmt_fn=fmt_bytes)
+    body += "</div></div>"
+
+    # ── Top Issues ─────────────────────────────────────────────────────
+    issues: List[str] = []
+
+    # 1. Top 404s (human-facing)
+    paths_4xx = list_partitions("top_4xx_daily", curr_from, curr_to)
+    if paths_4xx:
+        _, rows_404 = run_query(paths_4xx, """
+            SELECT path, SUM(s404) AS errors,
+                   SUM(hits_4xx - hits_4xx_bot) AS human_errors
+            FROM t
+            GROUP BY path
+            HAVING SUM(s404) > 0
+            ORDER BY human_errors DESC
+            LIMIT 5;
+        """)
+        for r in rows_404:
+            path, total, human = r[0], int(r[1] or 0), int(r[2] or 0)
+            if human > 10:
+                issues.append(issue_card(
+                    "high" if human > 100 else "medium",
+                    f"404 Not Found: {path}",
+                    f"{human:,} human visitors affected ({total:,} total hits)",
+                    f"/reports/top-4xx?from={curr_from}&to={curr_to}",
+                ))
+
+    # 2. Top 5xx errors
+    paths_5xx = list_partitions("top_5xx_daily", curr_from, curr_to)
+    if paths_5xx:
+        _, rows_5xx = run_query(paths_5xx, """
+            SELECT path, SUM(hits_5xx) AS errors,
+                   COUNT(DISTINCT date) AS days_affected
+            FROM t
+            GROUP BY path
+            HAVING SUM(hits_5xx) > 0
+            ORDER BY errors DESC
+            LIMIT 5;
+        """)
+        for r in rows_5xx:
+            path, errors, days = r[0], int(r[1] or 0), int(r[2] or 0)
+            if errors > 5:
+                sev = "high" if errors > 50 or days > 3 else "medium"
+                issues.append(issue_card(
+                    sev,
+                    f"Server Error (5xx): {path}",
+                    f"{errors:,} errors across {days} day{'s' if days != 1 else ''} — investigate server-side root cause",
+                    f"/reports/top-5xx?from={curr_from}&to={curr_to}",
+                ))
+
+    # 3. Wasteful bots
+    paths_waste = list_partitions("wasted_crawl_daily", curr_from, curr_to)
+    if paths_waste:
+        _, rows_waste = run_query(paths_waste, """
+            SELECT bot_family,
+                   SUM(bot_hits) AS hits,
+                   SUM(error_bot_hits) AS errors,
+                   SUM(waste_score) AS waste
+            FROM t
+            GROUP BY bot_family
+            ORDER BY waste DESC
+            LIMIT 5;
+        """)
+        for r in rows_waste:
+            family, hits, errors, waste = r[0], int(r[1] or 0), int(r[2] or 0), int(r[3] or 0)
+            if waste > 50:
+                err_pct = round(100.0 * errors / hits, 1) if hits else 0
+                issues.append(issue_card(
+                    "medium" if waste > 200 else "low",
+                    f"Wasteful bot: {family}",
+                    f"{hits:,} requests, {err_pct}% errors, waste score {waste:,}",
+                    f"/reports/wasted-crawl?from={curr_from}&to={curr_to}&bot={family}",
+                ))
+
+    # 4. Bot anomalies — new or spiking bots
+    paths_bot_curr = list_partitions("bot_daily", curr_from, curr_to)
+    paths_bot_prev = list_partitions("bot_daily", prev_from, prev_to)
+    bot_sql = "SELECT bot_family, SUM(hits) AS hits FROM t GROUP BY bot_family;"
+    if paths_bot_curr:
+        _, curr_bots = run_query(paths_bot_curr, bot_sql)
+        prev_bot_map: Dict[str, int] = {}
+        if paths_bot_prev:
+            _, prev_bots = run_query(paths_bot_prev, bot_sql)
+            prev_bot_map = {r[0]: int(r[1] or 0) for r in prev_bots}
+        for r in curr_bots:
+            family, hits = r[0], int(r[1] or 0)
+            prev_hits = prev_bot_map.get(family, 0)
+            if prev_hits == 0 and hits > 50:
+                issues.append(issue_card(
+                    "medium",
+                    f"New bot detected: {family}",
+                    f"{hits:,} requests with no activity in previous period",
+                    f"/reports/bots?from={curr_from}&to={curr_to}&bot={family}",
+                ))
+            elif prev_hits > 0 and hits > prev_hits * 3 and hits > 100:
+                pct = round(100.0 * (hits - prev_hits) / prev_hits)
+                issues.append(issue_card(
+                    "low",
+                    f"Bot traffic spike: {family}",
+                    f"{hits:,} requests (+{pct}% vs previous period)",
+                    f"/reports/bots?from={curr_from}&to={curr_to}&bot={family}",
+                ))
+
+    # 5. Error rate spikes (days with error_pct > 2x average)
+    if curr_paths:
+        _, daily_rows = run_query(curr_paths, """
+            SELECT date, hits,
+                   ROUND(100.0 * (s4xx + s5xx) / NULLIF(hits, 0), 1) AS error_pct
+            FROM t
+            WHERE hits > 0
+            ORDER BY date;
+        """)
+        if daily_rows:
+            pcts = [float(r[2] or 0) for r in daily_rows]
+            avg_pct = sum(pcts) / len(pcts) if pcts else 0
+            for r in daily_rows:
+                day, hits, epct = r[0], int(r[1] or 0), float(r[2] or 0)
+                if avg_pct > 0 and epct > avg_pct * 2 and epct > 5:
+                    issues.append(issue_card(
+                        "medium",
+                        f"Error spike on {day}",
+                        f"{epct:.1f}% error rate (avg: {avg_pct:.1f}%) across {hits:,} hits",
+                        f"/reports/status-over-time?from={curr_from}&to={curr_to}",
+                    ))
+
+    if issues:
+        body += "<div class='summary-section'>"
+        body += "<h2>Issues Requiring Attention</h2>"
+        body += "<div class='issue-list'>"
+        body += "".join(issues[:15])
+        body += "</div></div>"
+    else:
+        body += "<div class='summary-section'><h2>Issues</h2><p class='no-data'>No issues found for this period — looking good!</p></div>"
+
+    # ── Quick links to reports ─────────────────────────────────────────
+    body += "<div class='summary-section'>"
+    body += "<h2>Explore Reports</h2>"
+    body += "<div class='report-grid'>"
+    quick_links = [
+        ("Top 4xx Errors", f"/reports/top-4xx?from={curr_from}&to={curr_to}", "Fix broken pages"),
+        ("Top 5xx Errors", f"/reports/top-5xx?from={curr_from}&to={curr_to}", "Investigate server errors"),
+        ("Bot Traffic", f"/reports/bots?from={curr_from}&to={curr_to}", "Review bot activity"),
+        ("Wasted Crawl", f"/reports/wasted-crawl?from={curr_from}&to={curr_to}", "Reduce crawl waste"),
+        ("Human URLs", f"/reports/human-urls?from={curr_from}&to={curr_to}", "Top pages for real users"),
+        ("UTM Sources", f"/reports/utm?from={curr_from}&to={curr_to}", "Campaign performance"),
+    ]
+    for name, url, desc in quick_links:
+        body += f"<a href='{url}' class='report-card'>{name}<small>{desc}</small></a>"
+    body += "</div></div>"
+
+    return page("Executive Summary", body)
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     items = [
+        ("Executive Summary", "/reports/summary", "Key metrics, trends, and top issues at a glance"),
         ("Crawl volume", "/reports/crawl-volume", "Daily hit counts — total, bot and human"),
         ("Status over time", "/reports/status-over-time", "2xx / 3xx / 4xx / 5xx trends by day"),
         ("Locale breakdown", "/reports/locales", "Hit distribution by locale"),
@@ -1181,9 +1606,10 @@ def index():
 
 @app.get("/reports/locales", response_class=HTMLResponse)
 def locales(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    avail = available_dates()
     paths = list_partitions("locale_daily", date_from, date_to)
     if not paths:
-        body = date_filters_html(date_from, date_to, available_dates()) + no_data_notice()
+        body = date_filters_html(date_from, date_to, avail) + no_data_notice()
         return page("Locale breakdown", body)
 
     sql_totals = """
@@ -1205,6 +1631,17 @@ def locales(date_from: Optional[str] = Query(None, alias="from"), date_to: Optio
     """
     cols1, rows1 = run_query(paths, sql_totals)
 
+    # ── Trend columns: compare with previous period ──
+    curr_from, curr_to, prev_from, prev_to = _compute_periods(date_from, date_to, avail)
+    prev_paths = list_partitions("locale_daily", prev_from, prev_to)
+    if prev_paths:
+        prev_cols1, prev_rows1 = run_query(prev_paths, sql_totals)
+        cols1, rows1 = add_trend_columns(
+            cols1, rows1, prev_cols1, prev_rows1,
+            key_col="locale",
+            metric_cols=["hits", "hits_human"],
+        )
+
     sql_non_resource = """
     SELECT
       CASE
@@ -1220,13 +1657,16 @@ def locales(date_from: Optional[str] = Query(None, alias="from"), date_to: Optio
     """
     cols2, rows2 = run_query(paths, sql_non_resource)
 
-    body = date_filters_html(date_from, date_to, available_dates())
+    body = date_filters_html(date_from, date_to, avail)
     body += f"<p><a href='/export?report=locales&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
 
     chart_limit = 20
     body += "<h2>All hits (includes Nuxt/static resources)</h2>"
+    # Use original data (without _chg cols) for the chart
+    chart_cols1 = [c for c in cols1 if not c.endswith("_chg")]
+    chart_rows1 = [tuple(v for c, v in zip(cols1, r) if not c.endswith("_chg")) for r in rows1]
     body += bar_chart(
-        rows1[:chart_limit], cols1,
+        chart_rows1[:chart_limit], chart_cols1,
         x_col="locale", y_col="hits_human",
         y_cols=["hits_human", "hits_bot"],
         title=f"Top {chart_limit} locales — human vs bot",
@@ -1350,6 +1790,7 @@ def locale_groups(
 
 @app.get("/reports/crawl-volume", response_class=HTMLResponse)
 def crawl_volume(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    avail = available_dates()
     paths = list_partitions("daily", date_from, date_to)
     sql = """
     SELECT date, hits, hits_bot, hits_human, bytes_sent, resource_hits, resource_hits_bot
@@ -1357,6 +1798,30 @@ def crawl_volume(date_from: Optional[str] = Query(None, alias="from"), date_to: 
     ORDER BY date;
     """
     cols, rows = run_query(paths, sql)
+
+    body = date_filters_html(date_from, date_to, avail)
+
+    # ── Period KPI cards with trend ──
+    curr_from, curr_to, prev_from, prev_to = _compute_periods(date_from, date_to, avail)
+    _kpi_sql = """
+    SELECT COALESCE(SUM(hits),0), COALESCE(SUM(hits_human),0),
+           COALESCE(SUM(hits_bot),0), COALESCE(SUM(bytes_sent),0)
+    FROM t;
+    """
+    curr_p = list_partitions("daily", curr_from, curr_to)
+    prev_p = list_partitions("daily", prev_from, prev_to)
+    def _kpi(p):
+        if not p: return (0,0,0,0)
+        _, r = run_query(p, _kpi_sql)
+        return r[0] if r else (0,0,0,0)
+    c, p = _kpi(curr_p), _kpi(prev_p)
+    body += "<div class='kpi-grid'>"
+    body += kpi_card("Total Hits", c[0], p[0])
+    body += kpi_card("Human Hits", c[1], p[1])
+    body += kpi_card("Bot Hits", c[2], p[2], lower_is_better=True)
+    body += kpi_card("Bytes Sent", c[3], p[3], fmt_fn=fmt_bytes)
+    body += "</div>"
+
     chart_html = line_chart(
         rows,
         cols,
@@ -1365,7 +1830,6 @@ def crawl_volume(date_from: Optional[str] = Query(None, alias="from"), date_to: 
         title="Daily Crawl Volume"
     )
     bytes_chart = bytes_line_chart(rows, cols, x_col="date", y_col="bytes_sent", title="Daily bytes sent")
-    body = date_filters_html(date_from, date_to, available_dates())
     body += f"<p><a href='/export?report=daily&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
     body += chart_html
     body += "<br>"
@@ -1595,6 +2059,33 @@ def top_4xx(
         body += "<br>"
 
     body += html_table(rows, cols, max_rows=min(int(limit), 500))
+
+    # ── 4xx recommendations ──
+    if rows:
+        recs_4xx: List[Tuple[str, str, str]] = []
+        # cols: path, url_group, hits_4xx, hits_4xx_bot, hits_4xx_non_bot, bytes_sent_4xx, s400..s429
+        path_i = cols.index("path") if "path" in cols else 0
+        non_bot_i = cols.index("hits_4xx_non_bot") if "hits_4xx_non_bot" in cols else 4
+        s404_i = cols.index("s404") if "s404" in cols else None
+        for r in rows[:15]:
+            path = r[path_i]
+            human_4xx = int(r[non_bot_i] or 0)
+            s404 = int(r[s404_i] or 0) if s404_i is not None else 0
+            if s404 > 50 and human_4xx > 20:
+                recs_4xx.append((
+                    "Redirect",
+                    f"{path} returns 404 for {human_4xx:,} human visitors",
+                    f"Set up a 301 redirect from {path} to the correct page",
+                ))
+            elif human_4xx > 100 and s404 == 0:
+                recs_4xx.append((
+                    "Investigate",
+                    f"{path} returns other 4xx for {human_4xx:,} human visitors",
+                    "",
+                ))
+        if recs_4xx:
+            body += recommendations_section(recs_4xx[:5])
+
     return page("Top 4xx", body)
 
 @app.get("/reports/top-5xx", response_class=HTMLResponse)
@@ -1684,6 +2175,30 @@ def top_5xx(
         body += "<br>"
 
     body += html_table(rows, cols, max_rows=min(int(limit), 500))
+
+    # ── 5xx recommendations ──
+    if paths:
+        recurrence_sql = f"""
+        SELECT path, COUNT(DISTINCT date) AS days_affected, SUM(hits_5xx) AS total
+        FROM t
+        {where}
+        GROUP BY path
+        HAVING COUNT(DISTINCT date) > 1
+        ORDER BY days_affected DESC, total DESC
+        LIMIT 5;
+        """
+        _, recur_rows = run_query(paths, recurrence_sql)
+        recs_5xx: List[Tuple[str, str, str]] = []
+        for r in recur_rows:
+            path, days, total = r[0], int(r[1] or 0), int(r[2] or 0)
+            recs_5xx.append((
+                "Investigate",
+                f"{path} has returned 5xx errors on {days} different days ({total:,} total)",
+                "Check server logs for this path to identify the root cause",
+            ))
+        if recs_5xx:
+            body += recommendations_section(recs_5xx)
+
     return page("Top 5xx", body)
 
 
@@ -1912,8 +2427,24 @@ def bots(
             body += line_chart(pivot_rows, pivot_cols, x_col="date", y_cols=y_families, title="Bot hits over time (top 10 families)")
             body += "<br>"
 
+        # ── Trend columns: compare with previous period ──
+        avail = available_dates()
+        curr_from_b, curr_to_b, prev_from_b, prev_to_b = _compute_periods(date_from, date_to, avail)
+        prev_paths_b = list_partitions("bot_daily", prev_from_b, prev_to_b)
+        if prev_paths_b:
+            prev_cols_b, prev_rows_b = run_query(prev_paths_b, sql_summary)
+            cols, rows = add_trend_columns(
+                cols, rows, prev_cols_b, prev_rows_b,
+                key_col="bot_family",
+                metric_cols=["hits", "s4xx", "s5xx"],
+            )
+
+        # Use original data (without _chg cols) for the chart
+        chart_cols_b = [c for c in cols if not c.endswith("_chg")]
+        chart_rows_b = [tuple(v for c, v in zip(cols, r) if not c.endswith("_chg")) for r in rows]
+
         body += "<h3>Total hits by bot family</h3>"
-        body += bar_chart(rows, cols, x_col="bot_family", y_col="hits", title="Bot hits by family")
+        body += bar_chart(chart_rows_b, chart_cols_b, x_col="bot_family", y_col="hits", title="Bot hits by family")
         body += "<br>"
 
         # Bot family names are links that pre-select the bot in the URL section below
@@ -1934,6 +2465,33 @@ def bots(
         ]
         body += export_link("bots", date_from, date_to)
         body += html_table(linked_rows, cols)
+
+        # ── Bot recommendations ──
+        bot_recs: List[Tuple[str, str, str]] = []
+        _ci = {c: i for i, c in enumerate(cols)}
+        for r in rows:
+            family = r[_ci["bot_family"]]
+            hits_val = int(r[_ci["hits"]] or 0)
+            resource_pct = float(r[_ci["resource_hits_pct"]] or 0)
+            s4xx_val = int(r[_ci["s4xx"]] or 0)
+            s5xx_val = int(r[_ci["s5xx"]] or 0)
+            if hits_val == 0:
+                continue
+            error_rate = (s4xx_val + s5xx_val) / hits_val
+            if error_rate > 0.5 and hits_val > 50:
+                bot_recs.append((
+                    "Block",
+                    f"{family} has {error_rate:.0%} error rate across {hits_val:,} requests",
+                    f"User-agent: {family}\nDisallow: /",
+                ))
+            elif resource_pct > 80 and hits_val > 100:
+                bot_recs.append((
+                    "Restrict",
+                    f"{family} spends {resource_pct:.0f}% of crawl on static assets ({hits_val:,} hits)",
+                    f"User-agent: {family}\nDisallow: /_nuxt/\nDisallow: /assets/",
+                ))
+        if bot_recs:
+            body += recommendations_section(bot_recs[:5])
 
     # ── URL drill-down section (bot_urls_daily) ───────────────────────────────
     paths_urls = list_partitions("bot_urls_daily", date_from, date_to)
@@ -2069,6 +2627,40 @@ def wasted_crawl(
     body += chart_html
     body += "<br>"
     body += html_table(rows, cols)
+
+    # ── Wasted crawl recommendations ──
+    if rows:
+        recs_waste: List[Tuple[str, str, str]] = []
+        # Aggregate waste by bot family
+        bot_waste: Dict[str, Tuple[int, int]] = {}
+        # cols: bot_family, url_group, path, bot_hits, ..., error_bot_hits, ..., waste_score
+        for r in rows:
+            family = r[0]
+            bot_hits = int(r[3] or 0)
+            error_hits = int(r[6] or 0)
+            waste = int(r[-1] or 0)
+            prev = bot_waste.get(family, (0, 0))
+            bot_waste[family] = (prev[0] + waste, prev[1] + bot_hits)
+        for family, (total_waste, total_hits) in sorted(bot_waste.items(), key=lambda x: -x[1][0])[:3]:
+            if total_waste > 50:
+                recs_waste.append((
+                    "Rate-limit",
+                    f"{family} generates {total_waste:,} waste score across {total_hits:,} requests",
+                    f"User-agent: {family}\nCrawl-delay: 10",
+                ))
+        # Top error-causing paths
+        for r in rows[:5]:
+            path = r[2]
+            error_hits = int(r[6] or 0)
+            if error_hits > 100:
+                recs_waste.append((
+                    "Fix or remove",
+                    f"{path} causes {error_hits:,} bot errors",
+                    "Fix the underlying error or return 410 Gone",
+                ))
+        if recs_waste:
+            body += recommendations_section(recs_waste[:6])
+
     return page("Wasted crawl", body)
 
 
