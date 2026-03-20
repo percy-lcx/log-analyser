@@ -2867,6 +2867,11 @@ def insights_page(
     return page("Guided Insights", body)
 
 
+@app.get("/query", response_class=RedirectResponse)
+def query_redirect():
+    return RedirectResponse(url="/", status_code=301)
+
+
 @app.get("/export")
 def export(
     report: str,
