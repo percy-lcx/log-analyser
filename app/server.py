@@ -3847,6 +3847,7 @@ def log_viewer(
     pagination += "</div>"
 
     body += pagination
+    body += """<button type="button" class="scroll-toggle" onclick="(function(btn){var w=btn.parentElement.querySelector('.table-wrapper');if(w){w.classList.toggle('expanded');btn.classList.toggle('active')}})(this)">&#8597; Expand table</button>"""
     body += html_table(display_rows, cols, max_rows=per_page)
     body += pagination
 
