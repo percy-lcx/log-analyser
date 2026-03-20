@@ -517,87 +517,6 @@ def list_tables() -> List[str]:
     )
 
 
-TABLE_DESCRIPTIONS = {
-    "daily": "Daily totals — hits, status codes, bytes sent",
-    "locale_daily": "Daily hits broken down by locale",
-    "group_daily": "Daily hits broken down by URL group",
-    "locale_group_daily": "Daily hits by locale × URL group",
-    "bot_daily": "Daily hits by bot family",
-    "top_urls_daily": "Top requested paths per day",
-    "top_4xx_daily": "Top 4xx paths per day (all client errors, broken down by code)",
-    "top_5xx_daily": "Top 5xx paths per day",
-    "wasted_crawl_daily": "Wasted bot crawl by bot and path",
-    "top_resource_waste_daily": "Resource waste score by path",
-    "bot_urls_daily": "URLs crawled by specific bots",
-    "human_urls_daily": "URLs visited by human traffic",
-    "utm_sources_daily": "UTM source hit counts by day",
-    "utm_source_urls_daily": "UTM source URL distribution",
-}
-
-
-TABLE_QUERIES: Dict[str, List[Tuple[str, str]]] = {
-    "daily": [
-        ("Hits over time", "SELECT date, hits, hits_human, hits_bot\nFROM t\nORDER BY date"),
-        ("Status breakdown", "SELECT date, s2xx, s3xx, s4xx, s5xx\nFROM t\nORDER BY date"),
-        ("Bytes over time", "SELECT date, bytes_sent\nFROM t\nORDER BY date"),
-        ("Bot % per day", "SELECT date, hits_bot, hits,\n  ROUND(100.0*hits_bot/hits,1) AS bot_pct\nFROM t\nORDER BY date"),
-    ],
-    "locale_daily": [
-        ("Top locales", "SELECT locale, SUM(hits) AS hits\nFROM t\nGROUP BY locale\nORDER BY hits DESC\nLIMIT 20"),
-        ("Human hits by locale", "SELECT date, locale, hits_human\nFROM t\nORDER BY date, hits_human DESC"),
-    ],
-    "group_daily": [
-        ("Top URL groups", "SELECT url_group, SUM(hits) AS hits\nFROM t\nGROUP BY url_group\nORDER BY hits DESC"),
-        ("Error rate by group", "SELECT url_group,\n  SUM(s4xx+s5xx) AS errors,\n  ROUND(100.0*SUM(s4xx+s5xx)/SUM(hits),1) AS error_pct\nFROM t\nGROUP BY url_group\nORDER BY errors DESC"),
-    ],
-    "locale_group_daily": [
-        ("Locale \u00d7 group traffic", "SELECT locale, url_group, SUM(hits) AS hits\nFROM t\nGROUP BY locale, url_group\nORDER BY hits DESC\nLIMIT 50"),
-    ],
-    "bot_daily": [
-        ("Top bots by hits", "SELECT bot_family, SUM(hits) AS hits\nFROM t\nGROUP BY bot_family\nORDER BY hits DESC\nLIMIT 20"),
-        ("Bot error rates", "SELECT bot_family, SUM(hits) AS hits, SUM(s4xx) AS s4xx, SUM(s5xx) AS s5xx\nFROM t\nGROUP BY bot_family\nORDER BY hits DESC\nLIMIT 20"),
-    ],
-    "hourly": [
-        ("Hourly traffic pattern", "SELECT hour_local, SUM(hits) AS hits, SUM(hits_human) AS human, SUM(hits_bot) AS bot\nFROM t\nGROUP BY hour_local\nORDER BY hour_local"),
-        ("Peak hours", "SELECT hour_local, SUM(hits) AS hits\nFROM t\nGROUP BY hour_local\nORDER BY hits DESC"),
-    ],
-    "top_urls_daily": [
-        ("Top URLs overall", "SELECT path, SUM(hits_total) AS hits\nFROM t\nGROUP BY path\nORDER BY hits DESC\nLIMIT 20"),
-        ("Top URLs with errors", "SELECT path, SUM(s4xx) AS s4xx, SUM(s5xx) AS s5xx\nFROM t\nGROUP BY path\nORDER BY s4xx+s5xx DESC\nLIMIT 20"),
-    ],
-    "top_404_daily": [
-        ("Top 404 paths", "SELECT path, SUM(hits_404) AS hits_404\nFROM t\nGROUP BY path\nORDER BY hits_404 DESC\nLIMIT 20"),
-        ("Bot vs human 404s", "SELECT path, SUM(hits_404) AS total, SUM(hits_404_bot) AS bot\nFROM t\nGROUP BY path\nORDER BY total DESC\nLIMIT 20"),
-    ],
-    "top_5xx_daily": [
-        ("Top 5xx paths", "SELECT path, SUM(hits_5xx) AS hits_5xx\nFROM t\nGROUP BY path\nORDER BY hits_5xx DESC\nLIMIT 20"),
-        ("Bot-caused 5xx", "SELECT path, SUM(hits_5xx_bot) AS bot_5xx\nFROM t\nGROUP BY path\nORDER BY bot_5xx DESC\nLIMIT 20"),
-    ],
-    "wasted_crawl_daily": [
-        ("Worst bots by waste", "SELECT bot_family, SUM(bot_hits) AS hits,\n  SUM(error_bot_hits) AS errors,\n  ROUND(AVG(waste_score),2) AS avg_waste\nFROM t\nGROUP BY bot_family\nORDER BY avg_waste DESC\nLIMIT 20"),
-        ("Top wasted paths", "SELECT path, SUM(bot_hits) AS bot_hits, SUM(error_bot_hits) AS errors\nFROM t\nGROUP BY path\nORDER BY errors DESC\nLIMIT 20"),
-    ],
-    "top_resource_waste_daily": [
-        ("Top resource waste", "SELECT path, SUM(bot_hits) AS bot_hits,\n  SUM(resource_error_bot_hits) AS resource_errors,\n  ROUND(AVG(waste_score_strict),2) AS avg_waste\nFROM t\nGROUP BY path\nORDER BY avg_waste DESC\nLIMIT 20"),
-    ],
-    "bot_urls_daily": [
-        ("Top paths by bot", "SELECT bot_family, path, SUM(hits) AS hits\nFROM t\nGROUP BY bot_family, path\nORDER BY hits DESC\nLIMIT 30"),
-        ("Most crawled paths", "SELECT path, SUM(hits) AS total_bot_hits\nFROM t\nGROUP BY path\nORDER BY total_bot_hits DESC\nLIMIT 20"),
-    ],
-    "human_urls_daily": [
-        ("Top human traffic paths", "SELECT path, SUM(hits) AS hits\nFROM t\nGROUP BY path\nORDER BY hits DESC\nLIMIT 20"),
-        ("Traffic by URL group", "SELECT url_group, SUM(hits) AS hits\nFROM t\nGROUP BY url_group\nORDER BY hits DESC"),
-    ],
-    "utm_sources_daily": [
-        ("Top UTM sources", "SELECT utm_source, SUM(hits) AS hits, SUM(hits_human) AS human_hits\nFROM t\nGROUP BY utm_source\nORDER BY hits DESC\nLIMIT 20"),
-        ("UTM sources over time", "SELECT date, utm_source, hits\nFROM t\nORDER BY date, hits DESC"),
-    ],
-    "utm_source_urls_daily": [
-        ("Top URLs by UTM source", "SELECT utm_source, path, SUM(hits) AS hits\nFROM t\nGROUP BY utm_source, path\nORDER BY hits DESC\nLIMIT 30"),
-    ],
-}
-
-
 GUIDED_INSIGHTS: List[Dict] = [
     # Traffic
     {
@@ -786,7 +705,6 @@ def page(title: str, body: str) -> HTMLResponse:
         ("Top resource waste", "/reports/top-resource-waste"),
         ("Human URLs", "/reports/human-urls"),
         ("UTM sources", "/reports/utm"),
-        ("SQL Query", "/query"),
         ("Log Viewer", "/logs"),
     ]
     nav_links = "\n".join(
@@ -1077,59 +995,6 @@ table.sortable tbody tr:last-child td { border-bottom: none; }
 }
 .index-tip code { background: #dbeafe; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 
-/* ── SQL Query page ── */
-.content form textarea {
-    width: 100%;
-    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
-    font-size: 13px;
-    line-height: 1.5;
-    padding: 10px 12px;
-    border: 1px solid #cbd5e1;
-    border-radius: 6px;
-    resize: vertical;
-    color: #1e293b;
-    background: #f8fafc;
-    outline: none;
-    transition: border-color 0.12s, box-shadow 0.12s;
-    min-height: 130px;
-}
-.content form textarea:focus {
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
-    background: #fff;
-}
-/* Make the textarea label span full width inside the flex form */
-label.sql-label { width: 100%; flex: 0 0 100%; }
-
-.schema-pills { display: flex; flex-wrap: wrap; gap: 5px; margin: 12px 0 4px; }
-.schema-pill {
-    background: #eff6ff;
-    border: 1px solid #bfdbfe;
-    color: #1d4ed8;
-    border-radius: 4px;
-    padding: 2px 8px;
-    font-size: 11px;
-    font-family: 'SFMono-Regular', Consolas, monospace;
-    cursor: pointer;
-    user-select: none;
-    transition: background 0.1s;
-}
-.schema-pill:hover { background: #dbeafe; }
-.schema-pill small { color: #60a5fa; margin-left: 3px; }
-
-.query-suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-.query-suggestion {
-    background: #f0fdf4;
-    color: #166534;
-    border: 1px solid #bbf7d0;
-    border-radius: 4px;
-    padding: 3px 8px;
-    font-size: 12px;
-    cursor: pointer;
-    font-family: inherit;
-}
-.query-suggestion:hover { background: #dcfce7; border-color: #86efac; }
-
 .insights-date-bar { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 20px; }
 .insights-date-bar label { display: flex; flex-direction: column; font-size: 12px; font-weight: 600; color: #64748b; gap: 4px; }
 .insights-date-bar input { padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; }
@@ -1155,17 +1020,6 @@ label.sql-label { width: 100%; flex: 0 0 100%; }
     white-space: pre-wrap;
     font-family: 'SFMono-Regular', Consolas, monospace;
 }
-.table-hint {
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    padding: 16px 20px;
-    margin-bottom: 16px;
-}
-.table-hint table { font-size: 12px; border-collapse: collapse; width: 100%; }
-.table-hint td { padding: 5px 12px 5px 0; color: #374151; vertical-align: top; }
-.table-hint td:first-child { font-family: monospace; color: #2563eb; font-weight: 600; white-space: nowrap; }
-.table-hint td:last-child { color: #64748b; }
 
 /* ── KPI cards (Executive Summary) ── */
 .kpi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin-bottom: 20px; }
@@ -1282,27 +1136,6 @@ document.addEventListener("DOMContentLoaded", () => {
         // Restore preference on load; default is scrollable (not expanded)
         if (localStorage.getItem(STORAGE_KEY) === '1') applyExpanded(true);
     })();
-
-    // Click a schema pill to insert the column name at the textarea cursor
-    document.querySelectorAll(".schema-pill").forEach(function(pill) {
-        pill.addEventListener("click", function() {
-            var ta = document.querySelector("textarea[name='sql']");
-            if (!ta) return;
-            var col = this.dataset.col;
-            var start = ta.selectionStart, end = ta.selectionEnd;
-            ta.value = ta.value.slice(0, start) + col + ta.value.slice(end);
-            ta.selectionStart = ta.selectionEnd = start + col.length;
-            ta.focus();
-        });
-    });
-
-    // Click a common query button to populate the SQL textarea
-    document.querySelectorAll(".query-suggestion").forEach(function(btn) {
-        btn.addEventListener("click", function() {
-            var ta = document.querySelector("textarea[name='sql']");
-            if (ta) { ta.value = this.dataset.sql; ta.focus(); }
-        });
-    });
 });
 })();
 </script>"""
@@ -1586,7 +1419,6 @@ def index():
         ("Top resource waste", "/reports/top-resource-waste", "Paths with highest waste score"),
         ("Human URLs", "/reports/human-urls", "Top paths visited by real users"),
         ("UTM sources", "/reports/utm", "Traffic from UTM-tagged campaigns"),
-        ("SQL Query", "/query", "Ad-hoc SQL against any aggregate table"),
     ]
     cards = "".join(
         f"<a href='{url}' class='report-card'>{name}<small>{desc}</small></a>"
@@ -3024,210 +2856,15 @@ def insights_page(
         chart_html = ""
 
     n = len(rows)
-    export_qs = _urlparse.urlencode({
-        "table": insight["table"],
-        "from": date_from or "",
-        "to": date_to or "",
-        "sql": insight["sql"],
-        "limit": 5000,
-    })
-    export_link = f"<a href='/query/export?{export_qs}'>&#8595; Export CSV</a>"
 
     body = (
         date_bar
         + f"<div class='insight-result-title'>{insight['question']}</div>"
         + chart_html
-        + f"<p class='query-meta'>{n:,} row{'s' if n != 1 else ''} &middot; {elapsed:.2f}s &nbsp; {export_link}</p>"
+        + f"<p class='query-meta'>{n:,} row{'s' if n != 1 else ''} &middot; {elapsed:.2f}s</p>"
         + html_table(rows, cols, max_rows=500)
     )
     return page("Guided Insights", body)
-
-
-# ----------------------------
-# SQL Query page
-# ----------------------------
-
-@app.get("/query", response_class=HTMLResponse)
-def query_page(
-    date_from: Optional[str] = Query(None, alias="from"),
-    date_to: Optional[str] = Query(None, alias="to"),
-    table: Optional[str] = None,
-    sql: Optional[str] = None,
-    limit: int = Query(500, ge=1, le=5000),
-):
-    import time as _time
-
-    tables = list_tables()
-
-    # ── Table selector ──────────────────────────────────────────────
-    table_options = "<option value=''>— select a table —</option>"
-    for t in tables:
-        sel = "selected" if t == table else ""
-        desc = TABLE_DESCRIPTIONS.get(t, "")
-        table_options += f"<option value='{t}' {sel}>{t}</option>"
-
-    # ── Schema pills (if a valid table + date range selected) ───────
-    schema_html = ""
-    safe_table = table if table in tables else None
-    if safe_table:
-        schema_paths = list_partitions(safe_table, date_from, date_to)
-        if schema_paths:
-            try:
-                col_info, _ = run_query(schema_paths, "DESCRIBE t")
-                # col_info columns: column_name, column_type, null, key, default, extra
-                pills = "".join(
-                    f"<span class='schema-pill' data-col='{r[0]}' title='{r[1]}'>"
-                    f"{r[0]}<small>{r[1]}</small></span>"
-                    for r in col_info
-                )
-                schema_html = (
-                    f"<div style='margin-bottom:4px;font-size:11px;color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.4px'>"
-                    f"Columns — click to insert</div>"
-                    f"<div class='schema-pills'>{pills}</div>"
-                )
-            except Exception:
-                pass
-
-    # ── Common query suggestions ─────────────────────────────────────
-    common_queries_html = ""
-    if safe_table:
-        queries = TABLE_QUERIES.get(safe_table, [])
-        if queries:
-            btns = "".join(
-                f"<button type='button' class='query-suggestion' data-sql={json.dumps(q_sql)}>"
-                f"{q_label}</button>"
-                for q_label, q_sql in queries
-            )
-            common_queries_html = (
-                "<div style='margin-top:8px;margin-bottom:4px;font-size:11px;"
-                "color:#64748b;font-weight:600;text-transform:uppercase;letter-spacing:0.4px'>"
-                "Common queries</div>"
-                f"<div class='query-suggestions'>{btns}</div>"
-            )
-
-    # ── Table hint on landing (no table selected) ───────────────────
-    hint_html = ""
-    if not safe_table and tables:
-        rows_hint = "".join(
-            f"<tr><td>{t}</td><td>{TABLE_DESCRIPTIONS.get(t, '')}</td></tr>"
-            for t in tables
-        )
-        hint_html = (
-            "<div class='table-hint'>"
-            "<div style='font-size:12px;font-weight:700;color:#475569;text-transform:uppercase;letter-spacing:0.4px;margin-bottom:10px'>Available tables</div>"
-            f"<table><tbody>{rows_hint}</tbody></table>"
-            "</div>"
-        )
-
-    # ── Default SQL ──────────────────────────────────────────────────
-    default_sql = sql or (f"SELECT *\nFROM t\nLIMIT {limit}" if safe_table else "-- Select a table above, then write your SQL here.\n-- The table data is exposed as view \"t\".\n\nSELECT *\nFROM t\nLIMIT 100")
-
-    # ── Export URL (shown only when there are results to export) ─────
-    import urllib.parse as _urlparse
-    export_qs = _urlparse.urlencode({
-        "table": table or "",
-        "from": date_from or "",
-        "to": date_to or "",
-        "sql": sql or "",
-        "limit": limit,
-    })
-    export_link_html = (
-        f"<a href='/query/export?{export_qs}'>&#8595; Export CSV</a>"
-        if safe_table and sql else ""
-    )
-
-    form_html = f"""
-    <form method="get">
-        <label>Table
-            <select name="table" onchange="this.form.submit()">
-                {table_options}
-            </select>
-        </label>
-        <label>From<input type="date" name="from" value="{date_from or ''}"></label>
-        <label>To<input type="date" name="to" value="{date_to or ''}"></label>
-        <label>Limit<input type="number" name="limit" value="{limit}" min="1" max="5000" style="width:80px"></label>
-        {schema_html}
-        {common_queries_html}
-        <label class="sql-label">SQL
-            <textarea name="sql" spellcheck="false">{default_sql}</textarea>
-        </label>
-        <button type="submit">&#9654; Run query</button>
-        {export_link_html}
-    </form>
-    """
-
-    # ── Execute ──────────────────────────────────────────────────────
-    result_html = ""
-    if safe_table and sql and sql.strip():
-        paths = list_partitions(safe_table, date_from, date_to)
-        if not paths:
-            result_html = no_data_notice()
-        else:
-            try:
-                t0 = _time.monotonic()
-                cols, rows = run_query(paths, sql)
-                elapsed = _time.monotonic() - t0
-                n = len(rows)
-                result_html = (
-                    f"<p class='query-meta'>{n:,} row{'s' if n != 1 else ''} &middot; {elapsed:.2f}s</p>"
-                    + html_table(rows, cols, max_rows=limit)
-                )
-            except Exception as exc:
-                result_html = f"<div class='query-error'>{exc}</div>"
-
-    body = hint_html + form_html + result_html
-    return page("SQL Query", body)
-
-
-@app.get("/query/export")
-def query_export(
-    table: Optional[str] = None,
-    date_from: Optional[str] = Query(None, alias="from"),
-    date_to: Optional[str] = Query(None, alias="to"),
-    sql: Optional[str] = None,
-    limit: int = Query(100_000, ge=1, le=500_000),
-):
-    tables = list_tables()
-    safe_table = table if table in tables else None
-    if not safe_table or not sql or not sql.strip():
-        return PlainTextResponse("Missing table or sql parameter.", status_code=400)
-
-    paths = list_partitions(safe_table, date_from, date_to)
-    if not paths:
-        return PlainTextResponse("No data found for the selected date range.", status_code=404)
-
-    sql_clean = sql.strip().rstrip(";")
-    conn = duckdb.connect(database=":memory:")
-    conn.execute("PRAGMA threads=4;")
-    files_sql = "[" + ",".join("'" + p.replace("'", "''") + "'" for p in paths) + "]"
-    conn.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet({files_sql});")
-
-    def gen():
-        try:
-            cur = conn.execute(sql_clean)
-            cols = [d[0] for d in cur.description]
-            buf = io.StringIO()
-            w = csv.writer(buf)
-            w.writerow(cols)
-            yield buf.getvalue().encode("utf-8-sig")
-            buf.seek(0); buf.truncate(0)
-            while True:
-                batch = cur.fetchmany(1000)
-                if not batch:
-                    break
-                for row in batch:
-                    w.writerow(row)
-                yield buf.getvalue().encode("utf-8")
-                buf.seek(0); buf.truncate(0)
-        finally:
-            conn.close()
-
-    filename = f"query_{safe_table}.csv"
-    headers = {
-        "Content-Disposition": f'attachment; filename="{filename}"',
-        "Cache-Control": "no-store",
-    }
-    return StreamingResponse(gen(), media_type="text/csv; charset=utf-8", headers=headers)
 
 
 @app.get("/export")
