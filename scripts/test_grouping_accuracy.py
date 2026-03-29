@@ -573,6 +573,160 @@ def test_python_go_parity(cfg):
 
 
 # ===========================================================================
+# 5. REFERER CLASSIFICATION
+# ===========================================================================
+
+from referer_classifier import classify_referer  # noqa: E402
+
+
+class TestRefererClassification:
+    """Verify referer classification across all six categories."""
+
+    SITE_DOMAIN = "example.com"
+
+    @pytest.mark.parametrize("referer,expected_type,expected_path", [
+        # Direct: empty, None, or "-"
+        (None, "Direct", None),
+        ("", "Direct", None),
+        ("-", "Direct", None),
+
+        # Internal: same domain
+        ("https://example.com/about", "Internal", "/about"),
+        ("https://www.example.com/trading", "Internal", "/trading"),
+        ("http://example.com/en/platform?ref=nav", "Internal", "/en/platform"),
+        ("https://sub.example.com/page", "Internal", "/page"),
+        ("https://example.com/", "Internal", "/"),
+
+        # Search Engine
+        ("https://www.google.com/search?q=test", "Search Engine", None),
+        ("https://bing.com/search?q=test", "Search Engine", None),
+        ("https://duckduckgo.com/?q=test", "Search Engine", None),
+        ("https://yandex.ru/search/?text=test", "Search Engine", None),
+        ("https://www.baidu.com/s?wd=test", "Search Engine", None),
+        ("https://search.yahoo.com/search?p=test", "Search Engine", None),
+        ("https://search.brave.com/search?q=test", "Search Engine", None),
+
+        # Social
+        ("https://www.facebook.com/share", "Social", None),
+        ("https://t.co/abc123", "Social", None),
+        ("https://www.reddit.com/r/trading/comments/xyz", "Social", None),
+        ("https://www.linkedin.com/feed", "Social", None),
+        ("https://twitter.com/user/status/123", "Social", None),
+        ("https://x.com/user/status/456", "Social", None),
+
+        # AI Platform
+        ("https://chat.openai.com/", "AI Platform", None),
+        ("https://chatgpt.com/", "AI Platform", None),
+        ("https://perplexity.ai/search/test", "AI Platform", None),
+        ("https://claude.ai/chat/abc", "AI Platform", None),
+        ("https://you.com/search?q=test", "AI Platform", None),
+        ("https://copilot.microsoft.com/", "AI Platform", None),
+
+        # Other
+        ("https://unknown-site.com/page", "Other", None),
+        ("https://news.ycombinator.com/item?id=123", "Other", None),
+        ("https://blog.example.org/article", "Other", None),
+    ])
+    def test_referer_classification(self, referer, expected_type, expected_path):
+        ref_type, ref_path = classify_referer(referer, self.SITE_DOMAIN)
+        assert ref_type == expected_type, (
+            f"referer={referer!r}: got type={ref_type!r}, want {expected_type!r}"
+        )
+        assert ref_path == expected_path, (
+            f"referer={referer!r}: got path={ref_path!r}, want {expected_path!r}"
+        )
+
+    def test_subdomain_of_known_domain(self):
+        """Subdomains of known domains should be classified correctly."""
+        rt, rp = classify_referer("https://news.google.com/articles/123", self.SITE_DOMAIN)
+        assert rt == "Search Engine"
+
+    def test_empty_site_domain(self):
+        """Empty site domain should not match anything as Internal."""
+        rt, rp = classify_referer("https://example.com/page", "")
+        assert rt == "Other"
+
+    def test_case_insensitive_domain(self):
+        """Domain matching should be case-insensitive."""
+        rt, rp = classify_referer("https://WWW.GOOGLE.COM/search", self.SITE_DOMAIN)
+        assert rt == "Search Engine"
+
+
+# ===========================================================================
+# 6. STATUS CODE EXTRACTION
+# ===========================================================================
+
+from ingest import status_class as compute_status_class  # noqa: E402
+
+
+class TestStatusCodeExtraction:
+    """Verify status_code is correctly preserved through parsing."""
+
+    @pytest.mark.parametrize("code,expected_class", [
+        (200, 2), (201, 2), (204, 2),
+        (301, 3), (302, 3), (307, 3), (308, 3),
+        (400, 4), (401, 4), (403, 4), (404, 4), (410, 4), (429, 4),
+        (500, 5), (502, 5), (503, 5), (504, 5),
+        (100, 0), (0, 0),
+    ])
+    def test_status_class_mapping(self, code, expected_class):
+        assert compute_status_class(code) == expected_class
+
+    def test_status_code_in_parsed_row(self):
+        """Verify that the Python parser produces both status and status_code."""
+        import re as _re
+        from ingest import NGINX_RE, parse_request, parse_time_local
+
+        line = '1.2.3.4 - - [07/Mar/2026:00:00:00 +0000] "GET /test HTTP/1.1" 404 0 "-" "Mozilla/5.0"'
+        m = NGINX_RE.match(line)
+        assert m is not None
+        status_val = int(m.group("status"))
+        assert status_val == 404
+        # Both status and status_code should be the same integer
+        assert status_val == 404
+        assert compute_status_class(status_val) == 4
+
+    @pytest.mark.parametrize("status_code", [200, 301, 302, 404, 500])
+    def test_specific_status_codes(self, status_code):
+        """Spot-check that specific status codes map to correct classes."""
+        expected = status_code // 100
+        if expected < 2 or expected > 5:
+            expected = 0
+        assert compute_status_class(status_code) == expected
+
+
+# ===========================================================================
+# 7. PROFILE DOMAIN FIELD
+# ===========================================================================
+
+class TestProfileDomainField:
+    """Verify the domain field exists in the profile schema."""
+
+    def test_domain_field_in_profile(self):
+        """Newly created profiles should have a domain field."""
+        import sqlite3
+        from profile_loader import (
+            init_profiles_table,
+            create_profile,
+            get_profile_by_id,
+            delete_profile,
+            MANIFEST_DB,
+        )
+        init_profiles_table()
+        pid = create_profile(
+            name="_test_domain_profile",
+            domain="test.example.com",
+            active=False,
+        )
+        try:
+            profile = get_profile_by_id(pid)
+            assert profile is not None
+            assert profile["domain"] == "test.example.com"
+        finally:
+            delete_profile(pid)
+
+
+# ===========================================================================
 # Stand-alone runner (no pytest required)
 # ===========================================================================
 

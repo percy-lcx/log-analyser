@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS profiles (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     name             TEXT NOT NULL UNIQUE,
     is_active        INTEGER NOT NULL DEFAULT 0,
+    domain           TEXT NOT NULL DEFAULT '',
     locale_whitelist TEXT NOT NULL DEFAULT '[]',
     bcp47_fallback   INTEGER NOT NULL DEFAULT 1,
     url_group_rules  TEXT NOT NULL DEFAULT '[]',
@@ -33,8 +34,10 @@ CREATE TABLE IF NOT EXISTS profiles (
 )
 """
 
+_MIGRATION_ADD_DOMAIN = "ALTER TABLE profiles ADD COLUMN domain TEXT NOT NULL DEFAULT ''"
+
 _ALLOWED_UPDATE_FIELDS = frozenset(
-    {"locale_whitelist", "url_group_rules", "section_mappings", "settings", "bcp47_fallback"}
+    {"domain", "locale_whitelist", "url_group_rules", "section_mappings", "settings", "bcp47_fallback"}
 )
 
 
@@ -46,6 +49,11 @@ def init_profiles_table() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(MANIFEST_DB)
     conn.execute(_PROFILES_DDL)
+    # Migrate: add domain column if missing (existing databases)
+    try:
+        conn.execute(_MIGRATION_ADD_DOMAIN)
+    except sqlite3.OperationalError:
+        pass  # column already exists
     conn.commit()
     conn.close()
 
@@ -197,6 +205,7 @@ def get_profile_by_id(profile_id: int) -> Optional[Dict[str, Any]]:
 
 def create_profile(
     name: str,
+    domain: str = "",
     locale_whitelist: str = "[]",
     bcp47_fallback: int = 1,
     url_group_rules: str = "[]",
@@ -217,10 +226,10 @@ def create_profile(
             conn.execute("UPDATE profiles SET is_active = 0, updated_at = ?", (now,))
         conn.execute(
             """INSERT INTO profiles
-               (name, is_active, locale_whitelist, bcp47_fallback,
+               (name, is_active, domain, locale_whitelist, bcp47_fallback,
                 url_group_rules, section_mappings, settings, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (name, 1 if active else 0, locale_whitelist, bcp47_fallback,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (name, 1 if active else 0, domain, locale_whitelist, bcp47_fallback,
              url_group_rules, section_mappings, settings, now, now),
         )
         profile_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -237,6 +246,7 @@ def clone_profile(source_id: int, new_name: str) -> int:
         raise ValueError(f"Source profile id={source_id} not found")
     return create_profile(
         name=new_name,
+        domain=source.get("domain", ""),
         locale_whitelist=source["locale_whitelist"],
         bcp47_fallback=source["bcp47_fallback"],
         url_group_rules=source["url_group_rules"],

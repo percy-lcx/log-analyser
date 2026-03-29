@@ -143,6 +143,7 @@ type logRowJSON struct {
 	Path            string  `json:"path"`
 	HttpVersion     *string `json:"http_version"`
 	Status          int32   `json:"status"`
+	StatusCode      int32   `json:"status_code"`
 	StatusClass     int32   `json:"status_class"`
 	BytesSent       int64   `json:"bytes_sent"`
 	Referer         *string `json:"referer"`
@@ -704,6 +705,7 @@ func processFiles(date string, files []string, botRules, refererRules []botRule,
 				Path:            path,
 				HttpVersion:     httpVer,
 				Status:          status,
+				StatusCode:      status,
 				StatusClass:     statusClass(status),
 				BytesSent:       bytesInt,
 				Referer:         refererPtr,

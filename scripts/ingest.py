@@ -18,6 +18,8 @@ import duckdb
 
 from urllib.parse import parse_qs, unquote_plus
 
+from referer_classifier import classify_referer
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_RAW = ROOT / "data" / "raw"
@@ -386,7 +388,7 @@ def _find_native_parser() -> Optional[Path]:
     return _try_build_native_parser()
 
 
-def _build_parsed_native(log_date: str, files: List[Path], native_bin: Path) -> int:
+def _build_parsed_native(log_date: str, files: List[Path], native_bin: Path, site_domain: str = "") -> int:
     """Use the Go native parser binary to write the parquet file.
 
     The binary writes NDJSON; we read it here and convert to parquet so
@@ -435,7 +437,8 @@ def _build_parsed_native(log_date: str, files: List[Path], native_bin: Path) -> 
             # Write empty parquet with correct schema.
             df = pd.DataFrame(columns=[
                 "date", "ts_local", "ts_utc", "edge_ip", "country", "method", "path", "http_version",
-                "status", "status_class", "bytes_sent", "referer", "user_agent",
+                "status", "status_code", "status_class", "bytes_sent",
+                "referer", "referer_type", "referer_path", "user_agent",
                 "has_query", "is_parameterized", "locale", "section", "url_group", "is_resource",
                 "is_bot", "bot_family", "request_target", "query_string",
                 "is_utm_chatgpt", "has_utm",
@@ -449,43 +452,88 @@ def _build_parsed_native(log_date: str, files: List[Path], native_bin: Path) -> 
         #
         # ts_local: ISO-8601 string with offset → TIMESTAMPTZ (stored as UTC).
         # ts_utc:   ISO-8601 string, no offset  → naive TIMESTAMP.
+        #
+        # Referer classification is applied here in Python (not in Go) by reading
+        # the NDJSON into a temp table, classifying referers, and writing parquet.
         conn = duckdb.connect(database=":memory:")
         try:
             conn.execute(f"""
+                CREATE TABLE raw_parsed AS
+                SELECT
+                    date,
+                    ts_local::TIMESTAMPTZ  AS ts_local,
+                    ts_utc::TIMESTAMP      AS ts_utc,
+                    edge_ip,
+                    country,
+                    method,
+                    path,
+                    http_version,
+                    status,
+                    status_code,
+                    status_class,
+                    bytes_sent,
+                    referer,
+                    user_agent,
+                    has_query,
+                    is_parameterized,
+                    locale,
+                    section,
+                    url_group,
+                    is_resource,
+                    is_bot,
+                    bot_family,
+                    request_target,
+                    query_string,
+                    is_utm_chatgpt,
+                    has_utm,
+                    utm_source,
+                    utm_source_norm,
+                    utm_medium,
+                    utm_campaign,
+                    utm_term,
+                    utm_content
+                FROM read_ndjson('{tmp_path}', auto_detect=true)
+            """)
+
+            # Apply referer classification in Python and update the table
+            rows = conn.execute("SELECT rowid, referer FROM raw_parsed").fetchall()
+            ref_types = []
+            ref_paths = []
+            for _, ref in rows:
+                rt, rp = classify_referer(ref, site_domain)
+                ref_types.append(rt)
+                ref_paths.append(rp)
+
+            conn.execute("ALTER TABLE raw_parsed ADD COLUMN referer_type VARCHAR")
+            conn.execute("ALTER TABLE raw_parsed ADD COLUMN referer_path VARCHAR")
+
+            # Batch update via a temp table for efficiency
+            import pyarrow as pa
+            ref_df = pd.DataFrame({
+                "rid": [r[0] for r in rows],
+                "referer_type": ref_types,
+                "referer_path": ref_paths,
+            })
+            conn.register("ref_update", ref_df)
+            conn.execute("""
+                UPDATE raw_parsed
+                SET referer_type = ref_update.referer_type,
+                    referer_path = ref_update.referer_path
+                FROM ref_update
+                WHERE raw_parsed.rowid = ref_update.rid
+            """)
+
+            conn.execute(f"""
                 COPY (
                     SELECT
-                        date,
-                        ts_local::TIMESTAMPTZ  AS ts_local,
-                        ts_utc::TIMESTAMP      AS ts_utc,
-                        edge_ip,
-                        country,
-                        method,
-                        path,
-                        http_version,
-                        status,
-                        status_class,
-                        bytes_sent,
-                        referer,
-                        user_agent,
-                        has_query,
-                        is_parameterized,
-                        locale,
-                        section,
-                        url_group,
-                        is_resource,
-                        is_bot,
-                        bot_family,
-                        request_target,
-                        query_string,
-                        is_utm_chatgpt,
-                        has_utm,
-                        utm_source,
-                        utm_source_norm,
-                        utm_medium,
-                        utm_campaign,
-                        utm_term,
-                        utm_content
-                    FROM read_ndjson('{tmp_path}', auto_detect=true)
+                        date, ts_local, ts_utc, edge_ip, country, method, path,
+                        http_version, status, status_code, status_class, bytes_sent,
+                        referer, referer_type, referer_path, user_agent,
+                        has_query, is_parameterized, locale, section, url_group,
+                        is_resource, is_bot, bot_family, request_target, query_string,
+                        is_utm_chatgpt, has_utm, utm_source, utm_source_norm,
+                        utm_medium, utm_campaign, utm_term, utm_content
+                    FROM raw_parsed
                 ) TO '{out_path.as_posix()}' (FORMAT PARQUET)
             """)
         finally:
@@ -499,12 +547,12 @@ def _build_parsed_native(log_date: str, files: List[Path], native_bin: Path) -> 
             pass
 
 
-def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotRule], url_cfg: UrlGroupingConfig, referer_rules: Optional[List[BotRule]] = None) -> int:
+def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotRule], url_cfg: UrlGroupingConfig, referer_rules: Optional[List[BotRule]] = None, site_domain: str = "") -> int:
     # Try the native Go binary first; fall back to the Python implementation.
     native_bin = _find_native_parser()
     if native_bin:
         try:
-            return _build_parsed_native(log_date, files, native_bin)
+            return _build_parsed_native(log_date, files, native_bin, site_domain=site_domain)
         except Exception as e:
             print(
                 f"[DATE {log_date}] native parser failed ({e}), falling back to Python",
@@ -569,6 +617,9 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
 
                 is_resource = url_group in ("Nuxt Assets", "Static Assets")
 
+                # Referer classification
+                referer_type, referer_path = classify_referer(referer, site_domain)
+
                 rows.append({
                     "date": log_date,
                     "ts_local": ts_local,
@@ -579,9 +630,12 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
                     "path": path,
                     "http_version": http_ver,
                     "status": status,
+                    "status_code": status,
                     "status_class": status_class(status),
                     "bytes_sent": bytes_sent,
                     "referer": referer,
+                    "referer_type": referer_type,
+                    "referer_path": referer_path,
                     "user_agent": ua,
                     "has_query": bool(has_query),
                     "is_parameterized": bool(has_query),
@@ -608,7 +662,8 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
     if not rows:
         df = pd.DataFrame(columns=[
             "date", "ts_local", "ts_utc", "edge_ip", "country", "method", "path", "http_version",
-            "status", "status_class", "bytes_sent", "referer", "user_agent",
+            "status", "status_code", "status_class", "bytes_sent",
+            "referer", "referer_type", "referer_path", "user_agent",
             "has_query", "is_parameterized", "locale", "section", "url_group", "is_resource",
             "is_bot", "bot_family", "request_target", "query_string",
 
@@ -661,6 +716,21 @@ def build_aggregates_for_date(log_date: str) -> None:
       SUM(CASE WHEN status_class = 3 THEN 1 ELSE 0 END) AS s3xx,
       SUM(CASE WHEN status_class = 4 THEN 1 ELSE 0 END) AS s4xx,
       SUM(CASE WHEN status_class = 5 THEN 1 ELSE 0 END) AS s5xx,
+
+      -- Granular status code counts (top codes)
+      SUM(CASE WHEN status_code = 200 THEN 1 ELSE 0 END) AS s200,
+      SUM(CASE WHEN status_code = 301 THEN 1 ELSE 0 END) AS s301,
+      SUM(CASE WHEN status_code = 302 THEN 1 ELSE 0 END) AS s302,
+      SUM(CASE WHEN status_code = 304 THEN 1 ELSE 0 END) AS s304,
+      SUM(CASE WHEN status_code = 307 THEN 1 ELSE 0 END) AS s307,
+      SUM(CASE WHEN status_code = 308 THEN 1 ELSE 0 END) AS s308,
+      SUM(CASE WHEN status_code = 400 THEN 1 ELSE 0 END) AS s400,
+      SUM(CASE WHEN status_code = 403 THEN 1 ELSE 0 END) AS s403,
+      SUM(CASE WHEN status_code = 404 THEN 1 ELSE 0 END) AS s404,
+      SUM(CASE WHEN status_code = 410 THEN 1 ELSE 0 END) AS s410,
+      SUM(CASE WHEN status_code = 500 THEN 1 ELSE 0 END) AS s500,
+      SUM(CASE WHEN status_code = 502 THEN 1 ELSE 0 END) AS s502,
+      SUM(CASE WHEN status_code = 503 THEN 1 ELSE 0 END) AS s503,
 
       SUM(bytes_sent) AS bytes_sent,
 
@@ -993,6 +1063,38 @@ def build_aggregates_for_date(log_date: str) -> None:
     agg_write_one(conn, utm_sources_daily_sql, out("utm_sources_daily"))
     agg_write_one(conn, utm_source_urls_daily_sql, out("utm_source_urls_daily"))
 
+    # ----------------------------
+    # NEW: referer flow aggregate
+    # ----------------------------
+    referer_flow_daily_sql = """
+    SELECT
+      date,
+      referer_path AS from_path,
+      path AS to_path,
+      referer_type,
+      COUNT(*) AS hit_count
+    FROM parsed
+    WHERE referer_type = 'Internal' AND referer_path IS NOT NULL
+    GROUP BY date, referer_path, path, referer_type
+    """
+    agg_write_one(conn, referer_flow_daily_sql, out("referer_flow_daily"))
+
+    # ----------------------------
+    # NEW: ai_crawler_daily stub (empty table structure for Phase 5)
+    # ----------------------------
+    ai_crawler_daily_sql = """
+    SELECT
+      date,
+      COALESCE(bot_family, 'Unknown') AS bot_family,
+      path,
+      COUNT(*) AS hits,
+      SUM(bytes_sent) AS bytes_sent
+    FROM parsed
+    WHERE 1 = 0
+    GROUP BY date, bot_family, path
+    """
+    agg_write_one(conn, ai_crawler_daily_sql, out("ai_crawler_daily"))
+
     conn.close()
 
 
@@ -1011,6 +1113,11 @@ def ingest(dry_run: bool = False) -> None:
     bot_rules = load_bot_rules()
     referer_rules = load_referer_rules()
     url_cfg = load_url_grouping()
+
+    # Load site domain from active profile for referer classification
+    from profile_loader import get_active_profile_raw
+    profile_raw = get_active_profile_raw()
+    site_domain = (profile_raw.get("domain") or "") if profile_raw else ""
 
     files = list_raw_files()
     if not files:
@@ -1046,7 +1153,7 @@ def ingest(dry_run: bool = False) -> None:
             continue
 
         t0 = time.monotonic()
-        n_rows = build_parsed_for_date(d, day_files, bot_rules, url_cfg, referer_rules)
+        n_rows = build_parsed_for_date(d, day_files, bot_rules, url_cfg, referer_rules, site_domain=site_domain)
         t_parsed = time.monotonic()
         print(f"[DATE {d}] Parsed rows: {n_rows} ({t_parsed - t0:.1f}s)", flush=True)
 
