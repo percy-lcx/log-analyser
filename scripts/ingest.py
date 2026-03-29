@@ -57,6 +57,7 @@ FNAME_DATE_RE = re.compile(r"_access_(\d{4}-\d{2}-\d{2})_")
 class BotRule:
     family: str
     pattern: re.Pattern
+    category: str = "Other"
 
 
 @dataclass
@@ -93,7 +94,8 @@ def load_bot_rules() -> List[BotRule]:
     for r in cfg.get("rules", []):
         family = r["family"]
         pat = re.compile(r["pattern"], re.IGNORECASE)
-        rules.append(BotRule(family=family, pattern=pat))
+        category = r.get("category", "Other")
+        rules.append(BotRule(family=family, pattern=pat, category=category))
     return rules
 
 
@@ -102,7 +104,8 @@ def load_referer_rules() -> List[BotRule]:
     rules = []
     for r in cfg.get("referer_rules", []):
         pat = re.compile(r["pattern"], re.IGNORECASE)
-        rules.append(BotRule(family=r["family"], pattern=pat))
+        category = r.get("category", "Other")
+        rules.append(BotRule(family=r["family"], pattern=pat, category=category))
     return rules
 
 
@@ -168,13 +171,14 @@ def manifest_upsert(path: Path, size_bytes: int, mtime_epoch: int, log_date: str
     conn.close()
 
 
-def classify_bot(ua: str, bot_rules: List[BotRule]) -> Tuple[bool, str]:
+def classify_bot(ua: str, bot_rules: List[BotRule]) -> Tuple[bool, str, Optional[str]]:
     ua_l = (ua or "").lower()
     for r in bot_rules:
         if r.pattern.search(ua_l):
             family = r.family
-            return (family != "Browser/Other"), family
-    return False, "Browser/Other"
+            is_bot = family != "Browser/Other"
+            return is_bot, family, r.category if is_bot else None
+    return False, "Browser/Other", None
 
 
 def ext_of_path(path: str) -> Optional[str]:
@@ -440,7 +444,7 @@ def _build_parsed_native(log_date: str, files: List[Path], native_bin: Path, sit
                 "status", "status_code", "status_class", "bytes_sent",
                 "referer", "referer_type", "referer_path", "user_agent",
                 "has_query", "is_parameterized", "locale", "section", "url_group", "is_resource",
-                "is_bot", "bot_family", "request_target", "query_string",
+                "is_bot", "bot_family", "bot_category", "request_target", "query_string",
                 "is_utm_chatgpt", "has_utm",
                 "utm_source", "utm_source_norm", "utm_medium", "utm_campaign", "utm_term", "utm_content",
             ])
@@ -482,6 +486,7 @@ def _build_parsed_native(log_date: str, files: List[Path], native_bin: Path, sit
                     is_resource,
                     is_bot,
                     bot_family,
+                    bot_category,
                     request_target,
                     query_string,
                     is_utm_chatgpt,
@@ -530,7 +535,7 @@ def _build_parsed_native(log_date: str, files: List[Path], native_bin: Path, sit
                         http_version, status, status_code, status_class, bytes_sent,
                         referer, referer_type, referer_path, user_agent,
                         has_query, is_parameterized, locale, section, url_group,
-                        is_resource, is_bot, bot_family, request_target, query_string,
+                        is_resource, is_bot, bot_family, bot_category, request_target, query_string,
                         is_utm_chatgpt, has_utm, utm_source, utm_source_norm,
                         utm_medium, utm_campaign, utm_term, utm_content
                     FROM raw_parsed
@@ -564,7 +569,7 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
     bad = 0
 
     # Per-date caches: most bots repeat the same UA and URL patterns heavily.
-    ua_cache: Dict[str, Tuple[bool, str]] = {}
+    ua_cache: Dict[str, Tuple[bool, str, Optional[str]]] = {}
     path_cache: Dict[str, Tuple[str, Optional[str], Optional[str]]] = {}
 
     for fp in files:
@@ -598,13 +603,13 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
 
                 if ua not in ua_cache:
                     ua_cache[ua] = classify_bot(ua, bot_rules)
-                is_bot, bot_family = ua_cache[ua]
+                is_bot, bot_family, bot_category = ua_cache[ua]
 
                 # Referer check is per-request (same UA can arrive with different referers).
                 if not is_bot and referer and referer_rules:
                     for rr in referer_rules:
                         if rr.pattern.search(referer.lower()):
-                            is_bot, bot_family = True, rr.family
+                            is_bot, bot_family, bot_category = True, rr.family, rr.category
                             break
 
                 if path not in path_cache:
@@ -645,6 +650,7 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
                     "is_resource": bool(is_resource),
                     "is_bot": bool(is_bot),
                     "bot_family": bot_family if is_bot else None,
+                    "bot_category": bot_category if is_bot else None,
                     "request_target": request_target,
                     "query_string": query_string,
 
@@ -665,7 +671,7 @@ def build_parsed_for_date(log_date: str, files: List[Path], bot_rules: List[BotR
             "status", "status_code", "status_class", "bytes_sent",
             "referer", "referer_type", "referer_path", "user_agent",
             "has_query", "is_parameterized", "locale", "section", "url_group", "is_resource",
-            "is_bot", "bot_family", "request_target", "query_string",
+            "is_bot", "bot_family", "bot_category", "request_target", "query_string",
 
             # legacy + new UTM columns
             "is_utm_chatgpt", "has_utm",
@@ -777,6 +783,7 @@ def build_aggregates_for_date(log_date: str) -> None:
     SELECT
       date,
       COALESCE(bot_family, 'Unknown bot') AS bot_family,
+      COALESCE(bot_category, 'Other') AS bot_category,
       COUNT(*) AS hits,
 
       SUM(CASE WHEN status_class = 2 THEN 1 ELSE 0 END) AS s2xx,
@@ -791,7 +798,7 @@ def build_aggregates_for_date(log_date: str) -> None:
       (SUM(CASE WHEN is_resource THEN 1 ELSE 0 END) * 1.0) / NULLIF(COUNT(*), 0) AS resource_hits_pct
     FROM parsed
     WHERE is_bot
-    GROUP BY date, COALESCE(bot_family, 'Unknown bot')
+    GROUP BY date, COALESCE(bot_family, 'Unknown bot'), COALESCE(bot_category, 'Other')
     """
 
     locale_daily_sql = f"""
@@ -1080,20 +1087,127 @@ def build_aggregates_for_date(log_date: str) -> None:
     agg_write_one(conn, referer_flow_daily_sql, out("referer_flow_daily"))
 
     # ----------------------------
-    # NEW: ai_crawler_daily stub (empty table structure for Phase 5)
+    # ai_crawler_daily — AI crawler analytics with Googlebot overlap
     # ----------------------------
-    ai_crawler_daily_sql = """
+
+    # Step 1: Compute per AI crawler stats
+    ai_base_sql = """
     SELECT
       date,
-      COALESCE(bot_family, 'Unknown') AS bot_family,
-      path,
-      COUNT(*) AS hits,
+      bot_family,
+      COUNT(*) AS total_hits,
+      COUNT(DISTINCT path) AS unique_urls,
       SUM(bytes_sent) AS bytes_sent
     FROM parsed
-    WHERE 1 = 0
+    WHERE is_bot AND bot_category = 'AI Crawler'
+    GROUP BY date, bot_family
+    """
+
+    # Step 2: Top URL groups per AI crawler (as JSON array)
+    ai_top_groups_sql = """
+    SELECT date, bot_family, url_group, COUNT(*) AS cnt
+    FROM parsed
+    WHERE is_bot AND bot_category = 'AI Crawler'
+    GROUP BY date, bot_family, url_group
+    """
+
+    # Step 3: Top locales per AI crawler (as JSON array)
+    ai_top_locales_sql = """
+    SELECT date, bot_family, locale, COUNT(*) AS cnt
+    FROM parsed
+    WHERE is_bot AND bot_category = 'AI Crawler'
+    GROUP BY date, bot_family, locale
+    """
+
+    # Step 4: Googlebot URLs per date for overlap calculation
+    googlebot_urls_sql = """
+    SELECT date, path
+    FROM parsed
+    WHERE is_bot AND bot_family = 'Googlebot'
+    GROUP BY date, path
+    """
+
+    # Step 5: AI crawler URLs per date for overlap
+    ai_urls_sql = """
+    SELECT date, bot_family, path
+    FROM parsed
+    WHERE is_bot AND bot_category = 'AI Crawler'
     GROUP BY date, bot_family, path
     """
-    agg_write_one(conn, ai_crawler_daily_sql, out("ai_crawler_daily"))
+
+    try:
+        # Execute all sub-queries
+        base_df = conn.execute(ai_base_sql).fetchdf()
+
+        if base_df.empty:
+            # Write empty parquet with correct schema
+            import pyarrow as pa
+            import pyarrow.parquet as pq
+            empty_schema = pa.schema([
+                ("date", pa.string()),
+                ("bot_family", pa.string()),
+                ("total_hits", pa.int64()),
+                ("unique_urls", pa.int64()),
+                ("bytes_sent", pa.int64()),
+                ("top_url_groups", pa.string()),
+                ("top_locales", pa.string()),
+                ("overlap_with_googlebot", pa.float64()),
+            ])
+            empty_table = pa.table({f.name: pa.array([], type=f.type) for f in empty_schema}, schema=empty_schema)
+            out_path = out("ai_crawler_daily")
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            pq.write_table(empty_table, out_path)
+        else:
+            groups_df = conn.execute(ai_top_groups_sql).fetchdf()
+            locales_df = conn.execute(ai_top_locales_sql).fetchdf()
+            gbot_df = conn.execute(googlebot_urls_sql).fetchdf()
+            ai_urls_df = conn.execute(ai_urls_sql).fetchdf()
+
+            # Build top-5 URL groups JSON per (date, bot_family)
+            top_groups = {}
+            if not groups_df.empty:
+                for (date_val, family), grp in groups_df.groupby(["date", "bot_family"]):
+                    top5 = grp.nlargest(5, "cnt")["url_group"].tolist()
+                    top_groups[(date_val, family)] = json.dumps(top5)
+
+            # Build top-5 locales JSON per (date, bot_family)
+            top_locs = {}
+            if not locales_df.empty:
+                for (date_val, family), grp in locales_df.groupby(["date", "bot_family"]):
+                    top5 = grp.nlargest(5, "cnt")["locale"].tolist()
+                    top_locs[(date_val, family)] = json.dumps(top5)
+
+            # Build Googlebot URL set per date
+            gbot_url_sets = {}
+            if not gbot_df.empty:
+                for date_val, grp in gbot_df.groupby("date"):
+                    gbot_url_sets[date_val] = set(grp["path"].tolist())
+
+            # Compute overlap per (date, bot_family)
+            overlap_map = {}
+            if not ai_urls_df.empty:
+                for (date_val, family), grp in ai_urls_df.groupby(["date", "bot_family"]):
+                    ai_paths = set(grp["path"].tolist())
+                    gbot_paths = gbot_url_sets.get(date_val, set())
+                    if ai_paths:
+                        overlap_map[(date_val, family)] = len(ai_paths & gbot_paths) / len(ai_paths)
+                    else:
+                        overlap_map[(date_val, family)] = 0.0
+
+            # Assemble final DataFrame
+            base_df["top_url_groups"] = base_df.apply(
+                lambda r: top_groups.get((r["date"], r["bot_family"]), "[]"), axis=1)
+            base_df["top_locales"] = base_df.apply(
+                lambda r: top_locs.get((r["date"], r["bot_family"]), "[]"), axis=1)
+            base_df["overlap_with_googlebot"] = base_df.apply(
+                lambda r: overlap_map.get((r["date"], r["bot_family"]), 0.0), axis=1)
+
+            out_path = out("ai_crawler_daily")
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            base_df.to_parquet(out_path, index=False)
+    except Exception as e:
+        print(f"[agg] ai_crawler_daily error: {e}", flush=True)
+        import traceback; traceback.print_exc()
 
     conn.close()
 

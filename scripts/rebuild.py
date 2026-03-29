@@ -76,6 +76,9 @@ AGG_TABLES = [
     # NEW generic UTM
     "utm_sources_daily",
     "utm_source_urls_daily",
+
+    # AI crawler analytics
+    "ai_crawler_daily",
 ]
 
 

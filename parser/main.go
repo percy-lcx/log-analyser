@@ -81,8 +81,9 @@ type botsYAML struct {
 }
 
 type botRuleYAML struct {
-	Family  string `yaml:"family"`
-	Pattern string `yaml:"pattern"`
+	Family   string `yaml:"family"`
+	Pattern  string `yaml:"pattern"`
+	Category string `yaml:"category"`
 }
 
 type urlGroupsYAML struct {
@@ -105,8 +106,9 @@ type urlRuleYAML struct {
 // ---------------------------------------------------------------------------
 
 type botRule struct {
-	family  string
-	pattern *regexp.Regexp
+	family   string
+	pattern  *regexp.Regexp
+	category string
 }
 
 type urlRule struct {
@@ -156,6 +158,7 @@ type logRowJSON struct {
 	IsResource      bool    `json:"is_resource"`
 	IsBot           bool    `json:"is_bot"`
 	BotFamily       *string `json:"bot_family"`
+	BotCategory     *string `json:"bot_category"`
 	RequestTarget   string  `json:"request_target"`
 	QueryString     *string `json:"query_string"`
 	IsUtmChatgpt    bool    `json:"is_utm_chatgpt"`
@@ -188,7 +191,11 @@ func loadBotRules(path string) ([]botRule, []botRule, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("bad bot pattern %q: %w", r.Pattern, err)
 		}
-		rules = append(rules, botRule{family: r.Family, pattern: pat})
+		cat := r.Category
+		if cat == "" {
+			cat = "Other"
+		}
+		rules = append(rules, botRule{family: r.Family, pattern: pat, category: cat})
 	}
 
 	var refRules []botRule
@@ -197,7 +204,11 @@ func loadBotRules(path string) ([]botRule, []botRule, error) {
 		if err != nil {
 			return nil, nil, fmt.Errorf("bad referer pattern %q: %w", r.Pattern, err)
 		}
-		refRules = append(refRules, botRule{family: r.Family, pattern: pat})
+		cat := r.Category
+		if cat == "" {
+			cat = "Other"
+		}
+		refRules = append(refRules, botRule{family: r.Family, pattern: pat, category: cat})
 	}
 
 	return rules, refRules, nil
@@ -287,14 +298,18 @@ func loadURLConfig(path string) (*urlConfig, error) {
 // Bot classification
 // ---------------------------------------------------------------------------
 
-func classifyBot(ua string, rules []botRule) (isBot bool, family string) {
+func classifyBot(ua string, rules []botRule) (isBot bool, family string, category string) {
 	uaL := strings.ToLower(ua)
 	for _, r := range rules {
 		if r.pattern.MatchString(uaL) {
-			return r.family != "Browser/Other", r.family
+			bot := r.family != "Browser/Other"
+			if bot {
+				return true, r.family, r.category
+			}
+			return false, r.family, ""
 		}
 	}
-	return false, "Browser/Other"
+	return false, "Browser/Other", ""
 }
 
 // ---------------------------------------------------------------------------
@@ -569,8 +584,9 @@ func parseUTMFields(queryString string) utmResult {
 // ---------------------------------------------------------------------------
 
 type uaCacheEntry struct {
-	isBot  bool
-	family string
+	isBot    bool
+	family   string
+	category string
 }
 
 type pathCacheEntry struct {
@@ -649,12 +665,13 @@ func processFiles(date string, files []string, botRules, refererRules []botRule,
 			// Bot classification (cached by UA string).
 			uce, ok := uaCache[ua]
 			if !ok {
-				isBot, family := classifyBot(ua, botRules)
-				uce = uaCacheEntry{isBot: isBot, family: family}
+				isBot, family, cat := classifyBot(ua, botRules)
+				uce = uaCacheEntry{isBot: isBot, family: family, category: cat}
 				uaCache[ua] = uce
 			}
 			isBot := uce.isBot
 			botFamily := uce.family
+			botCategory := uce.category
 
 			// Referer-based bot check (not cached – same UA can arrive with different referers).
 			if !isBot && refererPtr != nil && len(refererRules) > 0 {
@@ -663,6 +680,7 @@ func processFiles(date string, files []string, botRules, refererRules []botRule,
 					if rr.pattern.MatchString(refL) {
 						isBot = true
 						botFamily = rr.family
+						botCategory = rr.category
 						break
 					}
 				}
@@ -686,8 +704,10 @@ func processFiles(date string, files []string, botRules, refererRules []botRule,
 			isResource := pce.group == "Nuxt Assets" || pce.group == "Static Assets"
 
 			var botFamilyPtr *string
+			var botCategoryPtr *string
 			if isBot {
 				botFamilyPtr = &botFamily
+				botCategoryPtr = &botCategory
 			}
 
 			isUTMChatgpt := utm.utmSourceNorm != nil && *utm.utmSourceNorm == "chatgpt.com"
@@ -718,6 +738,7 @@ func processFiles(date string, files []string, botRules, refererRules []botRule,
 				IsResource:      isResource,
 				IsBot:           isBot,
 				BotFamily:       botFamilyPtr,
+				BotCategory:     botCategoryPtr,
 				RequestTarget:   requestTarget,
 				QueryString:     queryString,
 				IsUtmChatgpt:    isUTMChatgpt,
