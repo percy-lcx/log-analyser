@@ -711,9 +711,8 @@ def page(title: str, body: str) -> HTMLResponse:
     plotly_cdn = "<script src='https://cdn.plot.ly/plotly-latest.min.js'></script>"
 
     nav_items = [
-        ("Home", "/"),
+        ("Log Viewer", "/logs"),
         ("Executive Summary", "/reports/summary"),
-        ("Guided Insights", "/insights"),
         ("Traffic", "/reports/traffic"),
         ("Status Codes", "/reports/status-codes"),
         ("Content", "/reports/content"),
@@ -722,7 +721,6 @@ def page(title: str, body: str) -> HTMLResponse:
         ("Referer Flow", "/reports/referer-flow"),
         ("UTM Campaigns", "/reports/utm"),
         ("Search Console", "/reports/gsc"),
-        ("Log Viewer", "/logs"),
         ("Settings", "/settings"),
     ]
     nav_links = "\n".join(
@@ -1495,31 +1493,9 @@ def executive_summary(
     return page("Executive Summary", body)
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 def index():
-    items = [
-        ("Executive Summary", "/reports/summary", "Key metrics, trends, and top issues at a glance"),
-        ("Traffic", "/reports/traffic", "Volume, bot/human split, bandwidth, and hourly patterns"),
-        ("Status Codes", "/reports/status-codes", "HTTP status trends, redirects, client and server errors"),
-        ("Content", "/reports/content", "Top URLs, URL groups, page sizes, and human paths"),
-        ("Locales", "/reports/locales", "Traffic by locale with heatmap cross-tab"),
-        ("Bots", "/reports/bots", "Bot families, AI crawlers, crawl waste, and resource waste"),
-        ("Referer Flow", "/reports/referer-flow", "Internal navigation, entry points, and referer types"),
-        ("UTM Campaigns", "/reports/utm", "Campaign source volume and landing pages"),
-        ("Search Console", "/reports/gsc", "Crawl-to-search performance (requires GSC connection)"),
-        ("Settings", "/settings", "Manage profiles, URL groups, locales, sections, and log files"),
-    ]
-    cards = "".join(
-        f"<a href='{url}' class='report-card'>{name}<small>{desc}</small></a>"
-        for name, url, desc in items
-    )
-    tip = (
-        "<div class='index-tip'>"
-        "Tip: use the date picker on any report page to filter by date range. "
-        "Each report also has an <strong>Export CSV</strong> link for raw data downloads."
-        "</div>"
-    )
-    return page("Log Dashboard", tip + "<div class='report-grid'>" + cards + "</div>")
+    return RedirectResponse(url="/logs", status_code=302)
 
 
 # ---------------------------------------------------------------------------
@@ -3002,94 +2978,12 @@ def _redirect_utm_chatgpt(date_from: Optional[str] = Query(None, alias="from"), 
     return RedirectResponse(url=f"/reports/utm?from={date_from or ''}&to={date_to or ''}&utm_source=chatgpt.com", status_code=302)
 
 # ----------------------------
-# Guided Insights page
+# Legacy redirect: Guided Insights → Log Viewer
 # ----------------------------
 
-@app.get("/insights", response_class=HTMLResponse)
-def insights_page(
-    q: Optional[str] = None,
-    date_from: Optional[str] = Query(None, alias="from"),
-    date_to: Optional[str] = Query(None, alias="to"),
-):
-    import time as _time
-    import urllib.parse as _urlparse
-
-    available = set(list_tables())
-
-    # Date bar (shared across landing and result views)
-    back_qs = _urlparse.urlencode({k: v for k, v in [("from", date_from or ""), ("to", date_to or "")] if v})
-    date_bar = (
-        f"<form class='insights-date-bar' method='get'>"
-        f"<input type='hidden' name='q' value='{q or ''}'>"
-        f"<label>From<input type='date' name='from' value='{date_from or ''}'></label>"
-        f"<label>To<input type='date' name='to' value='{date_to or ''}'></label>"
-        f"<button type='submit'>Apply dates</button>"
-        + (f"<a class='insights-back' href='/insights?{back_qs}'>&#8592; All questions</a>" if q else "")
-        + f"</form>"
-    )
-
-    # ── Landing: show question cards grouped by category ────────────
-    if not q:
-        sections = []
-        for cat in _INSIGHT_CATEGORIES:
-            cards = "".join(
-                f"<a class='insight-card' href='/insights?q={ins['id']}"
-                + (f"&from={date_from}" if date_from else "")
-                + (f"&to={date_to}" if date_to else "")
-                + f"'>{ins['question']}</a>"
-                for ins in GUIDED_INSIGHTS
-                if ins["category"] == cat and ins["table"] in available
-            )
-            if cards:
-                sections.append(
-                    f"<div class='insights-section-title'>{cat}</div>"
-                    f"<div class='insights-grid'>{cards}</div>"
-                )
-        grid_html = "".join(sections) if sections else no_data_notice()
-        body = date_bar + grid_html
-        return page("Guided Insights", body)
-
-    # ── Result view ─────────────────────────────────────────────────
-    insight = _INSIGHT_BY_ID.get(q)
-    if not insight:
-        return page("Guided Insights", "<p>Unknown question.</p>")
-
-    paths = list_partitions(insight["table"], date_from, date_to)
-    if not paths:
-        body = date_bar + f"<div class='insight-result-title'>{insight['question']}</div>" + no_data_notice()
-        return page("Guided Insights", body)
-
-    try:
-        t0 = _time.monotonic()
-        cols, rows = run_query(paths, insight["sql"])
-        elapsed = _time.monotonic() - t0
-    except Exception as exc:
-        body = date_bar + f"<div class='insight-result-title'>{insight['question']}</div><div class='query-error'>{exc}</div>"
-        return page("Guided Insights", body)
-
-    # Chart
-    chart_type = insight.get("chart")
-    x_col = insight.get("x", cols[0] if cols else "")
-    y = insight.get("y")
-    if chart_type == "line":
-        y_cols = y if isinstance(y, list) else [y]
-        chart_html = line_chart(rows, cols, x_col, y_cols, insight["question"])
-    elif chart_type == "bar":
-        y_col = y[0] if isinstance(y, list) else y
-        chart_html = bar_chart(rows, cols, x_col, y_col, insight["question"])
-    else:
-        chart_html = ""
-
-    n = len(rows)
-
-    body = (
-        date_bar
-        + f"<div class='insight-result-title'>{insight['question']}</div>"
-        + chart_html
-        + f"<p class='query-meta'>{n:,} row{'s' if n != 1 else ''} &middot; {elapsed:.2f}s</p>"
-        + html_table(rows, cols, max_rows=500)
-    )
-    return page("Guided Insights", body)
+@app.get("/insights")
+def insights_page():
+    return RedirectResponse(url="/logs", status_code=301)
 
 
 @app.get("/query", response_class=RedirectResponse)
