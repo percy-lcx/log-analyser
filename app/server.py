@@ -44,6 +44,9 @@ def fmt_bytes(n) -> str:
 
 app = FastAPI(title="Local Log Dashboard")
 
+from app.settings import router as settings_router
+app.include_router(settings_router)
+
 
 def list_partitions(table: str, date_from: Optional[str], date_to: Optional[str]) -> List[str]:
     """
@@ -706,6 +709,7 @@ def page(title: str, body: str) -> HTMLResponse:
         ("Human URLs", "/reports/human-urls"),
         ("UTM sources", "/reports/utm"),
         ("Log Viewer", "/logs"),
+        ("Settings", "/settings"),
     ]
     nav_links = "\n".join(
         f"<a href='{url}' class='nav-link' data-path='{url}'>{name}</a>"
@@ -1420,6 +1424,7 @@ def index():
         ("Top resource waste", "/reports/top-resource-waste", "Paths with highest waste score"),
         ("Human URLs", "/reports/human-urls", "Top paths visited by real users"),
         ("UTM sources", "/reports/utm", "Traffic from UTM-tagged campaigns"),
+        ("Settings", "/settings", "Manage profiles, URL groups, locales, sections, and log files"),
     ]
     cards = "".join(
         f"<a href='{url}' class='report-card'>{name}<small>{desc}</small></a>"
