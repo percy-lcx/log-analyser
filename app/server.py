@@ -1585,8 +1585,8 @@ def traffic_report(
         hourly = no_data_notice()
     else:
         sql_hourly = """
-        SELECT hour, SUM(hits) AS hits, SUM(hits_bot) AS hits_bot, SUM(hits_human) AS hits_human
-        FROM t GROUP BY hour ORDER BY hour;
+        SELECT hour_local AS hour, SUM(hits) AS hits, SUM(hits_bot) AS hits_bot, SUM(hits_human) AS hits_human
+        FROM t GROUP BY hour_local ORDER BY hour_local;
         """
         cols_h, rows_h = run_query(paths_hourly, sql_hourly)
         hourly += export_link("hourly", date_from, date_to)
