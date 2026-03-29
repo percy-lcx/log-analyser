@@ -2653,19 +2653,264 @@ def utm_report(
     return page("UTM Campaigns", body)
 
 
-# ── /reports/gsc (placeholder) ────────────────────────────────────────────
+# ── /reports/gsc ─────────────────────────────────────────────────────────
 
 @app.get("/reports/gsc", response_class=HTMLResponse)
-def gsc_report():
-    body = (
-        "<div class='empty-state'>"
-        "<h3>Google Search Console</h3>"
-        "<p>Connect Google Search Console to see crawl-to-search performance data.</p>"
-        "<p>This report will show crawl efficiency analysis, including pages with high crawl frequency "
-        "but zero impressions, pages with impressions but no recent crawl, and crawl frequency vs. position correlations.</p>"
-        "<a href='/settings/gsc'>Connect Search Console</a>"
-        "</div>"
+def gsc_report(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    tab: Optional[str] = None,
+    limit: int = 200,
+):
+    gsc_paths = list_partitions("gsc_daily", date_from, date_to)
+    avail = available_dates()
+    body = date_filters_html(date_from, date_to, avail)
+
+    # Check if GSC is connected by looking for gsc_daily data
+    if not gsc_paths:
+        # Check if data/gsc has any parquet files at all
+        gsc_data_dir = ROOT / "data" / "gsc"
+        has_any_gsc = gsc_data_dir.exists() and any(gsc_data_dir.glob("date=*/performance.parquet"))
+        if not has_any_gsc:
+            body += (
+                "<div class='empty-state'>"
+                "<h3>Google Search Console</h3>"
+                "<p>Connect Google Search Console to see crawl-to-search performance data.</p>"
+                "<p>This report will show crawl efficiency analysis, including pages with high crawl frequency "
+                "but zero impressions, pages with impressions but no recent crawl, and crawl frequency vs. position correlations.</p>"
+                "<a href='/settings/gsc' style='display:inline-block;margin-top:12px;padding:8px 16px;"
+                "background:#3b82f6;color:#fff;border-radius:6px;text-decoration:none;font-size:13px;'>Connect Search Console</a>"
+                "</div>"
+            )
+        else:
+            body += (
+                "<p>GSC data exists but no <code>gsc_daily</code> aggregates found for this date range. "
+                "Run a rebuild to generate aggregates, or adjust the date filter.</p>"
+            )
+        return page("Search Console", body)
+
+    # ── Tab: Performance Overview ──────────────────────────────────────
+    perf = ""
+
+    # KPI cards
+    curr_from, curr_to, prev_from, prev_to = _compute_periods(date_from, date_to, avail)
+    curr_paths = list_partitions("gsc_daily", curr_from, curr_to)
+    prev_paths = list_partitions("gsc_daily", prev_from, prev_to)
+
+    kpi_sql = """
+    SELECT
+        SUM(clicks) AS total_clicks,
+        SUM(impressions) AS total_impressions,
+        AVG(CASE WHEN impressions > 0 THEN ctr ELSE NULL END) AS avg_ctr,
+        AVG(CASE WHEN impressions > 0 THEN position ELSE NULL END) AS avg_position
+    FROM t
+    WHERE has_impressions
+    """
+    _, curr_kpi = run_query(curr_paths, kpi_sql)
+    _, prev_kpi = run_query(prev_paths, kpi_sql)
+
+    c = curr_kpi[0] if curr_kpi else (0, 0, 0, 0)
+    p = prev_kpi[0] if prev_kpi else (0, 0, 0, 0)
+
+    def fmt_pct(v):
+        try:
+            return f"{float(v)*100:.1f}%"
+        except (TypeError, ValueError):
+            return "0.0%"
+
+    def fmt_pos(v):
+        try:
+            return f"{float(v):.1f}"
+        except (TypeError, ValueError):
+            return "0.0"
+
+    perf += "<div class='kpi-row'>"
+    perf += kpi_card("Total Clicks", c[0], p[0])
+    perf += kpi_card("Total Impressions", c[1], p[1])
+    perf += kpi_card("Avg CTR", c[2], p[2], fmt_fn=fmt_pct)
+    perf += kpi_card("Avg Position", c[3], p[3], fmt_fn=fmt_pos, lower_is_better=True)
+    perf += "</div>"
+
+    # Clicks & impressions over time
+    trend_sql = """
+    SELECT
+        date,
+        SUM(clicks) AS clicks,
+        SUM(impressions) AS impressions,
+        AVG(CASE WHEN impressions > 0 THEN position ELSE NULL END) AS avg_position
+    FROM t
+    WHERE has_impressions
+    GROUP BY date
+    ORDER BY date
+    """
+    cols_t, rows_t = run_query(gsc_paths, trend_sql)
+    perf += line_chart(rows_t, cols_t, "date", ["clicks", "impressions"], "Clicks & Impressions Over Time")
+    perf += line_chart(rows_t, cols_t, "date", ["avg_position"], "Average Position Over Time")
+
+    # Top pages by clicks
+    top_clicks_sql = f"""
+    SELECT
+        page,
+        SUM(clicks) AS clicks,
+        SUM(impressions) AS impressions,
+        AVG(ctr) AS avg_ctr,
+        AVG(position) AS avg_position,
+        SUM(crawl_hits) AS crawl_hits
+    FROM t
+    WHERE has_impressions
+    GROUP BY page
+    ORDER BY clicks DESC
+    LIMIT {int(limit)}
+    """
+    cols_tc, rows_tc = run_query(gsc_paths, top_clicks_sql)
+    perf += (
+        f"<p><a href='/export?report=gsc-top-clicks&from={date_from or ''}&to={date_to or ''}"
+        f"&limit={int(limit)}'>Export CSV</a></p>"
     )
+    perf += "<h2>Top Pages by Clicks</h2>"
+    perf += html_table(rows_tc, cols_tc, max_rows=min(int(limit), 500))
+
+    # Top queries by impressions (from raw GSC data, not the joined aggregate)
+    gsc_data_dir = ROOT / "data" / "gsc"
+    gsc_raw_paths = []
+    if gsc_data_dir.exists():
+        for p_dir in gsc_data_dir.glob("date=*/performance.parquet"):
+            d = p_dir.parent.name.split("=", 1)[1]
+            if date_from and d < date_from:
+                continue
+            if date_to and d > date_to:
+                continue
+            gsc_raw_paths.append(p_dir.as_posix())
+    gsc_raw_paths.sort()
+
+    if gsc_raw_paths:
+        query_sql = f"""
+        SELECT
+            query,
+            SUM(clicks) AS clicks,
+            SUM(impressions) AS impressions,
+            AVG(ctr) AS avg_ctr,
+            AVG(position) AS avg_position
+        FROM t
+        WHERE query IS NOT NULL
+        GROUP BY query
+        ORDER BY impressions DESC
+        LIMIT {int(limit)}
+        """
+        cols_q, rows_q = run_query(gsc_raw_paths, query_sql)
+        perf += "<h2>Top Queries by Impressions</h2>"
+        perf += html_table(rows_q, cols_q, max_rows=min(int(limit), 500))
+
+    # ── Tab: Crawl-to-Index Efficiency ─────────────────────────────────
+    eff = ""
+
+    # High crawl, zero impressions
+    high_crawl_sql = f"""
+    SELECT
+        page,
+        SUM(crawl_hits) AS crawl_hits,
+        SUM(bot_hits) AS bot_hits,
+        SUM(impressions) AS impressions
+    FROM t
+    WHERE crawl_hits > 0
+    GROUP BY page
+    HAVING SUM(impressions) = 0
+    ORDER BY crawl_hits DESC
+    LIMIT {int(limit)}
+    """
+    cols_hc, rows_hc = run_query(gsc_paths, high_crawl_sql)
+    eff += "<h2>High Crawl, Zero Impressions</h2>"
+    eff += "<p style='font-size:13px;color:#64748b;margin-bottom:8px;'>Pages actively crawled but receiving no search impressions. Potential crawl budget waste.</p>"
+    eff += (
+        f"<p><a href='/export?report=gsc-high-crawl-no-impressions&from={date_from or ''}&to={date_to or ''}"
+        f"&limit={int(limit)}'>Export CSV</a></p>"
+    )
+    if rows_hc:
+        eff += html_table(rows_hc, cols_hc, max_rows=min(int(limit), 500))
+    else:
+        eff += "<p style='color:#94a3b8;'>No pages found with crawl activity but zero impressions.</p>"
+
+    # Impressions but no recent crawl
+    no_crawl_sql = f"""
+    SELECT
+        page,
+        SUM(impressions) AS impressions,
+        SUM(clicks) AS clicks,
+        AVG(position) AS avg_position,
+        SUM(crawl_hits) AS crawl_hits
+    FROM t
+    WHERE impressions > 0
+    GROUP BY page
+    HAVING SUM(crawl_hits) = 0
+    ORDER BY impressions DESC
+    LIMIT {int(limit)}
+    """
+    cols_nc, rows_nc = run_query(gsc_paths, no_crawl_sql)
+    eff += "<h2>Impressions but No Recent Crawl</h2>"
+    eff += "<p style='font-size:13px;color:#64748b;margin-bottom:8px;'>Pages with search impressions but no crawl activity in the selected period. May have stale cached content.</p>"
+    eff += (
+        f"<p><a href='/export?report=gsc-impressions-no-crawl&from={date_from or ''}&to={date_to or ''}"
+        f"&limit={int(limit)}'>Export CSV</a></p>"
+    )
+    if rows_nc:
+        eff += html_table(rows_nc, cols_nc, max_rows=min(int(limit), 500))
+    else:
+        eff += "<p style='color:#94a3b8;'>No pages found with impressions but zero crawl activity.</p>"
+
+    # Crawl frequency vs position scatter plot
+    scatter_sql = f"""
+    SELECT
+        page,
+        SUM(crawl_hits) AS crawl_hits,
+        AVG(position) AS avg_position,
+        SUM(impressions) AS impressions,
+        SUM(clicks) AS clicks
+    FROM t
+    WHERE crawl_hits > 0 AND impressions > 0
+    GROUP BY page
+    ORDER BY crawl_hits DESC
+    LIMIT {min(int(limit), 500)}
+    """
+    cols_sc, rows_sc = run_query(gsc_paths, scatter_sql)
+    eff += "<h2>Crawl Frequency vs Position</h2>"
+    eff += "<p style='font-size:13px;color:#64748b;margin-bottom:8px;'>Scatter plot showing relationship between crawl frequency and average search position per page.</p>"
+    if rows_sc:
+        import plotly.graph_objects as _go
+        df_sc = pd.DataFrame(rows_sc, columns=cols_sc)
+        fig = _go.Figure()
+        fig.add_trace(_go.Scatter(
+            x=[float(v) if v is not None else 0 for v in df_sc["crawl_hits"].tolist()],
+            y=[float(v) if v is not None else 0 for v in df_sc["avg_position"].tolist()],
+            mode="markers",
+            text=[str(v) for v in df_sc["page"].tolist()],
+            hovertemplate="%{text}<br>Crawl hits: %{x}<br>Avg position: %{y:.1f}<extra></extra>",
+            marker=dict(
+                size=[max(4, min(20, int(float(v or 0) / max(1, float(df_sc["impressions"].max() or 1)) * 20))) for v in df_sc["impressions"].tolist()],
+                color=[float(v) if v is not None else 0 for v in df_sc["clicks"].tolist()],
+                colorscale="Blues",
+                showscale=True,
+                colorbar=dict(title="Clicks"),
+            ),
+        ))
+        fig.update_layout(
+            height=500,
+            margin=dict(l=20, r=20, t=40, b=20),
+            title="Crawl Hits vs Avg Position (bubble size = impressions, color = clicks)",
+            xaxis_title="Crawl Hits",
+            yaxis_title="Avg Position (lower is better)",
+            yaxis=dict(autorange="reversed"),
+        )
+        eff += f"<div class='card'>{fig.to_html(full_html=False, include_plotlyjs=False)}</div>"
+    else:
+        eff += "<p style='color:#94a3b8;'>Not enough data for scatter plot (need pages with both crawl and impressions).</p>"
+
+    tabs = tab_bar([
+        ("performance", "Performance Overview"),
+        ("efficiency", "Crawl-to-Index Efficiency"),
+    ])
+    body += tabs
+    body += tab_panel("performance", perf)
+    body += tab_panel("efficiency", eff)
     return page("Search Console", body)
 
 
@@ -3289,10 +3534,45 @@ def export(
         """
         return stream_csv(sql, paths, "referer_flow_types.csv")
 
+    # GSC exports
+    if report == "gsc-top-clicks":
+        paths = list_partitions("gsc_daily", date_from, date_to)
+        sql = f"""
+        SELECT page, SUM(clicks) AS clicks, SUM(impressions) AS impressions,
+               AVG(ctr) AS avg_ctr, AVG(position) AS avg_position,
+               SUM(crawl_hits) AS crawl_hits
+        FROM t WHERE has_impressions
+        GROUP BY page ORDER BY clicks DESC LIMIT {int(limit)};
+        """
+        return stream_csv(sql, paths, "gsc_top_clicks.csv")
+
+    if report == "gsc-high-crawl-no-impressions":
+        paths = list_partitions("gsc_daily", date_from, date_to)
+        sql = f"""
+        SELECT page, SUM(crawl_hits) AS crawl_hits, SUM(bot_hits) AS bot_hits,
+               SUM(impressions) AS impressions
+        FROM t WHERE crawl_hits > 0
+        GROUP BY page HAVING SUM(impressions) = 0
+        ORDER BY crawl_hits DESC LIMIT {int(limit)};
+        """
+        return stream_csv(sql, paths, "gsc_high_crawl_no_impressions.csv")
+
+    if report == "gsc-impressions-no-crawl":
+        paths = list_partitions("gsc_daily", date_from, date_to)
+        sql = f"""
+        SELECT page, SUM(impressions) AS impressions, SUM(clicks) AS clicks,
+               AVG(position) AS avg_position, SUM(crawl_hits) AS crawl_hits
+        FROM t WHERE impressions > 0
+        GROUP BY page HAVING SUM(crawl_hits) = 0
+        ORDER BY impressions DESC LIMIT {int(limit)};
+        """
+        return stream_csv(sql, paths, "gsc_impressions_no_crawl.csv")
+
     return PlainTextResponse(
         "Unknown report. Try report=daily, daily-status, hourly, locales, url-groups, locale-groups, "
         "top-urls, top-3xx, top-4xx, top-5xx, url-bytes, bots, wasted-crawl, top-resource-waste, "
-        "bot-urls, human-urls, utm-sources, utm, utm-urls, referer-flow-internal, referer-flow-entry, referer-flow-types",
+        "bot-urls, human-urls, utm-sources, utm, utm-urls, referer-flow-internal, referer-flow-entry, "
+        "referer-flow-types, gsc-top-clicks, gsc-high-crawl-no-impressions, gsc-impressions-no-crawl",
         status_code=400,
     )
 

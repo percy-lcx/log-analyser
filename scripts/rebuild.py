@@ -79,6 +79,9 @@ AGG_TABLES = [
 
     # AI crawler analytics
     "ai_crawler_daily",
+
+    # GSC (may be empty if GSC not connected)
+    "gsc_daily",
 ]
 
 
