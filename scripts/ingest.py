@@ -105,24 +105,8 @@ def load_referer_rules() -> List[BotRule]:
 
 
 def load_url_grouping() -> UrlGroupingConfig:
-    cfg = load_yaml(DETECTORS_DIR / "url_groups.yml")
-
-    # Normalize locales to lowercase for robust matching against URL path segments.
-    locales = set([str(x).strip().lower() for x in cfg.get("locales", []) if str(x).strip()])
-
-    rules: List[UrlRule] = []
-    for r in cfg.get("rules", []):
-        ur = UrlRule(group=r["group"], match=r["match"], value=r["value"])
-        if ur.match == "regex":
-            ur.compiled = re.compile(str(ur.value), re.IGNORECASE)
-        rules.append(ur)
-
-    section_map = {k.lower(): v for k, v in (cfg.get("section_map") or {}).items()}
-    fallback = cfg.get("fallback_group", "Other Content")
-    locale_homepage_group = cfg.get("locale_homepage_group", "Locale Homepage")
-    raw_pattern = cfg.get("locale_homepage_pattern", "")
-    locale_homepage_pattern = re.compile(raw_pattern, re.IGNORECASE) if raw_pattern else None
-    return UrlGroupingConfig(locales=locales, rules=rules, section_map=section_map, fallback_group=fallback, locale_homepage_group=locale_homepage_group, locale_homepage_pattern=locale_homepage_pattern)
+    from profile_loader import get_active_profile
+    return get_active_profile()
 
 
 def init_manifest() -> None:
@@ -139,6 +123,8 @@ def init_manifest() -> None:
     """)
     conn.commit()
     conn.close()
+    from profile_loader import init_profiles_table
+    init_profiles_table()
 
 
 def file_meta(path: Path) -> Tuple[int, int]:
