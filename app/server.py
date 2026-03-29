@@ -2092,6 +2092,7 @@ def bots_report(
     include_assets: bool = False,
     strict: bool = False,
     url_group: Optional[str] = None,
+    category: Optional[str] = None,
     limit: int = 500,
 ):
     avail = available_dates()
@@ -2101,6 +2102,7 @@ def bots_report(
     bots_list = distinct_values("bot_urls_daily", "bot_family", date_from, date_to)
     waste_bots = distinct_values("wasted_crawl_daily", "bot_family", date_from, date_to)
     waste_groups = distinct_values("wasted_crawl_daily", "url_group", date_from, date_to)
+    bot_categories = distinct_values("bot_daily", "bot_category", date_from, date_to)
     checked_assets = "checked" if include_assets else ""
     checked_strict = "checked" if strict else ""
     body += f"""
@@ -2108,6 +2110,7 @@ def bots_report(
     <input type="hidden" name="from" value="{date_from or ''}">
     <input type="hidden" name="to" value="{date_to or ''}">
     {select_html("bot", sorted(set(bots_list + waste_bots)), bot, "Bot family")}
+    {select_html("category", sorted(bot_categories), category, "Bot category")}
     {select_html("url_group", waste_groups, url_group, "URL group")}
     <label><input type="checkbox" name="include_assets" value="true" {checked_assets}> Include assets</label>
     <label><input type="checkbox" name="strict" value="true" {checked_strict}> Strict scoring</label>
@@ -2122,11 +2125,13 @@ def bots_report(
     if not paths_summary:
         bot_families_content = no_data_notice()
     else:
-        sql_summary = """
+        cat_where = f"WHERE bot_category = '{sql_escape_string(category)}'" if category else ""
+        cat_and = f"AND bot_category = '{sql_escape_string(category)}'" if category else ""
+        sql_summary = f"""
         SELECT bot_family, SUM(hits) AS hits, SUM(resource_hits) AS resource_hits,
                AVG(resource_hits_pct) AS resource_hits_pct,
                SUM(s4xx) AS s4xx, SUM(s5xx) AS s5xx
-        FROM t GROUP BY bot_family ORDER BY hits DESC;
+        FROM t {cat_where} GROUP BY bot_family ORDER BY hits DESC;
         """
         cols_bf, rows_bf = run_query(paths_summary, sql_summary)
 
@@ -2136,7 +2141,7 @@ def bots_report(
             families_in = ", ".join(f"'{sql_escape_string(f)}'" for f in top_families)
             trend_sql = f"""
             SELECT date, bot_family, SUM(hits) AS hits
-            FROM t WHERE bot_family IN ({families_in})
+            FROM t WHERE bot_family IN ({families_in}) {cat_and}
             GROUP BY date, bot_family ORDER BY date, bot_family;
             """
             cols_bt, rows_bt = run_query(paths_summary, trend_sql)
@@ -2170,6 +2175,7 @@ def bots_report(
             parts = [f"bot={family}"]
             if date_from: parts.append(f"from={date_from}")
             if date_to:   parts.append(f"to={date_to}")
+            if category: parts.append(f"category={category}")
             if include_assets: parts.append("include_assets=true")
             parts.append(f"limit={int(limit)}")
             return "&".join(parts)
@@ -2233,15 +2239,101 @@ def bots_report(
                 bot_families_content += "<p>Showing top 20 across all bots. Select a bot above for the full breakdown.</p>"
             bot_families_content += html_table(rows_u, cols_u)
 
-    # ── AI Crawlers tab (placeholder) ──
-    ai_crawlers_content = (
-        "<div class='empty-state'>"
-        "<h3>AI Crawlers</h3>"
-        "<p>Detailed AI crawler analysis will be available after Phase 5.</p>"
-        "<p>This tab will include volume trends, content targeting, and Googlebot overlap analysis "
-        "for GPTBot, ClaudeBot, PerplexityBot, ByteSpider, and other AI crawlers.</p>"
-        "</div>"
-    )
+    # ── AI Crawlers tab ──
+    ai_crawlers_content = ""
+    paths_ai = list_partitions("ai_crawler_daily", date_from, date_to)
+    if not paths_ai:
+        ai_crawlers_content = (
+            "<div class='empty-state'>"
+            "<h3>AI Crawlers</h3>"
+            "<p>No AI crawler data available for the selected date range.</p>"
+            "<p>Run ingestion and rebuild aggregates to populate this tab.</p>"
+            "</div>"
+        )
+    else:
+        # Volume trend chart: daily hits per AI crawler family
+        ai_trend_sql = """
+        SELECT date, bot_family, SUM(total_hits) AS hits
+        FROM t GROUP BY date, bot_family ORDER BY date, bot_family;
+        """
+        cols_ait, rows_ait = run_query(paths_ai, ai_trend_sql)
+        if rows_ait:
+            df_ai_t = pd.DataFrame(rows_ait, columns=cols_ait)
+            df_ai_pivot = df_ai_t.pivot_table(index="date", columns="bot_family", values="hits", fill_value=0).reset_index()
+            ai_pivot_cols = list(df_ai_pivot.columns)
+            ai_pivot_rows = [tuple(r) for r in df_ai_pivot.itertuples(index=False, name=None)]
+            ai_y_families = [c for c in ai_pivot_cols if c != "date"]
+            ai_crawlers_content += "<h3>AI Crawler Volume Trends</h3>"
+            ai_crawlers_content += line_chart(ai_pivot_rows, ai_pivot_cols, x_col="date", y_cols=ai_y_families,
+                                               title="Daily hits per AI crawler")
+
+        # Summary KPI cards: total hits, unique URLs, Googlebot overlap per crawler
+        ai_summary_sql = """
+        SELECT bot_family,
+               SUM(total_hits) AS total_hits,
+               SUM(unique_urls) AS unique_urls,
+               SUM(bytes_sent) AS bytes_sent,
+               AVG(overlap_with_googlebot) AS avg_overlap
+        FROM t GROUP BY bot_family ORDER BY total_hits DESC;
+        """
+        cols_ais, rows_ais = run_query(paths_ai, ai_summary_sql)
+        if rows_ais:
+            # Googlebot overlap KPI cards
+            ai_crawlers_content += "<h3>Googlebot Overlap</h3>"
+            ai_crawlers_content += "<p>Percentage of URLs also crawled by Googlebot on the same day. "
+            ai_crawlers_content += "High overlap suggests the AI crawler follows similar signals; low overlap may indicate scraping behavior.</p>"
+            ai_crawlers_content += "<div style='display:flex;flex-wrap:wrap;gap:1rem;margin:1rem 0;'>"
+            ci = {c: i for i, c in enumerate(cols_ais)}
+            for r in rows_ais:
+                family = r[ci["bot_family"]]
+                overlap = float(r[ci["avg_overlap"]] or 0)
+                total = int(r[ci["total_hits"]] or 0)
+                urls = int(r[ci["unique_urls"]] or 0)
+                ai_crawlers_content += (
+                    f"<div style='border:1px solid #ddd;border-radius:8px;padding:1rem;min-width:180px;'>"
+                    f"<strong>{family}</strong><br>"
+                    f"<span style='font-size:1.5em;color:{'#2ecc71' if overlap > 0.5 else '#e67e22' if overlap > 0.2 else '#e74c3c'};'>"
+                    f"{overlap:.0%}</span> overlap<br>"
+                    f"<small>{total:,} hits &middot; {urls:,} unique URLs</small>"
+                    f"</div>"
+                )
+            ai_crawlers_content += "</div>"
+
+            # Summary table
+            ai_crawlers_content += "<h3>AI Crawler Summary</h3>"
+            ai_crawlers_content += export_link("ai-crawlers", date_from, date_to)
+            ai_crawlers_content += html_table(rows_ais, cols_ais)
+
+        # Content targeting: per AI crawler, top 20 URLs hit
+        paths_bot_urls = list_partitions("bot_urls_daily", date_from, date_to)
+        if paths_bot_urls:
+            # Get list of AI crawler families from the ai_crawler_daily data
+            ai_families_sql = "SELECT DISTINCT bot_family FROM t;"
+            _, ai_fam_rows = run_query(paths_ai, ai_families_sql)
+            ai_family_names = [r[0] for r in ai_fam_rows] if ai_fam_rows else []
+
+            if ai_family_names:
+                families_in = ", ".join(f"'{sql_escape_string(f)}'" for f in ai_family_names)
+                content_sql = f"""
+                SELECT bot_family, url_group, path, SUM(hits) AS hits
+                FROM t WHERE bot_family IN ({families_in})
+                GROUP BY bot_family, url_group, path
+                ORDER BY bot_family, hits DESC;
+                """
+                cols_ct, rows_ct = run_query(paths_bot_urls, content_sql)
+                if rows_ct:
+                    ai_crawlers_content += "<h3>Content Targeting (top 20 URLs per crawler)</h3>"
+                    # Group by bot_family and show top 20
+                    from collections import defaultdict
+                    by_family = defaultdict(list)
+                    fi = {c: i for i, c in enumerate(cols_ct)}
+                    for r in rows_ct:
+                        by_family[r[fi["bot_family"]]].append(r)
+                    for fam in ai_family_names:
+                        fam_rows = by_family.get(fam, [])[:20]
+                        if fam_rows:
+                            ai_crawlers_content += f"<h4>{fam}</h4>"
+                            ai_crawlers_content += html_table(fam_rows, cols_ct)
 
     # ── Crawl Waste tab ──
     crawl_waste_content = ""
@@ -2961,6 +3053,21 @@ def export(
         LIMIT {int(limit)};
         """
         return stream_csv(sql, paths, "bots.csv")
+
+    if report == "ai-crawlers":
+        paths = list_partitions("ai_crawler_daily", date_from, date_to)
+        sql = f"""
+        SELECT bot_family,
+                SUM(total_hits) AS total_hits,
+                SUM(unique_urls) AS unique_urls,
+                SUM(bytes_sent) AS bytes_sent,
+                AVG(overlap_with_googlebot) AS avg_overlap
+        FROM t
+        GROUP BY bot_family
+        ORDER BY total_hits DESC
+        LIMIT {int(limit)};
+        """
+        return stream_csv(sql, paths, "ai_crawlers.csv")
 
     if report == "wasted-crawl":
         paths = list_partitions("wasted_crawl_daily", date_from, date_to)
