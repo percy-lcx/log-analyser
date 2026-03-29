@@ -335,6 +335,13 @@ def no_data_notice() -> str:
     return "<p class='no-data'>No data found for the selected date range.</p>"
 
 
+def export_link(report: str, date_from, date_to, extra: str = "") -> str:
+    return (
+        f"<p><a href='/export?report={report}&from={date_from or ''}"
+        f"&to={date_to or ''}{extra}'>Export CSV</a></p>"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers for actionable insights
 # ---------------------------------------------------------------------------
