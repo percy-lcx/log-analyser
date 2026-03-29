@@ -685,6 +685,20 @@ def select_html(name: str, options: List[str], current: Optional[str], label: st
     return f"<label>{label}: <select name='{name}'>{''.join(opts)}</select></label>"
 
 
+def tab_bar(tabs: List[Tuple[str, str]]) -> str:
+    """Render a tab bar. tabs = [(id, label), ...]."""
+    btns = "".join(
+        f"<button class='tab-btn' data-tab='{tid}'>{label}</button>"
+        for tid, label in tabs
+    )
+    return f"<div class='tab-bar'>{btns}</div>"
+
+
+def tab_panel(tid: str, content: str) -> str:
+    """Wrap content in a tab panel div."""
+    return f"<div class='tab-panel' id='tab-{tid}'>{content}</div>"
+
+
 def page(title: str, body: str) -> HTMLResponse:
 
     plotly_cdn = "<script src='https://cdn.plot.ly/plotly-latest.min.js'></script>"
@@ -693,21 +707,14 @@ def page(title: str, body: str) -> HTMLResponse:
         ("Home", "/"),
         ("Executive Summary", "/reports/summary"),
         ("Guided Insights", "/insights"),
-        ("Crawl volume", "/reports/crawl-volume"),
-        ("Status over time", "/reports/status-over-time"),
-        ("Locale breakdown", "/reports/locales"),
-        ("URL group breakdown", "/reports/url-groups"),
-        ("Locale x URL group", "/reports/locale-groups"),
-        ("Top URLs", "/reports/top-urls"),
-        ("Top 3xx", "/reports/top-3xx"),
-        ("Top 4xx", "/reports/top-4xx"),
-        ("Top 5xx", "/reports/top-5xx"),
-        ("URL byte size", "/reports/url-bytes"),
-        ("Bot traffic", "/reports/bots"),
-        ("Wasted crawl", "/reports/wasted-crawl"),
-        ("Top resource waste", "/reports/top-resource-waste"),
-        ("Human URLs", "/reports/human-urls"),
-        ("UTM sources", "/reports/utm"),
+        ("Traffic", "/reports/traffic"),
+        ("Status Codes", "/reports/status-codes"),
+        ("Content", "/reports/content"),
+        ("Locales", "/reports/locales"),
+        ("Bots", "/reports/bots"),
+        ("Referer Flow", "/reports/referer-flow"),
+        ("UTM Campaigns", "/reports/utm"),
+        ("Search Console", "/reports/gsc"),
         ("Log Viewer", "/logs"),
         ("Settings", "/settings"),
     ]
@@ -1069,6 +1076,59 @@ table.sortable tbody tr:last-child td { border-bottom: none; }
 .rec-action { display: inline-block; font-size: 11px; font-weight: 700; color: #166534; background: #dcfce7; padding: 1px 6px; border-radius: 3px; margin-right: 6px; }
 .rec-desc { font-size: 13px; color: #374151; }
 .rec-code { display: block; margin-top: 4px; font-size: 12px; padding: 4px 8px; background: #ecfdf5; border: 1px solid #bbf7d0; border-radius: 4px; color: #166534; white-space: pre-wrap; word-break: break-all; }
+
+/* ── Tab navigation ── */
+.tab-bar {
+    display: flex;
+    gap: 0;
+    border-bottom: 2px solid #e2e8f0;
+    margin-bottom: 16px;
+    overflow-x: auto;
+}
+.tab-btn {
+    padding: 10px 18px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #64748b;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color 0.12s, border-color 0.12s;
+}
+.tab-btn:hover { color: #1e293b; }
+.tab-btn.active {
+    color: #3b82f6;
+    border-bottom-color: #3b82f6;
+}
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ── Empty state card ── */
+.empty-state {
+    background: #f8fafc;
+    border: 1px dashed #cbd5e1;
+    border-radius: 8px;
+    padding: 40px 24px;
+    text-align: center;
+    color: #64748b;
+    margin: 20px 0;
+}
+.empty-state h3 { font-size: 16px; font-weight: 700; color: #475569; margin-bottom: 8px; }
+.empty-state p { font-size: 13px; margin-bottom: 12px; }
+.empty-state a {
+    display: inline-block;
+    padding: 8px 18px;
+    background: #3b82f6;
+    color: #fff;
+    border-radius: 6px;
+    text-decoration: none;
+    font-size: 13px;
+    font-weight: 600;
+}
+.empty-state a:hover { background: #2563eb; }
 </style>"""
 
     js = """<script>
@@ -1140,6 +1200,29 @@ document.addEventListener("DOMContentLoaded", () => {
         };
         // Restore preference on load; default is scrollable (not expanded)
         if (localStorage.getItem(STORAGE_KEY) === '1') applyExpanded(true);
+    })();
+
+    // Tab navigation
+    (function() {
+        var tabBtns = document.querySelectorAll('.tab-btn');
+        if (!tabBtns.length) return;
+        function activateTab(tabId) {
+            document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.toggle('active', b.getAttribute('data-tab') === tabId); });
+            document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.toggle('active', p.id === 'tab-' + tabId); });
+            var url = new URL(window.location);
+            url.searchParams.set('tab', tabId);
+            window.history.replaceState(null, '', url.toString());
+        }
+        tabBtns.forEach(function(btn) {
+            btn.addEventListener('click', function() { activateTab(btn.getAttribute('data-tab')); });
+        });
+        // Activate from URL param or first tab
+        var params = new URLSearchParams(window.location.search);
+        var activeTab = params.get('tab');
+        if (!activeTab || !document.getElementById('tab-' + activeTab)) {
+            activeTab = tabBtns[0].getAttribute('data-tab');
+        }
+        activateTab(activeTab);
     })();
 });
 })();
@@ -1276,7 +1359,7 @@ def executive_summary(
                     "high" if human > 100 else "medium",
                     f"404 Not Found: {path}",
                     f"{human:,} human visitors affected ({total:,} total hits)",
-                    f"/reports/top-4xx?from={curr_from}&to={curr_to}",
+                    f"/reports/status-codes?tab=client-errors&from={curr_from}&to={curr_to}",
                 ))
 
     # 2. Top 5xx errors
@@ -1299,7 +1382,7 @@ def executive_summary(
                     sev,
                     f"Server Error (5xx): {path}",
                     f"{errors:,} errors across {days} day{'s' if days != 1 else ''} — investigate server-side root cause",
-                    f"/reports/top-5xx?from={curr_from}&to={curr_to}",
+                    f"/reports/status-codes?tab=server-errors&from={curr_from}&to={curr_to}",
                 ))
 
     # 3. Wasteful bots
@@ -1323,7 +1406,7 @@ def executive_summary(
                     "medium" if waste > 200 else "low",
                     f"Wasteful bot: {family}",
                     f"{hits:,} requests, {err_pct}% errors, waste score {waste:,}",
-                    f"/reports/wasted-crawl?from={curr_from}&to={curr_to}&bot={family}",
+                    f"/reports/bots?tab=crawl-waste&from={curr_from}&to={curr_to}&bot={family}",
                 ))
 
     # 4. Bot anomalies — new or spiking bots
@@ -1374,7 +1457,7 @@ def executive_summary(
                         "medium",
                         f"Error spike on {day}",
                         f"{epct:.1f}% error rate (avg: {avg_pct:.1f}%) across {hits:,} hits",
-                        f"/reports/status-over-time?from={curr_from}&to={curr_to}",
+                        f"/reports/status-codes?tab=trends&from={curr_from}&to={curr_to}",
                     ))
 
     if issues:
@@ -1391,12 +1474,12 @@ def executive_summary(
     body += "<h2>Explore Reports</h2>"
     body += "<div class='report-grid'>"
     quick_links = [
-        ("Top 4xx Errors", f"/reports/top-4xx?from={curr_from}&to={curr_to}", "Fix broken pages"),
-        ("Top 5xx Errors", f"/reports/top-5xx?from={curr_from}&to={curr_to}", "Investigate server errors"),
-        ("Bot Traffic", f"/reports/bots?from={curr_from}&to={curr_to}", "Review bot activity"),
-        ("Wasted Crawl", f"/reports/wasted-crawl?from={curr_from}&to={curr_to}", "Reduce crawl waste"),
-        ("Human URLs", f"/reports/human-urls?from={curr_from}&to={curr_to}", "Top pages for real users"),
-        ("UTM Sources", f"/reports/utm?from={curr_from}&to={curr_to}", "Campaign performance"),
+        ("Status Codes", f"/reports/status-codes?from={curr_from}&to={curr_to}&tab=client-errors", "Fix broken pages"),
+        ("Status Codes", f"/reports/status-codes?from={curr_from}&to={curr_to}&tab=server-errors", "Investigate server errors"),
+        ("Bots", f"/reports/bots?from={curr_from}&to={curr_to}", "Review bot activity"),
+        ("Bots", f"/reports/bots?from={curr_from}&to={curr_to}&tab=crawl-waste", "Reduce crawl waste"),
+        ("Content", f"/reports/content?from={curr_from}&to={curr_to}&tab=human-paths", "Top pages for real users"),
+        ("UTM Campaigns", f"/reports/utm?from={curr_from}&to={curr_to}", "Campaign performance"),
     ]
     for name, url, desc in quick_links:
         body += f"<a href='{url}' class='report-card'>{name}<small>{desc}</small></a>"
@@ -1409,21 +1492,14 @@ def executive_summary(
 def index():
     items = [
         ("Executive Summary", "/reports/summary", "Key metrics, trends, and top issues at a glance"),
-        ("Crawl volume", "/reports/crawl-volume", "Daily hit counts — total, bot and human"),
-        ("Status over time", "/reports/status-over-time", "2xx / 3xx / 4xx / 5xx trends by day"),
-        ("Locale breakdown", "/reports/locales", "Hit distribution by locale"),
-        ("URL group breakdown", "/reports/url-groups", "Hits aggregated by URL group"),
-        ("Locale x URL group", "/reports/locale-groups", "Cross-tab of locale and URL group"),
-        ("Top URLs", "/reports/top-urls", "Most-requested paths, filterable by group"),
-        ("Top 3xx redirects", "/reports/top-3xx", "URLs that redirect visitors, broken down by code"),
-        ("Top 4xx errors", "/reports/top-4xx", "Paths returning 4xx, broken down by code (400/401/403/404…)"),
-        ("Top 5xx errors", "/reports/top-5xx", "Paths returning 5xx, broken down by code (500/502/503/504)"),
-        ("URL byte size", "/reports/url-bytes", "Which URLs have the largest average response size"),
-        ("Bot traffic", "/reports/bots", "Bot families summary + per-bot URL drill-down"),
-        ("Wasted crawl", "/reports/wasted-crawl", "Bot requests that yielded no value"),
-        ("Top resource waste", "/reports/top-resource-waste", "Paths with highest waste score"),
-        ("Human URLs", "/reports/human-urls", "Top paths visited by real users"),
-        ("UTM sources", "/reports/utm", "Traffic from UTM-tagged campaigns"),
+        ("Traffic", "/reports/traffic", "Volume, bot/human split, bandwidth, and hourly patterns"),
+        ("Status Codes", "/reports/status-codes", "HTTP status trends, redirects, client and server errors"),
+        ("Content", "/reports/content", "Top URLs, URL groups, page sizes, and human paths"),
+        ("Locales", "/reports/locales", "Traffic by locale with heatmap cross-tab"),
+        ("Bots", "/reports/bots", "Bot families, AI crawlers, crawl waste, and resource waste"),
+        ("Referer Flow", "/reports/referer-flow", "Internal navigation, entry points, and referer types"),
+        ("UTM Campaigns", "/reports/utm", "Campaign source volume and landing pages"),
+        ("Search Console", "/reports/gsc", "Crawl-to-search performance (requires GSC connection)"),
         ("Settings", "/settings", "Manage profiles, URL groups, locales, sections, and log files"),
     ]
     cards = "".join(
@@ -1439,131 +1515,458 @@ def index():
     return page("Log Dashboard", tip + "<div class='report-grid'>" + cards + "</div>")
 
 
-# ----------------------------
-# Existing reports unchanged…
-# ----------------------------
+# ---------------------------------------------------------------------------
+# Consolidated reports (Phase 4)
+# ---------------------------------------------------------------------------
+
+
+# ── /reports/traffic ──────────────────────────────────────────────────────
+
+@app.get("/reports/traffic", response_class=HTMLResponse)
+def traffic_report(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+):
+    avail = available_dates()
+    body = date_filters_html(date_from, date_to, avail)
+
+    # ── Overview tab ──
+    paths_daily = list_partitions("daily", date_from, date_to)
+    overview = ""
+    if not paths_daily:
+        overview = no_data_notice()
+    else:
+        sql_daily = """
+        SELECT date, hits, hits_bot, hits_human, bytes_sent, resource_hits, resource_hits_bot
+        FROM t ORDER BY date;
+        """
+        cols, rows = run_query(paths_daily, sql_daily)
+
+        # KPIs
+        curr_from, curr_to, prev_from, prev_to = _compute_periods(date_from, date_to, avail)
+        _kpi_sql = """
+        SELECT COALESCE(SUM(hits),0), COALESCE(SUM(hits_human),0),
+               COALESCE(SUM(hits_bot),0), COALESCE(SUM(bytes_sent),0)
+        FROM t;
+        """
+        curr_p = list_partitions("daily", curr_from, curr_to)
+        prev_p = list_partitions("daily", prev_from, prev_to)
+        def _kpi(p):
+            if not p: return (0,0,0,0)
+            _, r = run_query(p, _kpi_sql)
+            return r[0] if r else (0,0,0,0)
+        c, p = _kpi(curr_p), _kpi(prev_p)
+        overview += "<div class='kpi-grid'>"
+        overview += kpi_card("Total Hits", c[0], p[0])
+        overview += kpi_card("Human Hits", c[1], p[1])
+        overview += kpi_card("Bot Hits", c[2], p[2], lower_is_better=True)
+        overview += kpi_card("Bytes Sent", c[3], p[3], fmt_fn=fmt_bytes)
+        overview += "</div>"
+
+        overview += export_link("daily", date_from, date_to)
+        overview += line_chart(rows, cols, x_col="date",
+                               y_cols=["hits", "hits_bot", "hits_human"],
+                               title="Daily Traffic Volume")
+        overview += bytes_line_chart(rows, cols, x_col="date", y_col="bytes_sent",
+                                     title="Daily Bytes Sent")
+        overview += html_table(rows, cols)
+
+    # ── Hourly Patterns tab ──
+    paths_hourly = list_partitions("hourly", date_from, date_to)
+    hourly = ""
+    if not paths_hourly:
+        hourly = no_data_notice()
+    else:
+        sql_hourly = """
+        SELECT hour, SUM(hits) AS hits, SUM(hits_bot) AS hits_bot, SUM(hits_human) AS hits_human
+        FROM t GROUP BY hour ORDER BY hour;
+        """
+        cols_h, rows_h = run_query(paths_hourly, sql_hourly)
+        hourly += export_link("hourly", date_from, date_to)
+        hourly += bar_chart(rows_h, cols_h, x_col="hour",
+                            y_cols=["hits_human", "hits_bot"],
+                            title="Traffic by Hour of Day", barmode="stack")
+        hourly += html_table(rows_h, cols_h)
+
+    tabs = tab_bar([("overview", "Overview"), ("hourly", "Hourly Patterns")])
+    body += tabs
+    body += tab_panel("overview", overview)
+    body += tab_panel("hourly", hourly)
+    return page("Traffic", body)
+
+
+# ── /reports/status-codes ─────────────────────────────────────────────────
+
+@app.get("/reports/status-codes", response_class=HTMLResponse)
+def status_codes_report(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    include_assets: bool = False,
+    url_group: Optional[str] = None,
+    limit: int = 500,
+):
+    avail = available_dates()
+    body = date_filters_html(date_from, date_to, avail)
+
+    # Shared filter form
+    groups_4xx = distinct_values("top_4xx_daily", "url_group", date_from, date_to)
+    groups_5xx = distinct_values("top_5xx_daily", "url_group", date_from, date_to)
+    groups_urls = distinct_values("top_urls_daily", "url_group", date_from, date_to)
+    all_groups = sorted(set(groups_4xx + groups_5xx + groups_urls))
+    checked = "checked" if include_assets else ""
+    body += "<form method='get'>"
+    body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
+    body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
+    body += select_html("url_group", all_groups, url_group, "URL group")
+    body += f" <label><input type='checkbox' name='include_assets' value='true' {checked}> Include assets</label>"
+    body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
+    body += " <button type='submit'>Apply</button></form>"
+
+    # Shared WHERE clause for asset/group filters
+    def _where():
+        clauses = []
+        if not include_assets:
+            clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+        if url_group:
+            clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+        return ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    where = _where()
+
+    # ── Trends tab ──
+    trends = ""
+    paths_daily = list_partitions("daily", date_from, date_to)
+    if not paths_daily:
+        trends = no_data_notice()
+    else:
+        sql_status = """
+        SELECT date, s2xx, s3xx, s4xx, s5xx, hits FROM t ORDER BY date;
+        """
+        cols_s, rows_s = run_query(paths_daily, sql_status)
+        trends += export_link("daily-status", date_from, date_to)
+        trends += line_chart(rows_s, cols_s, x_col="date",
+                             y_cols=["s2xx", "s3xx", "s4xx", "s5xx"],
+                             title="Status Codes Over Time")
+        trends += html_table(rows_s, cols_s)
+
+    # ── Redirects (3xx) tab ──
+    redirects = ""
+    paths_3xx = list_partitions("top_urls_daily", date_from, date_to)
+    if not paths_3xx:
+        redirects = no_data_notice()
+    else:
+        daily_3xx_sql = f"""
+        SELECT date, SUM(s3xx) AS s3xx,
+               SUM(s301) AS s301, SUM(s302) AS s302, SUM(s303) AS s303,
+               SUM(s307) AS s307, SUM(s308) AS s308
+        FROM t {where} GROUP BY date ORDER BY date;
+        """
+        cols_d3, rows_d3 = run_query(paths_3xx, daily_3xx_sql)
+
+        sql_3xx = f"""
+        SELECT path, url_group,
+               SUM(s3xx) AS s3xx, SUM(s301) AS s301, SUM(s302) AS s302,
+               SUM(s303) AS s303, SUM(s307) AS s307, SUM(s308) AS s308,
+               SUM(hits_total) AS hits_total,
+               ROUND(100.0 * SUM(s3xx) / NULLIF(SUM(hits_total), 0), 1) AS redirect_pct
+        FROM t {where}
+        GROUP BY path, url_group HAVING SUM(s3xx) > 0
+        ORDER BY s3xx DESC LIMIT {int(limit)};
+        """
+        cols_3, rows_3 = run_query(paths_3xx, sql_3xx)
+
+        redirects += export_link("top-3xx", date_from, date_to,
+                                 extra=f"&include_assets={'true' if include_assets else 'false'}"
+                                       + (f"&url_group={url_group}" if url_group else "")
+                                       + f"&limit={int(limit)}")
+        redirects += "<h2>Redirect trend (daily)</h2>"
+        redirects += line_chart(rows_d3, cols_d3, x_col="date",
+                                y_cols=["s301", "s302", "s303", "s307", "s308"],
+                                title="3xx responses by day (per code)")
+        redirects += html_table(rows_d3, cols_d3, max_rows=500)
+        if rows_3:
+            redirects += "<h2>Top redirecting URLs</h2>"
+            redirects += bar_chart(rows_3[:CHART_BAR_LIMIT], cols_3, x_col="path",
+                                   y_cols=["s301", "s302", "s303", "s307", "s308"],
+                                   title=f"Top {CHART_BAR_LIMIT} redirecting URLs by code", barmode="stack")
+        redirects += html_table(rows_3, cols_3, max_rows=min(int(limit), 500))
+
+    # ── Client Errors (4xx) tab ──
+    client_errors = ""
+    paths_4xx = list_partitions("top_4xx_daily", date_from, date_to)
+    if not paths_4xx:
+        client_errors = no_data_notice()
+    else:
+        daily_4xx_sql = f"""
+        SELECT date,
+            SUM(hits_4xx) AS hits_4xx, SUM(hits_4xx_bot) AS hits_4xx_bot,
+            (SUM(hits_4xx) - SUM(hits_4xx_bot)) AS hits_4xx_non_bot,
+            SUM(s400) AS s400, SUM(s401) AS s401, SUM(s403) AS s403,
+            SUM(s404) AS s404, SUM(s405) AS s405, SUM(s410) AS s410,
+            SUM(s422) AS s422, SUM(s429) AS s429
+        FROM t {where} GROUP BY date ORDER BY date;
+        """
+        cols_d4, rows_d4 = run_query(paths_4xx, daily_4xx_sql)
+
+        sql_4xx = f"""
+        SELECT path, url_group,
+            SUM(hits_4xx) AS hits_4xx, SUM(hits_4xx_bot) AS hits_4xx_bot,
+            (SUM(hits_4xx) - SUM(hits_4xx_bot)) AS hits_4xx_non_bot,
+            SUM(bytes_sent_4xx) AS bytes_sent_4xx,
+            SUM(s400) AS s400, SUM(s401) AS s401, SUM(s403) AS s403,
+            SUM(s404) AS s404, SUM(s405) AS s405, SUM(s410) AS s410,
+            SUM(s422) AS s422, SUM(s429) AS s429
+        FROM t {where}
+        GROUP BY path, url_group ORDER BY hits_4xx DESC LIMIT {int(limit)};
+        """
+        cols_4, rows_4 = run_query(paths_4xx, sql_4xx)
+
+        client_errors += export_link("top-4xx", date_from, date_to,
+                                     extra=f"&include_assets={'true' if include_assets else 'false'}"
+                                           + (f"&url_group={url_group}" if url_group else "")
+                                           + f"&limit={int(limit)}")
+        client_errors += "<h2>4xx trend (daily)</h2>"
+        client_errors += line_chart(rows_d4, cols_d4, x_col="date",
+                                    y_cols=["s400", "s401", "s403", "s404", "s405", "s410", "s422", "s429"],
+                                    title="4xx responses by day (per code)")
+        client_errors += html_table(rows_d4, cols_d4, max_rows=500)
+        if rows_4:
+            client_errors += "<h2>Top 4xx URLs</h2>"
+            client_errors += bar_chart(rows_4[:CHART_BAR_LIMIT], cols_4, x_col="path",
+                                       y_cols=["s400", "s401", "s403", "s404", "s405", "s410", "s422", "s429"],
+                                       title=f"Top {CHART_BAR_LIMIT} 4xx URLs by code", barmode="stack")
+        client_errors += html_table(rows_4, cols_4, max_rows=min(int(limit), 500))
+
+        # 4xx recommendations
+        if rows_4:
+            recs_4xx: List[Tuple[str, str, str]] = []
+            path_i = cols_4.index("path") if "path" in cols_4 else 0
+            non_bot_i = cols_4.index("hits_4xx_non_bot") if "hits_4xx_non_bot" in cols_4 else 4
+            s404_i = cols_4.index("s404") if "s404" in cols_4 else None
+            for r in rows_4[:15]:
+                path_val = r[path_i]
+                human_4xx = int(r[non_bot_i] or 0)
+                s404_val = int(r[s404_i] or 0) if s404_i is not None else 0
+                if s404_val > 50 and human_4xx > 20:
+                    recs_4xx.append(("Redirect", f"{path_val} returns 404 for {human_4xx:,} human visitors",
+                                     f"Set up a 301 redirect from {path_val} to the correct page"))
+                elif human_4xx > 100 and s404_val == 0:
+                    recs_4xx.append(("Investigate", f"{path_val} returns other 4xx for {human_4xx:,} human visitors", ""))
+            if recs_4xx:
+                client_errors += recommendations_section(recs_4xx[:5])
+
+    # ── Server Errors (5xx) tab ──
+    server_errors = ""
+    paths_5xx = list_partitions("top_5xx_daily", date_from, date_to)
+    if not paths_5xx:
+        server_errors = no_data_notice()
+    else:
+        daily_5xx_sql = f"""
+        SELECT date,
+            SUM(hits_5xx) AS hits_5xx, SUM(hits_5xx_bot) AS hits_5xx_bot,
+            (SUM(hits_5xx) - SUM(hits_5xx_bot)) AS hits_5xx_non_bot,
+            SUM(s500) AS s500, SUM(s502) AS s502, SUM(s503) AS s503, SUM(s504) AS s504
+        FROM t {where} GROUP BY date ORDER BY date;
+        """
+        cols_d5, rows_d5 = run_query(paths_5xx, daily_5xx_sql)
+
+        sql_5xx = f"""
+        SELECT path, url_group,
+            SUM(hits_5xx) AS hits_5xx, SUM(hits_5xx_bot) AS hits_5xx_bot,
+            (SUM(hits_5xx) - SUM(hits_5xx_bot)) AS hits_5xx_non_bot,
+            SUM(s500) AS s500, SUM(s502) AS s502, SUM(s503) AS s503, SUM(s504) AS s504
+        FROM t {where}
+        GROUP BY path, url_group ORDER BY hits_5xx DESC LIMIT {int(limit)};
+        """
+        cols_5, rows_5 = run_query(paths_5xx, sql_5xx)
+
+        server_errors += export_link("top-5xx", date_from, date_to,
+                                     extra=f"&include_assets={'true' if include_assets else 'false'}"
+                                           + (f"&url_group={url_group}" if url_group else "")
+                                           + f"&limit={int(limit)}")
+        server_errors += "<h2>5xx trend (daily)</h2>"
+        server_errors += line_chart(rows_d5, cols_d5, x_col="date",
+                                    y_cols=["s500", "s502", "s503", "s504"],
+                                    title="5xx responses by day (per code)")
+        server_errors += html_table(rows_d5, cols_d5, max_rows=500)
+        if rows_5:
+            server_errors += "<h2>Top 5xx URLs</h2>"
+            server_errors += bar_chart(rows_5[:CHART_BAR_LIMIT], cols_5, x_col="path",
+                                       y_cols=["s500", "s502", "s503", "s504"],
+                                       title=f"Top {CHART_BAR_LIMIT} 5xx URLs by code", barmode="stack")
+        server_errors += html_table(rows_5, cols_5, max_rows=min(int(limit), 500))
+
+        # 5xx recommendations
+        recurrence_sql = f"""
+        SELECT path, COUNT(DISTINCT date) AS days_affected, SUM(hits_5xx) AS total
+        FROM t {where}
+        GROUP BY path HAVING COUNT(DISTINCT date) > 1
+        ORDER BY days_affected DESC, total DESC LIMIT 5;
+        """
+        _, recur_rows = run_query(paths_5xx, recurrence_sql)
+        recs_5xx: List[Tuple[str, str, str]] = []
+        for r in recur_rows:
+            path_val, days, total = r[0], int(r[1] or 0), int(r[2] or 0)
+            recs_5xx.append(("Investigate",
+                             f"{path_val} has returned 5xx errors on {days} different days ({total:,} total)",
+                             "Check server logs for this path to identify the root cause"))
+        if recs_5xx:
+            server_errors += recommendations_section(recs_5xx)
+
+    tabs = tab_bar([("trends", "Trends Over Time"), ("redirects", "Redirects (3xx)"),
+                    ("client-errors", "Client Errors (4xx)"), ("server-errors", "Server Errors (5xx)")])
+    body += tabs
+    body += tab_panel("trends", trends)
+    body += tab_panel("redirects", redirects)
+    body += tab_panel("client-errors", client_errors)
+    body += tab_panel("server-errors", server_errors)
+    return page("Status Codes", body)
+
+
+# ── /reports/content ──────────────────────────────────────────────────────
+
+@app.get("/reports/content", response_class=HTMLResponse)
+def content_report(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    include_assets: bool = False,
+    url_group: Optional[str] = None,
+    limit: int = 500,
+):
+    avail = available_dates()
+    body = date_filters_html(date_from, date_to, avail)
+
+    # Shared filter form
+    groups = distinct_values("top_urls_daily", "url_group", date_from, date_to)
+    checked = "checked" if include_assets else ""
+    body += "<form method='get'>"
+    body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
+    body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
+    body += select_html("url_group", groups, url_group, "URL group")
+    body += f" <label><input type='checkbox' name='include_assets' value='true' {checked}> Include assets</label>"
+    body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
+    body += " <button type='submit'>Apply</button></form>"
+
+    clauses = []
+    if not include_assets:
+        clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+    if url_group:
+        clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    # ── Top URLs tab ──
+    top_urls_content = ""
+    paths_urls = list_partitions("top_urls_daily", date_from, date_to)
+    if not paths_urls:
+        top_urls_content = no_data_notice()
+    else:
+        sql_top = f"""
+        SELECT path, url_group,
+               SUM(hits_total) AS hits_total, SUM(hits_bot) AS hits_bot,
+               SUM(s3xx) AS s3xx, SUM(s4xx) AS s4xx, SUM(s5xx) AS s5xx,
+               SUM(parameterized_hits) AS parameterized_hits
+        FROM t {where}
+        GROUP BY path, url_group ORDER BY hits_total DESC LIMIT {int(limit)};
+        """
+        cols_t, rows_t = run_query(paths_urls, sql_top)
+        top_urls_content += export_link("top-urls", date_from, date_to,
+                                        extra=f"&include_assets={'true' if include_assets else 'false'}"
+                                              + (f"&url_group={url_group}" if url_group else "")
+                                              + f"&limit={int(limit)}")
+        if rows_t:
+            top_urls_content += bar_chart(rows_t[:CHART_BAR_LIMIT], cols_t, x_col="path",
+                                          y_cols=["hits_total", "hits_bot"],
+                                          title=f"Top {CHART_BAR_LIMIT} URLs — total vs bot", barmode="group")
+        top_urls_content += html_table(rows_t, cols_t)
+
+    # ── URL Groups tab ──
+    url_groups_content = ""
+    paths_groups = list_partitions("group_daily", date_from, date_to)
+    if not paths_groups:
+        url_groups_content = no_data_notice()
+    else:
+        sql_grp = """
+        SELECT url_group, SUM(hits) AS hits, SUM(hits_bot) AS hits_bot,
+               SUM(hits_human) AS hits_human, SUM(s4xx) AS s4xx, SUM(s5xx) AS s5xx,
+               SUM(resource_hits) AS resource_hits, SUM(resource_hits_bot) AS resource_hits_bot
+        FROM t GROUP BY url_group ORDER BY hits DESC;
+        """
+        cols_g, rows_g = run_query(paths_groups, sql_grp)
+        url_groups_content += export_link("url-groups", date_from, date_to)
+        url_groups_content += bar_chart(rows_g, cols_g, x_col="url_group",
+                                        y_cols=["hits_human", "hits_bot"],
+                                        title="URL groups — human vs bot", barmode="stack")
+        url_groups_content += html_table(rows_g, cols_g)
+
+    # ── Page Size tab ──
+    page_size_content = ""
+    if not paths_urls:
+        page_size_content = no_data_notice()
+    else:
+        sql_bytes = f"""
+        SELECT path, url_group,
+               SUM(bytes_sent) AS bytes_total, SUM(hits_total) AS hits_total,
+               ROUND(SUM(bytes_sent) / NULLIF(SUM(hits_total), 0)) AS avg_bytes_per_hit
+        FROM t {where}
+        GROUP BY path, url_group HAVING SUM(bytes_sent) > 0
+        ORDER BY avg_bytes_per_hit DESC LIMIT {int(limit)};
+        """
+        cols_b, rows_b = run_query(paths_urls, sql_bytes)
+        page_size_content += export_link("url-bytes", date_from, date_to,
+                                         extra=f"&include_assets={'true' if include_assets else 'false'}"
+                                               + (f"&url_group={url_group}" if url_group else "")
+                                               + f"&limit={int(limit)}")
+        if rows_b:
+            page_size_content += bytes_bar_chart(rows_b[:CHART_BAR_LIMIT], cols_b,
+                                                 x_col="path", y_col="avg_bytes_per_hit",
+                                                 title=f"Top {CHART_BAR_LIMIT} URLs by avg response size")
+            # Format byte columns
+            bytes_total_idx = cols_b.index("bytes_total")
+            avg_idx = cols_b.index("avg_bytes_per_hit")
+            display_rows_b = [
+                tuple(fmt_bytes(v) if i in (bytes_total_idx, avg_idx) else v for i, v in enumerate(r))
+                for r in rows_b
+            ]
+            page_size_content += html_table(display_rows_b, cols_b, max_rows=min(int(limit), 500))
+        else:
+            page_size_content += no_data_notice()
+
+    # ── Human Paths tab ──
+    human_content = ""
+    paths_human = list_partitions("human_urls_daily", date_from, date_to)
+    if not paths_human:
+        human_content = no_data_notice()
+    else:
+        human_clauses = []
+        if not include_assets:
+            human_clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+        human_where = ("WHERE " + " AND ".join(human_clauses)) if human_clauses else ""
+        sql_human = f"""
+        SELECT url_group, path, SUM(hits) AS hits
+        FROM t {human_where}
+        GROUP BY url_group, path ORDER BY hits DESC LIMIT {int(limit)};
+        """
+        cols_h, rows_h = run_query(paths_human, sql_human)
+        human_content += export_link("human-urls", date_from, date_to,
+                                     extra=f"&include_assets={'true' if include_assets else 'false'}&limit={int(limit)}")
+        human_content += bar_chart(rows_h[:CHART_BAR_LIMIT], cols_h, x_col="path", y_col="hits",
+                                   title=f"Top {CHART_BAR_LIMIT} human URLs")
+        human_content += html_table(rows_h, cols_h)
+
+    tabs = tab_bar([("top-urls", "Top URLs"), ("url-groups", "URL Groups"),
+                    ("page-size", "Page Size"), ("human-paths", "Human Paths")])
+    body += tabs
+    body += tab_panel("top-urls", top_urls_content)
+    body += tab_panel("url-groups", url_groups_content)
+    body += tab_panel("page-size", page_size_content)
+    body += tab_panel("human-paths", human_content)
+    return page("Content", body)
+
+
+# ── /reports/locales ──────────────────────────────────────────────────────
 
 @app.get("/reports/locales", response_class=HTMLResponse)
-def locales(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
-    avail = available_dates()
-    paths = list_partitions("locale_daily", date_from, date_to)
-    if not paths:
-        body = date_filters_html(date_from, date_to, avail) + no_data_notice()
-        return page("Locale breakdown", body)
-
-    sql_totals = """
-    SELECT
-      CASE
-        WHEN locale IS NULL OR locale = 'Unknown' THEN 'no-locale'
-        ELSE locale
-      END AS locale,
-      SUM(hits) AS hits,
-      SUM(hits_bot) AS hits_bot,
-      SUM(hits_human) AS hits_human,
-      SUM(s4xx) AS s4xx,
-      SUM(s5xx) AS s5xx,
-      SUM(resource_hits) AS resource_hits,
-      SUM(resource_hits_bot) AS resource_hits_bot
-    FROM t
-    GROUP BY 1
-    ORDER BY hits DESC;
-    """
-    cols1, rows1 = run_query(paths, sql_totals)
-
-    # ── Trend columns: compare with previous period ──
-    curr_from, curr_to, prev_from, prev_to = _compute_periods(date_from, date_to, avail)
-    prev_paths = list_partitions("locale_daily", prev_from, prev_to)
-    if prev_paths:
-        prev_cols1, prev_rows1 = run_query(prev_paths, sql_totals)
-        cols1, rows1 = add_trend_columns(
-            cols1, rows1, prev_cols1, prev_rows1,
-            key_col="locale",
-            metric_cols=["hits", "hits_human"],
-        )
-
-    sql_non_resource = """
-    SELECT
-      CASE
-        WHEN locale IS NULL OR locale = 'Unknown' THEN 'no-locale'
-        ELSE locale
-      END AS locale,
-      (SUM(hits) - SUM(resource_hits)) AS hits_non_resource,
-      (SUM(hits_bot) - SUM(resource_hits_bot)) AS hits_bot_non_resource,
-      (SUM(hits_human) - (SUM(resource_hits) - SUM(resource_hits_bot))) AS hits_human_non_resource
-    FROM t
-    GROUP BY 1
-    ORDER BY hits_non_resource DESC;
-    """
-    cols2, rows2 = run_query(paths, sql_non_resource)
-
-    body = date_filters_html(date_from, date_to, avail)
-    body += f"<p><a href='/export?report=locales&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
-
-    chart_limit = 20
-    body += "<h2>All hits (includes Nuxt/static resources)</h2>"
-    # Use original data (without _chg cols) for the chart
-    chart_cols1 = [c for c in cols1 if not c.endswith("_chg")]
-    chart_rows1 = [tuple(v for c, v in zip(cols1, r) if not c.endswith("_chg")) for r in rows1]
-    body += bar_chart(
-        chart_rows1[:chart_limit], chart_cols1,
-        x_col="locale", y_col="hits_human",
-        y_cols=["hits_human", "hits_bot"],
-        title=f"Top {chart_limit} locales — human vs bot",
-        barmode="stack",
-    )
-    body += "<br>"
-    body += html_table(rows1, cols1)
-
-    body += "<h2>Non-resource hits (excludes Nuxt/static resources)</h2>"
-    body += bar_chart(
-        rows2[:chart_limit], cols2,
-        x_col="locale", y_col="hits_human_non_resource",
-        y_cols=["hits_human_non_resource", "hits_bot_non_resource"],
-        title=f"Top {chart_limit} locales (non-resource) — human vs bot",
-        barmode="stack",
-    )
-    body += "<br>"
-    body += html_table(rows2, cols2)
-
-    return page("Locale breakdown", body)
-
-
-@app.get("/reports/url-groups", response_class=HTMLResponse)
-def url_groups(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
-    paths = list_partitions("group_daily", date_from, date_to)
-    if not paths:
-        body = date_filters_html(date_from, date_to, available_dates()) + no_data_notice()
-        return page("URL group breakdown", body)
-    sql = """
-    SELECT url_group,
-            SUM(hits) AS hits,
-            SUM(hits_bot) AS hits_bot,
-            SUM(hits_human) AS hits_human,
-            SUM(s4xx) AS s4xx,
-            SUM(s5xx) AS s5xx,
-            SUM(resource_hits) AS resource_hits,
-            SUM(resource_hits_bot) AS resource_hits_bot
-    FROM t
-    GROUP BY url_group
-    ORDER BY hits DESC;
-    """
-    cols, rows = run_query(paths, sql)
-    body = date_filters_html(date_from, date_to, available_dates())
-    body += f"<p><a href='/export?report=url-groups&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
-    body += bar_chart(
-        rows, cols,
-        x_col="url_group", y_col="hits_human",
-        y_cols=["hits_human", "hits_bot"],
-        title="URL groups — human vs bot",
-        barmode="stack",
-    )
-    body += "<br>"
-    body += html_table(rows, cols)
-    return page("URL group breakdown", body)
-
-
-@app.get("/reports/locale-groups", response_class=HTMLResponse)
-def locale_groups(
+def locales(
     date_from: Optional[str] = Query(None, alias="from"),
     date_to: Optional[str] = Query(None, alias="to"),
     locale: Optional[str] = None,
@@ -1571,723 +1974,198 @@ def locale_groups(
     content_only: bool = False,
     limit: int = 999,
 ):
-    paths = list_partitions("locale_group_daily", date_from, date_to)
-    if not paths:
-        body = date_filters_html(date_from, date_to, available_dates()) + no_data_notice()
-        return page("Locale x URL group", body)
-    clauses = []
-    if locale:
-        clauses.append(f"locale = '{sql_escape_string(locale)}'")
-    if url_group:
-        clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-
-    sql = f"""
-    SELECT locale,
-            url_group,
-            SUM(hits) AS hits,
-            SUM(hits_bot) AS hits_bot,
-            SUM(hits_human) AS hits_human,
-            SUM(s4xx) AS s4xx,
-            SUM(s5xx) AS s5xx
-    FROM t
-    {where}
-    GROUP BY locale, url_group
-    ORDER BY hits DESC
-    LIMIT {int(limit)};
-    """
-    cols, rows = run_query(paths, sql)
-    locale_options = distinct_values("locale_daily", "locale", date_from, date_to)
-    group_options = distinct_values("group_daily", "url_group", date_from, date_to)
-    body = date_filters_html(date_from, date_to, available_dates())
-    body += f"""
-    <form method="get">
-    <input type="hidden" name="from" value="{date_from or ''}">
-    <input type="hidden" name="to" value="{date_to or ''}">
-    {select_html("locale", locale_options, locale, "Locale")}
-    {select_html("url_group", group_options, url_group, "URL group")}
-    <label>Limit: <input name="limit" value="{limit}" size="6"></label>
-    <label style="margin-left:1em"><input type="checkbox" name="content_only" value="true"{"checked" if content_only else ""}> Content only (heatmap)</label>
-    <button type="submit">Apply</button>
-    </form>
-    """
-    body += f"<p><a href='/export?report=locale-groups&from={date_from or ''}&to={date_to or ''}&locale={locale or ''}&url_group={url_group or ''}&limit={limit}'>Export CSV</a></p>"
-
-    url_group_idx = cols.index("url_group") if "url_group" in cols else None
-
-    # Only show heatmap when not filtered to a single locale or url_group (would be a 1-row/col matrix)
-    if not locale and not url_group:
-        heatmap_rows = rows
-        if content_only and url_group_idx is not None:
-            heatmap_rows = [r for r in rows if r[url_group_idx] not in NON_CONTENT_GROUPS]
-        title = "Hits heatmap — locale × URL group" + (" (content only)" if content_only else "")
-        body += heatmap_chart(heatmap_rows, cols, x_col="url_group", y_col="locale", z_col="hits", title=title)
-        body += "<br>"
-    body += html_table(rows, cols, max_rows=min(int(limit), 500))
-    return page("Locale x URL group", body)
-
-
-@app.get("/reports/crawl-volume", response_class=HTMLResponse)
-def crawl_volume(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
     avail = available_dates()
-    paths = list_partitions("daily", date_from, date_to)
-    sql = """
-    SELECT date, hits, hits_bot, hits_human, bytes_sent, resource_hits, resource_hits_bot
-    FROM t
-    ORDER BY date;
-    """
-    cols, rows = run_query(paths, sql)
-
     body = date_filters_html(date_from, date_to, avail)
 
-    # ── Period KPI cards with trend ──
-    curr_from, curr_to, prev_from, prev_to = _compute_periods(date_from, date_to, avail)
-    _kpi_sql = """
-    SELECT COALESCE(SUM(hits),0), COALESCE(SUM(hits_human),0),
-           COALESCE(SUM(hits_bot),0), COALESCE(SUM(bytes_sent),0)
-    FROM t;
-    """
-    curr_p = list_partitions("daily", curr_from, curr_to)
-    prev_p = list_partitions("daily", prev_from, prev_to)
-    def _kpi(p):
-        if not p: return (0,0,0,0)
-        _, r = run_query(p, _kpi_sql)
-        return r[0] if r else (0,0,0,0)
-    c, p = _kpi(curr_p), _kpi(prev_p)
-    body += "<div class='kpi-grid'>"
-    body += kpi_card("Total Hits", c[0], p[0])
-    body += kpi_card("Human Hits", c[1], p[1])
-    body += kpi_card("Bot Hits", c[2], p[2], lower_is_better=True)
-    body += kpi_card("Bytes Sent", c[3], p[3], fmt_fn=fmt_bytes)
-    body += "</div>"
-
-    chart_html = line_chart(
-        rows,
-        cols,
-        x_col="date",
-        y_cols=["hits", "hits_bot", "hits_human"],
-        title="Daily Crawl Volume"
-    )
-    bytes_chart = bytes_line_chart(rows, cols, x_col="date", y_col="bytes_sent", title="Daily bytes sent")
-    body += f"<p><a href='/export?report=daily&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
-    body += chart_html
-    body += "<br>"
-    body += bytes_chart
-    body += "<br>"
-    body += html_table(rows, cols)
-    return page("Crawl volume (daily)", body)
-
-
-@app.get("/reports/status-over-time", response_class=HTMLResponse)
-def status_over_time(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
-    paths = list_partitions("daily", date_from, date_to)
-    sql = """
-    SELECT date, s2xx, s3xx, s4xx, s5xx, hits
-    FROM t
-    ORDER BY date;
-    """
-    cols, rows = run_query(paths, sql)
-    chart_html = line_chart(
-        rows,
-        cols,
-        x_col="date",
-        y_cols=["s2xx", "s3xx", "s4xx", "s5xx"],
-        title="Status Codes Over Time"
-    )
-    body = date_filters_html(date_from, date_to, available_dates())
-    body += f"<p><a href='/export?report=daily-status&from={date_from or ''}&to={date_to or ''}'>Export CSV</a></p>"
-    body += chart_html
-    body += "<br>"
-    body += html_table(rows, cols)
-    return page("Status codes over time (daily)", body)
-
-# ----------------------------
-# Missing report pages (fix 404)
-# ----------------------------
-
-def export_link(report: str, date_from: Optional[str], date_to: Optional[str], extra: str = "") -> str:
-    qs = []
-    qs.append(f"report={report}")
-    if date_from:
-        qs.append(f"from={date_from}")
-    if date_to:
-        qs.append(f"to={date_to}")
-    if extra:
-        qs.append(extra.lstrip("&"))
-    return f"<p><a href='/export?{'&'.join(qs)}'>&#8595; Export CSV</a></p>"
-
-
-@app.get("/reports/top-urls", response_class=HTMLResponse)
-def top_urls(
-    date_from: Optional[str] = Query(None, alias="from"),
-    date_to: Optional[str] = Query(None, alias="to"),
-    include_assets: bool = False,
-    url_group: Optional[str] = None,
-    limit: int = 500,
-):
-    paths = list_partitions("top_urls_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to, available_dates())
-
-    # filters
-    groups = distinct_values("top_urls_daily", "url_group", date_from, date_to)
-    body += "<form method='get'>"
-    body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
-    body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
-    body += select_html("url_group", groups, url_group, "URL group")
-    checked = "checked" if include_assets else ""
-    body += f" <label><input type='checkbox' name='include_assets' value='true' {checked}> Include assets</label>"
-    body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
-    body += " <button type='submit'>Apply</button></form>"
-
+    # ── Locale Breakdown tab ──
+    breakdown = ""
+    paths = list_partitions("locale_daily", date_from, date_to)
     if not paths:
-        return page("Top URLs", body + no_data_notice())
-
-    clauses = []
-    if not include_assets:
-        clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-    if url_group:
-        clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-
-    sql = f"""
-    SELECT path, url_group,
-           SUM(hits_total) AS hits_total,
-           SUM(hits_bot) AS hits_bot,
-           SUM(s3xx) AS s3xx,
-           SUM(s4xx) AS s4xx,
-           SUM(s5xx) AS s5xx,
-           SUM(parameterized_hits) AS parameterized_hits
-    FROM t
-    {where}
-    GROUP BY path, url_group
-    ORDER BY hits_total DESC
-    LIMIT {int(limit)};
-    """
-    cols, rows = run_query(paths, sql)
-    body += export_link(
-        "top-urls", date_from, date_to,
-        extra=f"&include_assets={'true' if include_assets else 'false'}"
-              + (f"&url_group={url_group}" if url_group else "")
-              + f"&limit={int(limit)}"
-    )
-    chart_limit = CHART_BAR_LIMIT
-    if rows:
-        body += bar_chart(
-            rows[:chart_limit], cols,
-            x_col="path", y_col="hits_total",
-            y_cols=["hits_total", "hits_bot"],
-            title=f"Top {chart_limit} URLs — total vs bot",
-            barmode="group",
-        )
-        body += "<br>"
-    body += html_table(rows, cols)
-    return page("Top URLs", body)
-
-
-@app.get("/reports/top-404")
-def top_404_redirect(
-    date_from: Optional[str] = Query(None, alias="from"),
-    date_to: Optional[str] = Query(None, alias="to"),
-    include_assets: bool = False,
-    url_group: Optional[str] = None,
-    limit: int = 500,
-):
-    """Redirects old /reports/top-404 links to /reports/top-4xx."""
-    parts = []
-    if date_from:      parts.append(f"from={date_from}")
-    if date_to:        parts.append(f"to={date_to}")
-    if include_assets: parts.append("include_assets=true")
-    if url_group:      parts.append(f"url_group={url_group}")
-    parts.append(f"limit={limit}")
-    return RedirectResponse(url=f"/reports/top-4xx?{'&'.join(parts)}", status_code=301)
-
-
-@app.get("/reports/top-4xx", response_class=HTMLResponse)
-def top_4xx(
-    date_from: Optional[str] = Query(None, alias="from"),
-    date_to: Optional[str] = Query(None, alias="to"),
-    include_assets: bool = False,
-    url_group: Optional[str] = None,
-    limit: int = 500,
-):
-    paths = list_partitions("top_4xx_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to, available_dates())
-
-    groups = distinct_values("top_4xx_daily", "url_group", date_from, date_to)
-    body += "<form method='get'>"
-    body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
-    body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
-    body += select_html("url_group", groups, url_group, "URL group")
-    checked = "checked" if include_assets else ""
-    body += f" <label><input type='checkbox' name='include_assets' value='true' {checked}> Include assets</label>"
-    body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
-    body += " <button type='submit'>Apply</button></form>"
-
-    if not paths:
-        return page("Top 4xx", body + no_data_notice())
-
-    clauses = []
-    if not include_assets:
-        clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-    if url_group:
-        clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-
-    daily_sql = f"""
-    SELECT
-        date,
-        SUM(hits_4xx)     AS hits_4xx,
-        SUM(hits_4xx_bot) AS hits_4xx_bot,
-        (SUM(hits_4xx) - SUM(hits_4xx_bot)) AS hits_4xx_non_bot,
-        SUM(s400) AS s400,
-        SUM(s401) AS s401,
-        SUM(s403) AS s403,
-        SUM(s404) AS s404,
-        SUM(s405) AS s405,
-        SUM(s410) AS s410,
-        SUM(s422) AS s422,
-        SUM(s429) AS s429
-    FROM t
-    {where}
-    GROUP BY date
-    ORDER BY date;
-    """
-    cols_d, rows_d = run_query(paths, daily_sql)
-
-    sql = f"""
-    SELECT path, url_group,
-        SUM(hits_4xx)     AS hits_4xx,
-        SUM(hits_4xx_bot) AS hits_4xx_bot,
-        (SUM(hits_4xx) - SUM(hits_4xx_bot)) AS hits_4xx_non_bot,
-        SUM(bytes_sent_4xx) AS bytes_sent_4xx,
-        SUM(s400) AS s400,
-        SUM(s401) AS s401,
-        SUM(s403) AS s403,
-        SUM(s404) AS s404,
-        SUM(s405) AS s405,
-        SUM(s410) AS s410,
-        SUM(s422) AS s422,
-        SUM(s429) AS s429
-    FROM t
-    {where}
-    GROUP BY path, url_group
-    ORDER BY hits_4xx DESC
-    LIMIT {int(limit)};
-    """
-    cols, rows = run_query(paths, sql)
-
-    body += export_link(
-        "top-4xx", date_from, date_to,
-        extra=f"&include_assets={'true' if include_assets else 'false'}"
-              + (f"&url_group={url_group}" if url_group else "")
-              + f"&limit={int(limit)}"
-    )
-
-    body += "<h2>4xx trend (daily)</h2>"
-    body += line_chart(rows_d, cols_d, x_col="date",
-                       y_cols=["s400", "s401", "s403", "s404", "s405", "s410", "s422", "s429"],
-                       title="4xx responses by day (per code)")
-    body += "<br>"
-    body += html_table(rows_d, cols_d, max_rows=500)
-
-    if rows:
-        body += "<h2>Top 4xx URLs</h2>"
-        body += bar_chart(rows[:CHART_BAR_LIMIT], cols, x_col="path",
-                          y_cols=["s400", "s401", "s403", "s404", "s405", "s410", "s422", "s429"],
-                          title=f"Top {CHART_BAR_LIMIT} 4xx URLs by code", barmode="stack")
-        body += "<br>"
-
-    body += html_table(rows, cols, max_rows=min(int(limit), 500))
-
-    # ── 4xx recommendations ──
-    if rows:
-        recs_4xx: List[Tuple[str, str, str]] = []
-        # cols: path, url_group, hits_4xx, hits_4xx_bot, hits_4xx_non_bot, bytes_sent_4xx, s400..s429
-        path_i = cols.index("path") if "path" in cols else 0
-        non_bot_i = cols.index("hits_4xx_non_bot") if "hits_4xx_non_bot" in cols else 4
-        s404_i = cols.index("s404") if "s404" in cols else None
-        for r in rows[:15]:
-            path = r[path_i]
-            human_4xx = int(r[non_bot_i] or 0)
-            s404 = int(r[s404_i] or 0) if s404_i is not None else 0
-            if s404 > 50 and human_4xx > 20:
-                recs_4xx.append((
-                    "Redirect",
-                    f"{path} returns 404 for {human_4xx:,} human visitors",
-                    f"Set up a 301 redirect from {path} to the correct page",
-                ))
-            elif human_4xx > 100 and s404 == 0:
-                recs_4xx.append((
-                    "Investigate",
-                    f"{path} returns other 4xx for {human_4xx:,} human visitors",
-                    "",
-                ))
-        if recs_4xx:
-            body += recommendations_section(recs_4xx[:5])
-
-    return page("Top 4xx", body)
-
-@app.get("/reports/top-5xx", response_class=HTMLResponse)
-def top_5xx(
-    date_from: Optional[str] = Query(None, alias="from"),
-    date_to: Optional[str] = Query(None, alias="to"),
-    include_assets: bool = False,
-    url_group: Optional[str] = None,
-    limit: int = 500,
-):
-    paths = list_partitions("top_5xx_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to, available_dates())
-
-    groups = distinct_values("top_5xx_daily", "url_group", date_from, date_to)
-    body += "<form method='get'>"
-    body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
-    body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
-    body += select_html("url_group", groups, url_group, "URL group")
-    checked = "checked" if include_assets else ""
-    body += f" <label><input type='checkbox' name='include_assets' value='true' {checked}> Include assets</label>"
-    body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
-    body += " <button type='submit'>Apply</button></form>"
-
-    if not paths:
-        return page("Top 5xx", body + no_data_notice())
-
-    clauses = []
-    if not include_assets:
-        clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-    if url_group:
-        clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-
-    daily_sql = f"""
-    SELECT
-        date,
-        SUM(hits_5xx)     AS hits_5xx,
-        SUM(hits_5xx_bot) AS hits_5xx_bot,
-        (SUM(hits_5xx) - SUM(hits_5xx_bot)) AS hits_5xx_non_bot,
-        SUM(s500) AS s500,
-        SUM(s502) AS s502,
-        SUM(s503) AS s503,
-        SUM(s504) AS s504
-    FROM t
-    {where}
-    GROUP BY date
-    ORDER BY date;
-    """
-    cols_d, rows_d = run_query(paths, daily_sql)
-
-    sql = f"""
-    SELECT path, url_group,
-        SUM(hits_5xx)     AS hits_5xx,
-        SUM(hits_5xx_bot) AS hits_5xx_bot,
-        (SUM(hits_5xx) - SUM(hits_5xx_bot)) AS hits_5xx_non_bot,
-        SUM(s500) AS s500,
-        SUM(s502) AS s502,
-        SUM(s503) AS s503,
-        SUM(s504) AS s504
-    FROM t
-    {where}
-    GROUP BY path, url_group
-    ORDER BY hits_5xx DESC
-    LIMIT {int(limit)};
-    """
-    cols, rows = run_query(paths, sql)
-
-    body += export_link(
-        "top-5xx", date_from, date_to,
-        extra=f"&include_assets={'true' if include_assets else 'false'}"
-              + (f"&url_group={url_group}" if url_group else "")
-              + f"&limit={int(limit)}"
-    )
-
-    body += "<h2>5xx trend (daily)</h2>"
-    body += line_chart(rows_d, cols_d, x_col="date",
-                       y_cols=["s500", "s502", "s503", "s504"],
-                       title="5xx responses by day (per code)")
-    body += "<br>"
-    body += html_table(rows_d, cols_d, max_rows=500)
-
-    if rows:
-        body += "<h2>Top 5xx URLs</h2>"
-        body += bar_chart(rows[:CHART_BAR_LIMIT], cols, x_col="path",
-                          y_cols=["s500", "s502", "s503", "s504"],
-                          title=f"Top {CHART_BAR_LIMIT} 5xx URLs by code", barmode="stack")
-        body += "<br>"
-
-    body += html_table(rows, cols, max_rows=min(int(limit), 500))
-
-    # ── 5xx recommendations ──
-    if paths:
-        recurrence_sql = f"""
-        SELECT path, COUNT(DISTINCT date) AS days_affected, SUM(hits_5xx) AS total
-        FROM t
-        {where}
-        GROUP BY path
-        HAVING COUNT(DISTINCT date) > 1
-        ORDER BY days_affected DESC, total DESC
-        LIMIT 5;
+        breakdown = no_data_notice()
+    else:
+        sql_totals = """
+        SELECT
+          CASE WHEN locale IS NULL OR locale = 'Unknown' THEN 'no-locale' ELSE locale END AS locale,
+          SUM(hits) AS hits, SUM(hits_bot) AS hits_bot, SUM(hits_human) AS hits_human,
+          SUM(s4xx) AS s4xx, SUM(s5xx) AS s5xx,
+          SUM(resource_hits) AS resource_hits, SUM(resource_hits_bot) AS resource_hits_bot
+        FROM t GROUP BY 1 ORDER BY hits DESC;
         """
-        _, recur_rows = run_query(paths, recurrence_sql)
-        recs_5xx: List[Tuple[str, str, str]] = []
-        for r in recur_rows:
-            path, days, total = r[0], int(r[1] or 0), int(r[2] or 0)
-            recs_5xx.append((
-                "Investigate",
-                f"{path} has returned 5xx errors on {days} different days ({total:,} total)",
-                "Check server logs for this path to identify the root cause",
-            ))
-        if recs_5xx:
-            body += recommendations_section(recs_5xx)
+        cols1, rows1 = run_query(paths, sql_totals)
 
-    return page("Top 5xx", body)
+        curr_from, curr_to, prev_from, prev_to = _compute_periods(date_from, date_to, avail)
+        prev_paths = list_partitions("locale_daily", prev_from, prev_to)
+        if prev_paths:
+            prev_cols1, prev_rows1 = run_query(prev_paths, sql_totals)
+            cols1, rows1 = add_trend_columns(cols1, rows1, prev_cols1, prev_rows1,
+                                             key_col="locale", metric_cols=["hits", "hits_human"])
 
+        sql_non_resource = """
+        SELECT
+          CASE WHEN locale IS NULL OR locale = 'Unknown' THEN 'no-locale' ELSE locale END AS locale,
+          (SUM(hits) - SUM(resource_hits)) AS hits_non_resource,
+          (SUM(hits_bot) - SUM(resource_hits_bot)) AS hits_bot_non_resource,
+          (SUM(hits_human) - (SUM(resource_hits) - SUM(resource_hits_bot))) AS hits_human_non_resource
+        FROM t GROUP BY 1 ORDER BY hits_non_resource DESC;
+        """
+        cols2, rows2 = run_query(paths, sql_non_resource)
 
-@app.get("/reports/top-3xx", response_class=HTMLResponse)
-def top_3xx(
-    date_from: Optional[str] = Query(None, alias="from"),
-    date_to: Optional[str] = Query(None, alias="to"),
-    include_assets: bool = False,
-    url_group: Optional[str] = None,
-    limit: int = 500,
-):
-    paths = list_partitions("top_urls_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to, available_dates())
-
-    groups = distinct_values("top_urls_daily", "url_group", date_from, date_to)
-    body += "<form method='get'>"
-    body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
-    body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
-    body += select_html("url_group", groups, url_group, "URL group")
-    checked = "checked" if include_assets else ""
-    body += f" <label><input type='checkbox' name='include_assets' value='true' {checked}> Include assets</label>"
-    body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
-    body += " <button type='submit'>Apply</button></form>"
-
-    if not paths:
-        return page("Top 3xx (redirects)", body + no_data_notice())
-
-    clauses = []
-    if not include_assets:
-        clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-    if url_group:
-        clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-
-    daily_sql = f"""
-    SELECT date,
-           SUM(s3xx) AS s3xx,
-           SUM(s301)  AS s301,
-           SUM(s302)  AS s302,
-           SUM(s303)  AS s303,
-           SUM(s307)  AS s307,
-           SUM(s308)  AS s308
-    FROM t
-    {where}
-    GROUP BY date
-    ORDER BY date;
-    """
-    cols_d, rows_d = run_query(paths, daily_sql)
-
-    sql = f"""
-    SELECT path, url_group,
-           SUM(s3xx)  AS s3xx,
-           SUM(s301)  AS s301,
-           SUM(s302)  AS s302,
-           SUM(s303)  AS s303,
-           SUM(s307)  AS s307,
-           SUM(s308)  AS s308,
-           SUM(hits_total) AS hits_total,
-           ROUND(100.0 * SUM(s3xx) / NULLIF(SUM(hits_total), 0), 1) AS redirect_pct
-    FROM t
-    {where}
-    GROUP BY path, url_group
-    HAVING SUM(s3xx) > 0
-    ORDER BY s3xx DESC
-    LIMIT {int(limit)};
-    """
-    cols, rows = run_query(paths, sql)
-
-    body += export_link(
-        "top-3xx", date_from, date_to,
-        extra=f"&include_assets={'true' if include_assets else 'false'}"
-              + (f"&url_group={url_group}" if url_group else "")
-              + f"&limit={int(limit)}"
-    )
-
-    body += "<h2>Redirect trend (daily)</h2>"
-    body += line_chart(rows_d, cols_d, x_col="date", y_cols=["s301", "s302", "s303", "s307", "s308"], title="3xx responses by day (per code)")
-    body += "<br>"
-    body += html_table(rows_d, cols_d, max_rows=500)
-
-    if rows:
-        body += "<h2>Top redirecting URLs</h2>"
-        body += bar_chart(rows[:CHART_BAR_LIMIT], cols, x_col="path",
-                          y_cols=["s301", "s302", "s303", "s307", "s308"],
-                          title=f"Top {CHART_BAR_LIMIT} redirecting URLs by code", barmode="stack")
-        body += "<br>"
-
-    body += html_table(rows, cols, max_rows=min(int(limit), 500))
-    return page("Top 3xx (redirects)", body)
+        breakdown += export_link("locales", date_from, date_to)
+        chart_limit = 20
+        breakdown += "<h2>All hits (includes Nuxt/static resources)</h2>"
+        chart_cols1 = [c for c in cols1 if not c.endswith("_chg")]
+        chart_rows1 = [tuple(v for c, v in zip(cols1, r) if not c.endswith("_chg")) for r in rows1]
+        breakdown += bar_chart(chart_rows1[:chart_limit], chart_cols1, x_col="locale",
+                               y_cols=["hits_human", "hits_bot"],
+                               title=f"Top {chart_limit} locales — human vs bot", barmode="stack")
+        breakdown += html_table(rows1, cols1)
+        breakdown += "<h2>Non-resource hits (excludes Nuxt/static resources)</h2>"
+        breakdown += bar_chart(rows2[:chart_limit], cols2, x_col="locale",
+                               y_cols=["hits_human_non_resource", "hits_bot_non_resource"],
+                               title=f"Top {chart_limit} locales (non-resource) — human vs bot", barmode="stack")
+        breakdown += html_table(rows2, cols2)
 
 
-@app.get("/reports/url-bytes", response_class=HTMLResponse)
-def url_bytes(
-    date_from: Optional[str] = Query(None, alias="from"),
-    date_to: Optional[str] = Query(None, alias="to"),
-    include_assets: bool = False,
-    url_group: Optional[str] = None,
-    limit: int = 500,
-):
-    paths = list_partitions("top_urls_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to, available_dates())
+    # ── Locale x Group Heatmap tab ──
+    heatmap_content = ""
+    paths_lg = list_partitions("locale_group_daily", date_from, date_to)
+    if not paths_lg:
+        heatmap_content = no_data_notice()
+    else:
+        lg_clauses = []
+        if locale:
+            lg_clauses.append(f"locale = '{sql_escape_string(locale)}'")
+        if url_group:
+            lg_clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+        lg_where = ("WHERE " + " AND ".join(lg_clauses)) if lg_clauses else ""
 
-    groups = distinct_values("top_urls_daily", "url_group", date_from, date_to)
-    body += "<form method='get'>"
-    body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
-    body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
-    body += select_html("url_group", groups, url_group, "URL group")
-    checked = "checked" if include_assets else ""
-    body += f" <label><input type='checkbox' name='include_assets' value='true' {checked}> Include assets</label>"
-    body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
-    body += " <button type='submit'>Apply</button></form>"
+        sql_lg = f"""
+        SELECT locale, url_group, SUM(hits) AS hits, SUM(hits_bot) AS hits_bot,
+               SUM(hits_human) AS hits_human, SUM(s4xx) AS s4xx, SUM(s5xx) AS s5xx
+        FROM t {lg_where}
+        GROUP BY locale, url_group ORDER BY hits DESC LIMIT {int(limit)};
+        """
+        cols_lg, rows_lg = run_query(paths_lg, sql_lg)
 
-    if not paths:
-        return page("URL byte size", body + no_data_notice())
+        locale_options = distinct_values("locale_daily", "locale", date_from, date_to)
+        group_options = distinct_values("group_daily", "url_group", date_from, date_to)
+        heatmap_content += f"""
+        <form method="get">
+        <input type="hidden" name="from" value="{date_from or ''}">
+        <input type="hidden" name="to" value="{date_to or ''}">
+        <input type="hidden" name="tab" value="heatmap">
+        {select_html("locale", locale_options, locale, "Locale")}
+        {select_html("url_group", group_options, url_group, "URL group")}
+        <label>Limit: <input name="limit" value="{limit}" size="6"></label>
+        <label style="margin-left:1em"><input type="checkbox" name="content_only" value="true"{"checked" if content_only else ""}> Content only (heatmap)</label>
+        <button type="submit">Apply</button>
+        </form>
+        """
+        heatmap_content += export_link("locale-groups", date_from, date_to,
+                                       extra=f"&locale={locale or ''}&url_group={url_group or ''}&limit={limit}")
 
-    clauses = []
-    if not include_assets:
-        clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-    if url_group:
-        clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        url_group_idx = cols_lg.index("url_group") if "url_group" in cols_lg else None
+        if not locale and not url_group:
+            heatmap_rows = rows_lg
+            if content_only and url_group_idx is not None:
+                heatmap_rows = [r for r in rows_lg if r[url_group_idx] not in NON_CONTENT_GROUPS]
+            title_hm = "Hits heatmap — locale × URL group" + (" (content only)" if content_only else "")
+            heatmap_content += heatmap_chart(heatmap_rows, cols_lg, x_col="url_group", y_col="locale",
+                                             z_col="hits", title=title_hm)
+        heatmap_content += html_table(rows_lg, cols_lg, max_rows=min(int(limit), 500))
 
-    sql = f"""
-    SELECT path, url_group,
-           SUM(bytes_sent)                                            AS bytes_total,
-           SUM(hits_total)                                            AS hits_total,
-           ROUND(SUM(bytes_sent) / NULLIF(SUM(hits_total), 0))       AS avg_bytes_per_hit
-    FROM t
-    {where}
-    GROUP BY path, url_group
-    HAVING SUM(bytes_sent) > 0
-    ORDER BY avg_bytes_per_hit DESC
-    LIMIT {int(limit)};
-    """
-    cols, rows = run_query(paths, sql)
+    tabs = tab_bar([("breakdown", "Locale Breakdown"), ("heatmap", "Locale × Group Heatmap")])
+    body += tabs
+    body += tab_panel("breakdown", breakdown)
+    body += tab_panel("heatmap", heatmap_content)
+    return page("Locales", body)
 
-    body += export_link(
-        "url-bytes", date_from, date_to,
-        extra=f"&include_assets={'true' if include_assets else 'false'}"
-              + (f"&url_group={url_group}" if url_group else "")
-              + f"&limit={int(limit)}"
-    )
 
-    if rows:
-        body += "<h2>Largest pages by average response size</h2>"
-        body += bytes_bar_chart(
-            rows[:CHART_BAR_LIMIT], cols,
-            x_col="path", y_col="avg_bytes_per_hit",
-            title=f"Top {CHART_BAR_LIMIT} URLs by avg response size",
-        )
-        body += "<br>"
 
-    # Format byte columns for readability before rendering the table
-    bytes_total_idx = cols.index("bytes_total")
-    avg_idx = cols.index("avg_bytes_per_hit")
-    display_rows = [
-        tuple(
-            fmt_bytes(v) if i in (bytes_total_idx, avg_idx) else v
-            for i, v in enumerate(r)
-        )
-        for r in rows
-    ]
-    body += html_table(display_rows, cols, max_rows=min(int(limit), 500))
-    return page("URL byte size", body)
-
+# ── /reports/bots ─────────────────────────────────────────────────────────
 
 @app.get("/reports/bots", response_class=HTMLResponse)
-def bots(
+def bots_report(
     date_from: Optional[str] = Query(None, alias="from"),
     date_to: Optional[str] = Query(None, alias="to"),
     bot: Optional[str] = None,
     include_assets: bool = False,
+    strict: bool = False,
+    url_group: Optional[str] = None,
     limit: int = 500,
 ):
+    avail = available_dates()
+    body = date_filters_html(date_from, date_to, avail)
+
+    # Shared filter form
     bots_list = distinct_values("bot_urls_daily", "bot_family", date_from, date_to)
-    body = date_filters_html(date_from, date_to, available_dates())
+    waste_bots = distinct_values("wasted_crawl_daily", "bot_family", date_from, date_to)
+    waste_groups = distinct_values("wasted_crawl_daily", "url_group", date_from, date_to)
     checked_assets = "checked" if include_assets else ""
+    checked_strict = "checked" if strict else ""
     body += f"""
     <form method="get">
     <input type="hidden" name="from" value="{date_from or ''}">
     <input type="hidden" name="to" value="{date_to or ''}">
-    {select_html("bot", bots_list, bot, "Bot family")}
+    {select_html("bot", sorted(set(bots_list + waste_bots)), bot, "Bot family")}
+    {select_html("url_group", waste_groups, url_group, "URL group")}
     <label><input type="checkbox" name="include_assets" value="true" {checked_assets}> Include assets</label>
-    <label style="margin-left:1em">Limit: <input name="limit" value="{int(limit)}" size="6"></label>
+    <label><input type="checkbox" name="strict" value="true" {checked_strict}> Strict scoring</label>
+    <label>Limit: <input name="limit" value="{int(limit)}" size="6"></label>
     <button type="submit">Apply</button>
     </form>
     """
 
-    # ── Summary section (bot_daily) ──────────────────────────────────────────
+    # ── Bot Families tab ──
+    bot_families_content = ""
     paths_summary = list_partitions("bot_daily", date_from, date_to)
-    body += "<h2>Bot activity summary</h2>"
     if not paths_summary:
-        body += no_data_notice()
+        bot_families_content = no_data_notice()
     else:
         sql_summary = """
-        SELECT bot_family,
-               SUM(hits) AS hits,
-               SUM(resource_hits) AS resource_hits,
+        SELECT bot_family, SUM(hits) AS hits, SUM(resource_hits) AS resource_hits,
                AVG(resource_hits_pct) AS resource_hits_pct,
-               SUM(s4xx) AS s4xx,
-               SUM(s5xx) AS s5xx
-        FROM t
-        GROUP BY bot_family
-        ORDER BY hits DESC;
+               SUM(s4xx) AS s4xx, SUM(s5xx) AS s5xx
+        FROM t GROUP BY bot_family ORDER BY hits DESC;
         """
-        cols, rows = run_query(paths_summary, sql_summary)
+        cols_bf, rows_bf = run_query(paths_summary, sql_summary)
 
         # Trend: top-10 bots over time
-        top_families = [r[0] for r in rows[:10]]
-        families_in = ", ".join(f"'{sql_escape_string(f)}'" for f in top_families)
-        trend_sql = f"""
-        SELECT date, bot_family, SUM(hits) AS hits
-        FROM t
-        WHERE bot_family IN ({families_in})
-        GROUP BY date, bot_family
-        ORDER BY date, bot_family;
-        """
-        cols_t, rows_t = run_query(paths_summary, trend_sql)
-        if rows_t:
-            df_t = pd.DataFrame(rows_t, columns=cols_t)
-            df_pivot = df_t.pivot_table(index="date", columns="bot_family", values="hits", fill_value=0).reset_index()
-            pivot_cols = list(df_pivot.columns)
-            pivot_rows = [tuple(r) for r in df_pivot.itertuples(index=False, name=None)]
-            y_families = [c for c in pivot_cols if c != "date"]
-            body += "<h3>Activity over time (top 10 families)</h3>"
-            body += line_chart(pivot_rows, pivot_cols, x_col="date", y_cols=y_families, title="Bot hits over time (top 10 families)")
-            body += "<br>"
+        top_families = [r[0] for r in rows_bf[:10]]
+        if top_families:
+            families_in = ", ".join(f"'{sql_escape_string(f)}'" for f in top_families)
+            trend_sql = f"""
+            SELECT date, bot_family, SUM(hits) AS hits
+            FROM t WHERE bot_family IN ({families_in})
+            GROUP BY date, bot_family ORDER BY date, bot_family;
+            """
+            cols_bt, rows_bt = run_query(paths_summary, trend_sql)
+            if rows_bt:
+                df_t = pd.DataFrame(rows_bt, columns=cols_bt)
+                df_pivot = df_t.pivot_table(index="date", columns="bot_family", values="hits", fill_value=0).reset_index()
+                pivot_cols = list(df_pivot.columns)
+                pivot_rows = [tuple(r) for r in df_pivot.itertuples(index=False, name=None)]
+                y_families = [c for c in pivot_cols if c != "date"]
+                bot_families_content += "<h3>Activity over time (top 10 families)</h3>"
+                bot_families_content += line_chart(pivot_rows, pivot_cols, x_col="date", y_cols=y_families,
+                                                   title="Bot hits over time (top 10 families)")
 
-        # ── Trend columns: compare with previous period ──
-        avail = available_dates()
+        # Trend columns
         curr_from_b, curr_to_b, prev_from_b, prev_to_b = _compute_periods(date_from, date_to, avail)
         prev_paths_b = list_partitions("bot_daily", prev_from_b, prev_to_b)
         if prev_paths_b:
             prev_cols_b, prev_rows_b = run_query(prev_paths_b, sql_summary)
-            cols, rows = add_trend_columns(
-                cols, rows, prev_cols_b, prev_rows_b,
-                key_col="bot_family",
-                metric_cols=["hits", "s4xx", "s5xx"],
-            )
+            cols_bf, rows_bf = add_trend_columns(cols_bf, rows_bf, prev_cols_b, prev_rows_b,
+                                                 key_col="bot_family", metric_cols=["hits", "s4xx", "s5xx"])
 
-        # Use original data (without _chg cols) for the chart
-        chart_cols_b = [c for c in cols if not c.endswith("_chg")]
-        chart_rows_b = [tuple(v for c, v in zip(cols, r) if not c.endswith("_chg")) for r in rows]
+        chart_cols_b = [c for c in cols_bf if not c.endswith("_chg")]
+        chart_rows_b = [tuple(v for c, v in zip(cols_bf, r) if not c.endswith("_chg")) for r in rows_bf]
+        bot_families_content += "<h3>Total hits by bot family</h3>"
+        bot_families_content += bar_chart(chart_rows_b, chart_cols_b, x_col="bot_family", y_col="hits",
+                                          title="Bot hits by family")
 
-        body += "<h3>Total hits by bot family</h3>"
-        body += bar_chart(chart_rows_b, chart_cols_b, x_col="bot_family", y_col="hits", title="Bot hits by family")
-        body += "<br>"
-
-        # Bot family names are links that pre-select the bot in the URL section below
-        bot_idx = cols.index("bot_family")
+        # Bot family links
+        bot_idx = cols_bf.index("bot_family")
         def _bot_link_qs(family):
             parts = [f"bot={family}"]
             if date_from: parts.append(f"from={date_from}")
@@ -2297,18 +2175,18 @@ def bots(
             return "&".join(parts)
         linked_rows = [
             tuple(
-                f"<a href='/reports/bots?{_bot_link_qs(v)}#urls'>{v}</a>" if i == bot_idx else v
+                f"<a href='/reports/bots?{_bot_link_qs(v)}&tab=bot-families#urls'>{v}</a>" if i == bot_idx else v
                 for i, v in enumerate(r)
             )
-            for r in rows
+            for r in rows_bf
         ]
-        body += export_link("bots", date_from, date_to)
-        body += html_table(linked_rows, cols)
+        bot_families_content += export_link("bots", date_from, date_to)
+        bot_families_content += html_table(linked_rows, cols_bf)
 
-        # ── Bot recommendations ──
+        # Bot recommendations
         bot_recs: List[Tuple[str, str, str]] = []
-        _ci = {c: i for i, c in enumerate(cols)}
-        for r in rows:
+        _ci = {c: i for i, c in enumerate(cols_bf)}
+        for r in rows_bf:
             family = r[_ci["bot_family"]]
             hits_val = int(r[_ci["hits"]] or 0)
             resource_pct = float(r[_ci["resource_hits_pct"]] or 0)
@@ -2318,313 +2196,244 @@ def bots(
                 continue
             error_rate = (s4xx_val + s5xx_val) / hits_val
             if error_rate > 0.5 and hits_val > 50:
-                bot_recs.append((
-                    "Block",
-                    f"{family} has {error_rate:.0%} error rate across {hits_val:,} requests",
-                    f"User-agent: {family}\nDisallow: /",
-                ))
+                bot_recs.append(("Block", f"{family} has {error_rate:.0%} error rate across {hits_val:,} requests",
+                                 f"User-agent: {family}\nDisallow: /"))
             elif resource_pct > 80 and hits_val > 100:
-                bot_recs.append((
-                    "Restrict",
-                    f"{family} spends {resource_pct:.0f}% of crawl on static assets ({hits_val:,} hits)",
-                    f"User-agent: {family}\nDisallow: /_nuxt/\nDisallow: /assets/",
-                ))
+                bot_recs.append(("Restrict", f"{family} spends {resource_pct:.0f}% of crawl on static assets ({hits_val:,} hits)",
+                                 f"User-agent: {family}\nDisallow: /_nuxt/\nDisallow: /assets/"))
         if bot_recs:
-            body += recommendations_section(bot_recs[:5])
+            bot_families_content += recommendations_section(bot_recs[:5])
 
-    # ── URL drill-down section (bot_urls_daily) ───────────────────────────────
-    paths_urls = list_partitions("bot_urls_daily", date_from, date_to)
-    url_title = f"URLs crawled by {bot}" if bot else "URLs crawled — preview (click a bot above for full breakdown)"
-    body += f"<h2 id='urls'>{url_title}</h2>"
-
-    if not paths_urls:
-        body += no_data_notice()
-    else:
-        clauses = []
-        if bot:
-            clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
-        if not include_assets:
-            clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-        url_limit = int(limit) if bot else 20
-
-        sql_urls = f"""
-        SELECT bot_family, url_group, path,
-               SUM(hits) AS hits
-        FROM t
-        {where}
-        GROUP BY bot_family, url_group, path
-        ORDER BY hits DESC
-        LIMIT {url_limit};
-        """
-        cols_u, rows_u = run_query(paths_urls, sql_urls)
-
-        if bot:
-            body += export_link(
-                "bot-urls", date_from, date_to,
-                extra=f"&include_assets={'true' if include_assets else 'false'}"
-                      + f"&bot={bot}&limit={int(limit)}"
-            )
-            chart_limit = CHART_BAR_LIMIT
-            body += bar_chart(rows_u[:chart_limit], cols_u, x_col="path", y_col="hits",
-                              title=f"Top {chart_limit} URLs crawled by {bot}")
-            body += "<br>"
+        # Bot URL drill-down
+        paths_urls = list_partitions("bot_urls_daily", date_from, date_to)
+        url_title = f"URLs crawled by {bot}" if bot else "URLs crawled — preview (click a bot above for full breakdown)"
+        bot_families_content += f"<h2 id='urls'>{url_title}</h2>"
+        if not paths_urls:
+            bot_families_content += no_data_notice()
         else:
-            body += "<p>Showing top 20 across all bots. Select a bot above for the full breakdown.</p>"
+            url_clauses = []
+            if bot:
+                url_clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
+            if not include_assets:
+                url_clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+            url_where = ("WHERE " + " AND ".join(url_clauses)) if url_clauses else ""
+            url_limit = int(limit) if bot else 20
+            sql_urls = f"""
+            SELECT bot_family, url_group, path, SUM(hits) AS hits
+            FROM t {url_where}
+            GROUP BY bot_family, url_group, path ORDER BY hits DESC LIMIT {url_limit};
+            """
+            cols_u, rows_u = run_query(paths_urls, sql_urls)
+            if bot:
+                bot_families_content += export_link("bot-urls", date_from, date_to,
+                                                    extra=f"&include_assets={'true' if include_assets else 'false'}&bot={bot}&limit={int(limit)}")
+                bot_families_content += bar_chart(rows_u[:CHART_BAR_LIMIT], cols_u, x_col="path", y_col="hits",
+                                                  title=f"Top {CHART_BAR_LIMIT} URLs crawled by {bot}")
+            else:
+                bot_families_content += "<p>Showing top 20 across all bots. Select a bot above for the full breakdown.</p>"
+            bot_families_content += html_table(rows_u, cols_u)
 
-        body += html_table(rows_u, cols_u)
-
-    return page("Bot traffic", body)
-
-
-@app.get("/reports/wasted-crawl", response_class=HTMLResponse)
-def wasted_crawl(
-    date_from: Optional[str] = Query(None, alias="from"),
-    date_to: Optional[str] = Query(None, alias="to"),
-    strict: bool = False,
-    include_assets: bool = False,
-    bot: Optional[str] = None,
-    url_group: Optional[str] = None,
-    limit: int = 500,
-):
-    paths = list_partitions("wasted_crawl_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to, available_dates())
-
-    # Filters: these columns DO exist here
-    bots_list = distinct_values("wasted_crawl_daily", "bot_family", date_from, date_to)
-    groups = distinct_values("wasted_crawl_daily", "url_group", date_from, date_to)
-
-    body += "<form method='get'>"
-    body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
-    body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
-    body += select_html("bot", bots_list, bot, "Bot family")
-    body += select_html("url_group", groups, url_group, "URL group")
-    checked_assets = "checked" if include_assets else ""
-    checked_strict = "checked" if strict else ""
-    body += f" <label><input type='checkbox' name='include_assets' value='true' {checked_assets}> Include assets</label>"
-    body += f" <label><input type='checkbox' name='strict' value='true' {checked_strict}> Strict scoring</label>"
-    body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
-    body += " <button type='submit'>Apply</button></form>"
-
-    if not paths:
-        return page("Wasted crawl", body + no_data_notice())
-
-    score_col = "waste_score_strict" if strict else "waste_score"
-
-    clauses = []
-    if bot:
-        clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
-    if url_group:
-        clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
-    if not include_assets:
-        clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-
-    sql = f"""
-    SELECT bot_family, url_group, path,
-           SUM(bot_hits) AS bot_hits,
-           SUM(parameterized_bot_hits) AS parameterized_bot_hits,
-           SUM(redirect_bot_hits) AS redirect_bot_hits,
-           SUM(error_bot_hits) AS error_bot_hits,
-           SUM(resource_bot_hits) AS resource_bot_hits,
-           SUM(resource_parameterized_bot_hits) AS resource_parameterized_bot_hits,
-           SUM(resource_error_bot_hits) AS resource_error_bot_hits,
-           SUM({score_col}) AS waste_score
-    FROM t
-    {where}
-    GROUP BY bot_family, url_group, path
-    ORDER BY waste_score DESC, bot_hits DESC
-    LIMIT {int(limit)};
-    """
-    cols, rows = run_query(paths, sql)
-
-    # Trend: total waste score per day
-    trend_sql = f"""
-    SELECT date, SUM({score_col}) AS waste_score, SUM(bot_hits) AS bot_hits
-    FROM t
-    {where}
-    GROUP BY date
-    ORDER BY date;
-    """
-    cols_t, rows_t = run_query(paths, trend_sql)
-    trend_html = line_chart(rows_t, cols_t, x_col="date", y_cols=["waste_score", "bot_hits"], title="Waste score over time")
-
-    chart_html = bar_chart(rows, cols, x_col="path", y_col="waste_score", title="Highest waste score (top paths)")
-
-    body += (
-        f"<p><a href='/export?report=wasted-crawl&from={date_from or ''}&to={date_to or ''}"
-        f"&strict={'true' if strict else 'false'}"
-        f"&include_assets={'true' if include_assets else 'false'}"
-        f"{'&bot=' + bot if bot else ''}"
-        f"{'&url_group=' + url_group if url_group else ''}"
-        f"&limit={int(limit)}'>Export CSV</a></p>"
+    # ── AI Crawlers tab (placeholder) ──
+    ai_crawlers_content = (
+        "<div class='empty-state'>"
+        "<h3>AI Crawlers</h3>"
+        "<p>Detailed AI crawler analysis will be available after Phase 5.</p>"
+        "<p>This tab will include volume trends, content targeting, and Googlebot overlap analysis "
+        "for GPTBot, ClaudeBot, PerplexityBot, ByteSpider, and other AI crawlers.</p>"
+        "</div>"
     )
-    body += "<h2>Waste score trend (daily)</h2>"
-    body += trend_html
-    body += "<br>"
-    body += "<h2>Top wasted paths</h2>"
-    body += chart_html
-    body += "<br>"
-    body += html_table(rows, cols)
 
-    # ── Wasted crawl recommendations ──
-    if rows:
-        recs_waste: List[Tuple[str, str, str]] = []
-        # Aggregate waste by bot family
-        bot_waste: Dict[str, Tuple[int, int]] = {}
-        # cols: bot_family, url_group, path, bot_hits, ..., error_bot_hits, ..., waste_score
-        for r in rows:
-            family = r[0]
-            bot_hits = int(r[3] or 0)
-            error_hits = int(r[6] or 0)
-            waste = int(r[-1] or 0)
-            prev = bot_waste.get(family, (0, 0))
-            bot_waste[family] = (prev[0] + waste, prev[1] + bot_hits)
-        for family, (total_waste, total_hits) in sorted(bot_waste.items(), key=lambda x: -x[1][0])[:3]:
-            if total_waste > 50:
-                recs_waste.append((
-                    "Rate-limit",
-                    f"{family} generates {total_waste:,} waste score across {total_hits:,} requests",
-                    f"User-agent: {family}\nCrawl-delay: 10",
-                ))
-        # Top error-causing paths
-        for r in rows[:5]:
-            path = r[2]
-            error_hits = int(r[6] or 0)
-            if error_hits > 100:
-                recs_waste.append((
-                    "Fix or remove",
-                    f"{path} causes {error_hits:,} bot errors",
-                    "Fix the underlying error or return 410 Gone",
-                ))
-        if recs_waste:
-            body += recommendations_section(recs_waste[:6])
+    # ── Crawl Waste tab ──
+    crawl_waste_content = ""
+    paths_waste = list_partitions("wasted_crawl_daily", date_from, date_to)
+    if not paths_waste:
+        crawl_waste_content = no_data_notice()
+    else:
+        score_col = "waste_score_strict" if strict else "waste_score"
+        w_clauses = []
+        if bot:
+            w_clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
+        if url_group:
+            w_clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+        if not include_assets:
+            w_clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+        w_where = ("WHERE " + " AND ".join(w_clauses)) if w_clauses else ""
 
-    return page("Wasted crawl", body)
+        sql_waste = f"""
+        SELECT bot_family, url_group, path,
+               SUM(bot_hits) AS bot_hits,
+               SUM(parameterized_bot_hits) AS parameterized_bot_hits,
+               SUM(redirect_bot_hits) AS redirect_bot_hits,
+               SUM(error_bot_hits) AS error_bot_hits,
+               SUM(resource_bot_hits) AS resource_bot_hits,
+               SUM(resource_parameterized_bot_hits) AS resource_parameterized_bot_hits,
+               SUM(resource_error_bot_hits) AS resource_error_bot_hits,
+               SUM({score_col}) AS waste_score
+        FROM t {w_where}
+        GROUP BY bot_family, url_group, path
+        ORDER BY waste_score DESC, bot_hits DESC LIMIT {int(limit)};
+        """
+        cols_w, rows_w = run_query(paths_waste, sql_waste)
+
+        trend_w_sql = f"""
+        SELECT date, SUM({score_col}) AS waste_score, SUM(bot_hits) AS bot_hits
+        FROM t {w_where} GROUP BY date ORDER BY date;
+        """
+        cols_wt, rows_wt = run_query(paths_waste, trend_w_sql)
+
+        crawl_waste_content += (
+            f"<p><a href='/export?report=wasted-crawl&from={date_from or ''}&to={date_to or ''}"
+            f"&strict={'true' if strict else 'false'}"
+            f"&include_assets={'true' if include_assets else 'false'}"
+            f"{'&bot=' + bot if bot else ''}"
+            f"{'&url_group=' + url_group if url_group else ''}"
+            f"&limit={int(limit)}'>Export CSV</a></p>"
+        )
+        crawl_waste_content += "<h2>Waste score trend (daily)</h2>"
+        crawl_waste_content += line_chart(rows_wt, cols_wt, x_col="date",
+                                          y_cols=["waste_score", "bot_hits"],
+                                          title="Waste score over time")
+        crawl_waste_content += "<h2>Top wasted paths</h2>"
+        crawl_waste_content += bar_chart(rows_w, cols_w, x_col="path", y_col="waste_score",
+                                         title="Highest waste score (top paths)")
+        crawl_waste_content += html_table(rows_w, cols_w)
+
+        # Wasted crawl recommendations
+        if rows_w:
+            recs_waste: List[Tuple[str, str, str]] = []
+            bot_waste: Dict[str, Tuple[int, int]] = {}
+            for r in rows_w:
+                family = r[0]
+                bot_hits = int(r[3] or 0)
+                error_hits = int(r[6] or 0)
+                waste = int(r[-1] or 0)
+                prev = bot_waste.get(family, (0, 0))
+                bot_waste[family] = (prev[0] + waste, prev[1] + bot_hits)
+            for family, (total_waste, total_hits) in sorted(bot_waste.items(), key=lambda x: -x[1][0])[:3]:
+                if total_waste > 50:
+                    recs_waste.append(("Rate-limit", f"{family} generates {total_waste:,} waste score across {total_hits:,} requests",
+                                       f"User-agent: {family}\nCrawl-delay: 10"))
+            for r in rows_w[:5]:
+                path_val = r[2]
+                error_hits = int(r[6] or 0)
+                if error_hits > 100:
+                    recs_waste.append(("Fix or remove", f"{path_val} causes {error_hits:,} bot errors",
+                                       "Fix the underlying error or return 410 Gone"))
+            if recs_waste:
+                crawl_waste_content += recommendations_section(recs_waste[:6])
+
+    # ── Resource Waste tab ──
+    resource_waste_content = ""
+    paths_rw = list_partitions("top_resource_waste_daily", date_from, date_to)
+    if not paths_rw:
+        resource_waste_content = no_data_notice()
+    else:
+        sql_rw = f"""
+        SELECT path, SUM(bot_hits) AS bot_hits,
+               SUM(resource_error_bot_hits) AS resource_error_bot_hits,
+               SUM(status_404_bot_hits) AS status_404_bot_hits,
+               SUM(waste_score_strict) AS waste_score_strict
+        FROM t GROUP BY path
+        ORDER BY waste_score_strict DESC, bot_hits DESC LIMIT {int(limit)};
+        """
+        cols_rw, rows_rw = run_query(paths_rw, sql_rw)
+        resource_waste_content += export_link("top-resource-waste", date_from, date_to, extra=f"&limit={int(limit)}")
+        resource_waste_content += bar_chart(rows_rw, cols_rw, x_col="path", y_col="waste_score_strict",
+                                            title="Top resource waste (strict)")
+        resource_waste_content += html_table(rows_rw, cols_rw)
+
+    tabs = tab_bar([("bot-families", "Bot Families"), ("ai-crawlers", "AI Crawlers"),
+                    ("crawl-waste", "Crawl Waste"), ("resource-waste", "Resource Waste")])
+    body += tabs
+    body += tab_panel("bot-families", bot_families_content)
+    body += tab_panel("ai-crawlers", ai_crawlers_content)
+    body += tab_panel("crawl-waste", crawl_waste_content)
+    body += tab_panel("resource-waste", resource_waste_content)
+    return page("Bots", body)
 
 
-@app.get("/reports/top-resource-waste", response_class=HTMLResponse)
-def top_resource_waste(
+# ── /reports/referer-flow ─────────────────────────────────────────────────
+
+@app.get("/reports/referer-flow", response_class=HTMLResponse)
+def referer_flow_report(
     date_from: Optional[str] = Query(None, alias="from"),
     date_to: Optional[str] = Query(None, alias="to"),
     limit: int = 500,
 ):
-    paths = list_partitions("top_resource_waste_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to, available_dates())
+    avail = available_dates()
+    body = date_filters_html(date_from, date_to, avail)
 
-    body += "<form method='get'>"
-    body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
-    body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
-    body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
-    body += " <button type='submit'>Apply</button></form>"
+    paths_rf = list_partitions("referer_flow_daily", date_from, date_to)
 
-    if not paths:
-        return page("Top resource waste", body + no_data_notice())
+    # ── Internal Navigation tab ──
+    internal_nav = ""
+    if not paths_rf:
+        internal_nav = no_data_notice()
+    else:
+        sql_nav = f"""
+        SELECT referer_path AS from_path, path AS to_path, SUM(hits) AS hits
+        FROM t
+        WHERE referer_type = 'Internal' AND referer_path IS NOT NULL
+        GROUP BY referer_path, path
+        ORDER BY hits DESC LIMIT {int(limit)};
+        """
+        cols_n, rows_n = run_query(paths_rf, sql_nav)
+        internal_nav += export_link("referer-flow-internal", date_from, date_to, extra=f"&limit={int(limit)}")
+        if rows_n:
+            internal_nav += "<h2>Top internal navigation paths (from → to)</h2>"
+            internal_nav += html_table(rows_n, cols_n, max_rows=min(int(limit), 500))
+        else:
+            internal_nav += no_data_notice()
 
-    sql = f"""
-    SELECT path,
-           SUM(bot_hits) AS bot_hits,
-           SUM(resource_error_bot_hits) AS resource_error_bot_hits,
-           SUM(status_404_bot_hits) AS status_404_bot_hits,
-           SUM(waste_score_strict) AS waste_score_strict
-    FROM t
-    GROUP BY path
-    ORDER BY waste_score_strict DESC, bot_hits DESC
-    LIMIT {int(limit)};
-    """
-    cols, rows = run_query(paths, sql)
+    # ── Entry Points tab ──
+    entry_points = ""
+    if not paths_rf:
+        entry_points = no_data_notice()
+    else:
+        sql_entry = f"""
+        SELECT referer_type, path AS landing_page, SUM(hits) AS hits
+        FROM t
+        GROUP BY referer_type, path
+        ORDER BY hits DESC LIMIT {int(limit)};
+        """
+        cols_e, rows_e = run_query(paths_rf, sql_entry)
+        entry_points += export_link("referer-flow-entry", date_from, date_to, extra=f"&limit={int(limit)}")
+        if rows_e:
+            entry_points += "<h2>Top landing pages by referer type</h2>"
+            entry_points += html_table(rows_e, cols_e, max_rows=min(int(limit), 500))
+        else:
+            entry_points += no_data_notice()
 
-    # Optional chart, same style as crawl-volume
-    chart_html = bar_chart(rows, cols, x_col="path", y_col="waste_score_strict", title="Top resource waste (strict)")
+    # ── Referer Types tab ──
+    referer_types = ""
+    if not paths_rf:
+        referer_types = no_data_notice()
+    else:
+        sql_types = """
+        SELECT referer_type, SUM(hits) AS hits
+        FROM t GROUP BY referer_type ORDER BY hits DESC;
+        """
+        cols_rt, rows_rt = run_query(paths_rf, sql_types)
+        referer_types += export_link("referer-flow-types", date_from, date_to)
+        if rows_rt:
+            referer_types += bar_chart(rows_rt, cols_rt, x_col="referer_type", y_col="hits",
+                                       title="Traffic by Referer Type")
+            referer_types += html_table(rows_rt, cols_rt)
+        else:
+            referer_types += no_data_notice()
 
-    body += f"<p><a href='/export?report=top-resource-waste&from={date_from or ''}&to={date_to or ''}&limit={int(limit)}'>Export CSV</a></p>"
-    body += chart_html
-    body += "<br>"
-    body += html_table(rows, cols)
-    return page("Top resource waste", body)
+    tabs = tab_bar([("internal-nav", "Internal Navigation"), ("entry-points", "Entry Points"),
+                    ("referer-types", "Referer Types")])
+    body += tabs
+    body += tab_panel("internal-nav", internal_nav)
+    body += tab_panel("entry-points", entry_points)
+    body += tab_panel("referer-types", referer_types)
+    return page("Referer Flow", body)
 
-@app.get("/reports/human-urls", response_class=HTMLResponse)
-def human_urls(
-    date_from: Optional[str] = Query(None, alias="from"),
-    date_to: Optional[str] = Query(None, alias="to"),
-    include_assets: bool = False,
-    limit: int = 500,
-):
-    paths = list_partitions("human_urls_daily", date_from, date_to)
-    body = date_filters_html(date_from, date_to, available_dates())
 
-    groups = distinct_values("human_urls_daily", "url_group", date_from, date_to)
-
-    body += "<form method='get'>"
-    body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
-    body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
-    checked_assets = "checked" if include_assets else ""
-    body += f" <label><input type='checkbox' name='include_assets' value='true' {checked_assets}> Include assets</label>"
-    body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
-    body += " <button type='submit'>Apply</button></form>"
-
-    if not paths:
-        return page("Human URLs", body + no_data_notice())
-
-    clauses = []
-    if not include_assets:
-        clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-
-    sql = f"""
-    SELECT url_group, path,
-        SUM(hits) AS hits
-    FROM t
-    {where}
-    GROUP BY url_group, path
-    ORDER BY hits DESC
-    LIMIT {int(limit)};
-    """
-    cols, rows = run_query(paths, sql)
-    body += export_link(
-        "human-urls", date_from, date_to,
-        extra=f"&include_assets={'true' if include_assets else 'false'}"
-              + f"&limit={int(limit)}"
-    )
-    chart_limit = CHART_BAR_LIMIT
-    body += bar_chart(rows[:chart_limit], cols, x_col="path", y_col="hits", title=f"Top {chart_limit} human URLs")
-    body += "<br>"
-    body += html_table(rows, cols)
-    return page("Human URLs", body)
-
-@app.get("/reports/bot-urls")
-def bot_urls_redirect(
-    bot: Optional[str] = None,
-    include_assets: bool = False,
-    limit: int = 500,
-    date_from: Optional[str] = Query(None, alias="from"),
-    date_to: Optional[str] = Query(None, alias="to"),
-):
-    """Redirects to the combined /reports/bots page, preserving all query params."""
-    parts = []
-    if bot:           parts.append(f"bot={bot}")
-    if date_from:     parts.append(f"from={date_from}")
-    if date_to:       parts.append(f"to={date_to}")
-    if include_assets: parts.append("include_assets=true")
-    parts.append(f"limit={limit}")
-    qs = "&".join(parts)
-    return RedirectResponse(url=f"/reports/bots?{qs}#urls", status_code=301)
-
-# ----------------------------
-# NEW: Generic UTM report
-# Requires new aggregate tables:
-#   - utm_sources_daily (date, utm_source, hits, hits_human, hits_bot)
-#   - utm_source_urls_daily (date, utm_source, url_group, path, hits[, hits_human, hits_bot])
-# ----------------------------
+# ── /reports/utm ──────────────────────────────────────────────────────────
 
 def utm_traffic_where(traffic: str) -> str:
-    """
-    traffic:
-      - all (default): use hits
-      - human: use hits_human
-      - bot: use hits_bot
-    We return the metric column name to use.
-    """
     t = (traffic or "all").strip().lower()
     if t == "human":
         return "hits_human"
@@ -2638,34 +2447,28 @@ def utm_report(
     date_from: Optional[str] = Query(None, alias="from"),
     date_to: Optional[str] = Query(None, alias="to"),
     utm_source: Optional[str] = None,
-    group_by: str = "path",        # url_group | path
-    traffic: str = "all",          # all | human | bot
+    group_by: str = "path",
+    traffic: str = "all",
     limit: int = 200,
 ):
-    # Table names for new generic UTM aggregates
     sources_table = "utm_sources_daily"
     urls_table = "utm_source_urls_daily"
-
     sources_paths = list_partitions(sources_table, date_from, date_to)
     urls_paths = list_partitions(urls_table, date_from, date_to)
-
-    body = date_filters_html(date_from, date_to, available_dates())
+    avail = available_dates()
+    body = date_filters_html(date_from, date_to, avail)
 
     if not sources_paths:
         body += (
             "<p><strong>UTM report not available yet.</strong></p>"
-            "<p>This page requires new aggregate tables: <code>utm_sources_daily</code> and <code>utm_source_urls_daily</code>.</p>"
+            "<p>This page requires aggregate tables: <code>utm_sources_daily</code> and <code>utm_source_urls_daily</code>.</p>"
         )
-        return page("UTM (all sources)", body)
+        return page("UTM Campaigns", body)
 
-    # selector options
     utm_options = distinct_values(sources_table, "utm_source", date_from, date_to)
-
-    # controls
     group_by = (group_by or "path").strip().lower()
     if group_by not in ("url_group", "path"):
         group_by = "path"
-
     traffic = (traffic or "all").strip().lower()
     if traffic not in ("all", "human", "bot"):
         traffic = "all"
@@ -2693,94 +2496,166 @@ def utm_report(
     </form>
     """
 
-    # export links
-    body += (
-        "<p>"
-        f"<a href='/export?report=utm-sources&from={date_from or ''}&to={date_to or ''}&traffic={traffic}&limit={int(limit)}'>Export sources CSV</a>"
-        " | "
-        f"<a href='/export?report=utm&from={date_from or ''}&to={date_to or ''}&utm_source={utm_source or ''}&traffic={traffic}'>Export daily CSV</a>"
-        " | "
-        f"<a href='/export?report=utm-urls&from={date_from or ''}&to={date_to or ''}&utm_source={utm_source or ''}&group_by={group_by}&traffic={traffic}&limit={int(limit)}'>Export URLs CSV</a>"
-        "</p>"
-    )
-
     metric = utm_traffic_where(traffic)
 
-    # Overview: top sources (always shown)
+    # ── Source Volume tab ──
+    source_vol = ""
     sql_top_sources = f"""
     SELECT utm_source, SUM({metric}) AS hits
-    FROM t
-    GROUP BY utm_source
-    ORDER BY hits DESC
-    LIMIT {int(limit)};
+    FROM t GROUP BY utm_source ORDER BY hits DESC LIMIT {int(limit)};
     """
     colsS, rowsS = run_query(sources_paths, sql_top_sources)
-    body += "<h2>Top UTM sources</h2>"
-    body += bar_chart(rowsS, colsS, x_col="utm_source", y_col="hits", title=f"Top UTM sources ({traffic})")
-    body += "<br>"
-    body += html_table(rowsS, colsS, max_rows=min(int(limit), 500))
+    source_vol += (
+        "<p>"
+        f"<a href='/export?report=utm-sources&from={date_from or ''}&to={date_to or ''}&traffic={traffic}&limit={int(limit)}'>Export sources CSV</a>"
+        "</p>"
+    )
+    source_vol += "<h2>Top UTM sources</h2>"
+    source_vol += bar_chart(rowsS, colsS, x_col="utm_source", y_col="hits",
+                            title=f"Top UTM sources ({traffic})")
+    source_vol += html_table(rowsS, colsS, max_rows=min(int(limit), 500))
 
-    # If no specific source chosen, stop here (overview-only)
+    if utm_source:
+        src_esc = sql_escape_string(utm_source)
+        sql_daily = f"""
+        SELECT date, SUM({metric}) AS hits
+        FROM t WHERE utm_source = '{src_esc}'
+        GROUP BY date ORDER BY date;
+        """
+        cols_ud, rows_ud = run_query(sources_paths, sql_daily)
+        source_vol += f"<h2>Daily hits — {utm_source}</h2>"
+        source_vol += (
+            f"<p><a href='/export?report=utm&from={date_from or ''}&to={date_to or ''}&utm_source={utm_source or ''}&traffic={traffic}'>Export daily CSV</a></p>"
+        )
+        source_vol += line_chart(rows_ud, cols_ud, x_col="date", y_cols=["hits"],
+                                 title=f"UTM {utm_source} — Daily hits ({traffic})")
+        source_vol += html_table(rows_ud, cols_ud)
+
+    # ── Landing Pages tab ──
+    landing = ""
     if not utm_source:
-        body += "<p>Select a UTM source above to see trends and landing pages.</p>"
-        return page("UTM (all sources)", body)
+        landing = "<p>Select a UTM source from the filter above to see landing pages.</p>"
+    elif not urls_paths:
+        landing = "<p><em>No URL distribution data (missing utm_source_urls_daily partitions).</em></p>"
+    else:
+        src_esc = sql_escape_string(utm_source)
+        dim = "url_group" if group_by == "url_group" else "path"
+        sql_urls = f"""
+        SELECT {dim} AS dimension, SUM({metric}) AS hits
+        FROM t WHERE utm_source = '{src_esc}' AND {dim} IS NOT NULL
+        GROUP BY {dim} ORDER BY hits DESC LIMIT {int(limit)};
+        """
+        cols_ul, rows_ul = run_query(urls_paths, sql_urls)
+        landing += (
+            f"<p><a href='/export?report=utm-urls&from={date_from or ''}&to={date_to or ''}&utm_source={utm_source or ''}&group_by={group_by}&traffic={traffic}&limit={int(limit)}'>Export URLs CSV</a></p>"
+        )
+        landing += f"<h2>Top landing {dim} — {utm_source}</h2>"
+        landing += bar_chart(rows_ul, cols_ul, x_col="dimension", y_col="hits",
+                             title=f"Top landing {dim} — {utm_source} ({traffic})")
+        landing += html_table(rows_ul, cols_ul, max_rows=min(int(limit), 500))
 
-    src_esc = sql_escape_string(utm_source)
-
-    # Trend: selected source over time
-    sql_daily = f"""
-    SELECT date, SUM({metric}) AS hits
-    FROM t
-    WHERE utm_source = '{src_esc}'
-    GROUP BY date
-    ORDER BY date;
-    """
-    cols1, rows1 = run_query(sources_paths, sql_daily)
-
-    body += "<h2>Daily hits</h2>"
-    body += line_chart(rows1, cols1, x_col="date", y_cols=["hits"], title=f"UTM {utm_source} — Daily hits ({traffic})")
-    body += "<br>"
-    body += html_table(rows1, cols1)
-
-    # Distribution: landing pages / groups for selected source
-    if not urls_paths:
-        body += "<h2>Top landing</h2>"
-        body += "<p><em>No URL distribution data (missing utm_source_urls_daily partitions).</em></p>"
-        return page("UTM (all sources)", body)
-
-    dim = "url_group" if group_by == "url_group" else "path"
-
-    # Some implementations may only have 'hits'. We default to SUM(hits) if the chosen metric isn't present.
-    # (If you add hits_human/hits_bot to the urls table, this will work as-is.)
-    sql_urls = f"""
-    SELECT {dim} AS dimension, SUM({metric}) AS hits
-    FROM t
-    WHERE utm_source = '{src_esc}'
-      AND {dim} IS NOT NULL
-    GROUP BY {dim}
-    ORDER BY hits DESC
-    LIMIT {int(limit)};
-    """
-    cols2, rows2 = run_query(urls_paths, sql_urls)
-
-    body += f"<h2>Top landing {dim}</h2>"
-    body += bar_chart(rows2, cols2, x_col="dimension", y_col="hits", title=f"Top landing {dim} — {utm_source} ({traffic})")
-    body += "<br>"
-    body += html_table(rows2, cols2, max_rows=min(int(limit), 500))
-
-    return page("UTM (all sources)", body)
+    tabs = tab_bar([("source-volume", "Source Volume"), ("landing-pages", "Landing Pages")])
+    body += tabs
+    body += tab_panel("source-volume", source_vol)
+    body += tab_panel("landing-pages", landing)
+    return page("UTM Campaigns", body)
 
 
-# Legacy convenience: redirect old report to new one
-@app.get("/reports/utm-chatgpt", response_class=HTMLResponse)
-def utm_chatgpt(
-    date_from: Optional[str] = Query(None, alias="from"),
-    date_to: Optional[str] = Query(None, alias="to"),
-):
-    # Keep legacy URL but send to the generic UTM report
-    target = f"/reports/utm?from={date_from or ''}&to={date_to or ''}&utm_source=chatgpt.com"
-    return RedirectResponse(url=target, status_code=302)
+# ── /reports/gsc (placeholder) ────────────────────────────────────────────
 
+@app.get("/reports/gsc", response_class=HTMLResponse)
+def gsc_report():
+    body = (
+        "<div class='empty-state'>"
+        "<h3>Google Search Console</h3>"
+        "<p>Connect Google Search Console to see crawl-to-search performance data.</p>"
+        "<p>This report will show crawl efficiency analysis, including pages with high crawl frequency "
+        "but zero impressions, pages with impressions but no recent crawl, and crawl frequency vs. position correlations.</p>"
+        "<a href='/settings/gsc'>Connect Search Console</a>"
+        "</div>"
+    )
+    return page("Search Console", body)
+
+
+# ── Legacy route redirects ────────────────────────────────────────────────
+
+@app.get("/reports/crawl-volume")
+def _redirect_crawl_volume(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    qs = "&".join(f"{k}={v}" for k, v in [("from", date_from), ("to", date_to)] if v)
+    return RedirectResponse(url=f"/reports/traffic?tab=overview{'&' + qs if qs else ''}", status_code=301)
+
+@app.get("/reports/status-over-time")
+def _redirect_status_over_time(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    qs = "&".join(f"{k}={v}" for k, v in [("from", date_from), ("to", date_to)] if v)
+    return RedirectResponse(url=f"/reports/status-codes?tab=trends{'&' + qs if qs else ''}", status_code=301)
+
+@app.get("/reports/top-urls")
+def _redirect_top_urls(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    qs = "&".join(f"{k}={v}" for k, v in [("from", date_from), ("to", date_to)] if v)
+    return RedirectResponse(url=f"/reports/content?tab=top-urls{'&' + qs if qs else ''}", status_code=301)
+
+@app.get("/reports/top-404")
+def _redirect_top_404(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    qs = "&".join(f"{k}={v}" for k, v in [("from", date_from), ("to", date_to)] if v)
+    return RedirectResponse(url=f"/reports/status-codes?tab=client-errors{'&' + qs if qs else ''}", status_code=301)
+
+@app.get("/reports/top-4xx")
+def _redirect_top_4xx(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    qs = "&".join(f"{k}={v}" for k, v in [("from", date_from), ("to", date_to)] if v)
+    return RedirectResponse(url=f"/reports/status-codes?tab=client-errors{'&' + qs if qs else ''}", status_code=301)
+
+@app.get("/reports/top-5xx")
+def _redirect_top_5xx(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    qs = "&".join(f"{k}={v}" for k, v in [("from", date_from), ("to", date_to)] if v)
+    return RedirectResponse(url=f"/reports/status-codes?tab=server-errors{'&' + qs if qs else ''}", status_code=301)
+
+@app.get("/reports/top-3xx")
+def _redirect_top_3xx(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    qs = "&".join(f"{k}={v}" for k, v in [("from", date_from), ("to", date_to)] if v)
+    return RedirectResponse(url=f"/reports/status-codes?tab=redirects{'&' + qs if qs else ''}", status_code=301)
+
+@app.get("/reports/url-bytes")
+def _redirect_url_bytes(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    qs = "&".join(f"{k}={v}" for k, v in [("from", date_from), ("to", date_to)] if v)
+    return RedirectResponse(url=f"/reports/content?tab=page-size{'&' + qs if qs else ''}", status_code=301)
+
+@app.get("/reports/url-groups")
+def _redirect_url_groups(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    qs = "&".join(f"{k}={v}" for k, v in [("from", date_from), ("to", date_to)] if v)
+    return RedirectResponse(url=f"/reports/content?tab=url-groups{'&' + qs if qs else ''}", status_code=301)
+
+@app.get("/reports/locale-groups")
+def _redirect_locale_groups(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    qs = "&".join(f"{k}={v}" for k, v in [("from", date_from), ("to", date_to)] if v)
+    return RedirectResponse(url=f"/reports/locales?tab=heatmap{'&' + qs if qs else ''}", status_code=301)
+
+@app.get("/reports/wasted-crawl")
+def _redirect_wasted_crawl(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    qs = "&".join(f"{k}={v}" for k, v in [("from", date_from), ("to", date_to)] if v)
+    return RedirectResponse(url=f"/reports/bots?tab=crawl-waste{'&' + qs if qs else ''}", status_code=301)
+
+@app.get("/reports/top-resource-waste")
+def _redirect_top_resource_waste(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    qs = "&".join(f"{k}={v}" for k, v in [("from", date_from), ("to", date_to)] if v)
+    return RedirectResponse(url=f"/reports/bots?tab=resource-waste{'&' + qs if qs else ''}", status_code=301)
+
+@app.get("/reports/human-urls")
+def _redirect_human_urls(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    qs = "&".join(f"{k}={v}" for k, v in [("from", date_from), ("to", date_to)] if v)
+    return RedirectResponse(url=f"/reports/content?tab=human-paths{'&' + qs if qs else ''}", status_code=301)
+
+@app.get("/reports/bot-urls")
+def _redirect_bot_urls(bot: Optional[str] = None, date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    parts = []
+    if bot: parts.append(f"bot={bot}")
+    if date_from: parts.append(f"from={date_from}")
+    if date_to: parts.append(f"to={date_to}")
+    parts.append("tab=bot-families")
+    return RedirectResponse(url=f"/reports/bots?{'&'.join(parts)}#urls", status_code=301)
+
+@app.get("/reports/utm-chatgpt")
+def _redirect_utm_chatgpt(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    return RedirectResponse(url=f"/reports/utm?from={date_from or ''}&to={date_to or ''}&utm_source=chatgpt.com", status_code=302)
 
 # ----------------------------
 # Guided Insights page
@@ -3261,8 +3136,56 @@ def export(
         """
         return stream_csv(sql, paths, f"utm_{utm_source}_{dim}.csv")
 
+    if report == "hourly":
+        paths = list_partitions("hourly", date_from, date_to)
+        sql = """
+        SELECT hour, SUM(hits) AS hits, SUM(hits_bot) AS hits_bot, SUM(hits_human) AS hits_human
+        FROM t GROUP BY hour ORDER BY hour;
+        """
+        return stream_csv(sql, paths, "hourly.csv")
+
+    if report == "human-urls":
+        paths = list_partitions("human_urls_daily", date_from, date_to)
+        clauses = []
+        if not include_assets:
+            clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = f"""
+        SELECT url_group, path, SUM(hits) AS hits
+        FROM t {where}
+        GROUP BY url_group, path ORDER BY hits DESC LIMIT {int(limit)};
+        """
+        return stream_csv(sql, paths, "human_urls.csv")
+
+    if report == "referer-flow-internal":
+        paths = list_partitions("referer_flow_daily", date_from, date_to)
+        sql = f"""
+        SELECT referer_path AS from_path, path AS to_path, SUM(hits) AS hits
+        FROM t WHERE referer_type = 'Internal' AND referer_path IS NOT NULL
+        GROUP BY referer_path, path ORDER BY hits DESC LIMIT {int(limit)};
+        """
+        return stream_csv(sql, paths, "referer_flow_internal.csv")
+
+    if report == "referer-flow-entry":
+        paths = list_partitions("referer_flow_daily", date_from, date_to)
+        sql = f"""
+        SELECT referer_type, path AS landing_page, SUM(hits) AS hits
+        FROM t GROUP BY referer_type, path ORDER BY hits DESC LIMIT {int(limit)};
+        """
+        return stream_csv(sql, paths, "referer_flow_entry.csv")
+
+    if report == "referer-flow-types":
+        paths = list_partitions("referer_flow_daily", date_from, date_to)
+        sql = """
+        SELECT referer_type, SUM(hits) AS hits
+        FROM t GROUP BY referer_type ORDER BY hits DESC;
+        """
+        return stream_csv(sql, paths, "referer_flow_types.csv")
+
     return PlainTextResponse(
-        "Unknown report. Try report=daily, daily-status, locales, url-groups, locale-groups, top-urls, top-3xx, top-4xx, top-5xx, url-bytes, bots, wasted-crawl, top-resource-waste, bot-urls, utm-sources, utm, utm-urls",
+        "Unknown report. Try report=daily, daily-status, hourly, locales, url-groups, locale-groups, "
+        "top-urls, top-3xx, top-4xx, top-5xx, url-bytes, bots, wasted-crawl, top-resource-waste, "
+        "bot-urls, human-urls, utm-sources, utm, utm-urls, referer-flow-internal, referer-flow-entry, referer-flow-types",
         status_code=400,
     )
 
