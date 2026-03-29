@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,8 +36,90 @@ _tasks: Dict[str, Dict[str, Any]] = {}
 
 def _new_task(kind: str) -> str:
     tid = uuid.uuid4().hex[:12]
-    _tasks[tid] = {"kind": kind, "status": "running", "detail": "", "pid": None}
+    _tasks[tid] = {
+        "kind": kind, "status": "running", "detail": "", "pid": None,
+        "progress_current": 0, "progress_total": 0,
+        "progress_pct": 0, "progress_message": "",
+    }
     return tid
+
+
+# -- Regexes for parsing subprocess progress output -------------------------
+_RE_AFFECTED = re.compile(r"^Affected dates:\s*(.+)$")
+_RE_REBUILDING = re.compile(r"^Rebuilding (\d+) date")
+_RE_DATE_REBUILD = re.compile(r"^\[DATE (\S+)\] Rebuilding parsed partition")
+_RE_DATE_PARSED = re.compile(r"^\[DATE (\S+)\] Parsed rows: (\d+)")
+_RE_DATE_AGG = re.compile(r"^\[DATE (\S+)\] Aggregates done")
+_RE_COMPLETE = re.compile(r"^(?:Ingest|Rebuild) complete\.")
+
+
+def _parse_progress(t_id: str, line: str):
+    """Extract structured progress info from a single output line."""
+    t = _tasks[t_id]
+    stripped = line.strip()
+
+    m = _RE_AFFECTED.match(stripped)
+    if m:
+        dates = [d.strip() for d in m.group(1).split(",") if d.strip()]
+        t["progress_total"] = len(dates)
+        t["progress_message"] = f"Processing {len(dates)} date(s)\u2026"
+        return
+
+    m = _RE_REBUILDING.match(stripped)
+    if m:
+        t["progress_total"] = int(m.group(1))
+        t["progress_message"] = f"Rebuilding {m.group(1)} date(s)\u2026"
+        return
+
+    m = _RE_DATE_REBUILD.match(stripped)
+    if m:
+        t["progress_message"] = f"Parsing {m.group(1)}\u2026"
+        return
+
+    m = _RE_DATE_PARSED.match(stripped)
+    if m:
+        t["progress_message"] = f"Aggregating {m.group(1)}\u2026 ({m.group(2)} rows parsed)"
+        return
+
+    m = _RE_DATE_AGG.match(stripped)
+    if m:
+        t["progress_current"] += 1
+        total = t["progress_total"]
+        if total > 0:
+            t["progress_pct"] = int(100 * t["progress_current"] / total)
+        t["progress_message"] = f"Completed {m.group(1)} ({t['progress_current']}/{total})"
+        return
+
+    if _RE_COMPLETE.match(stripped):
+        t["progress_pct"] = 100
+        t["progress_message"] = stripped
+
+
+def _watch_process(t_id: str, p: subprocess.Popen):
+    """Read subprocess stdout line-by-line, updating task detail incrementally."""
+    lines: list[str] = []
+    for raw_line in p.stdout:
+        line = raw_line.rstrip("\n")
+        lines.append(line)
+        _tasks[t_id]["detail"] = "\n".join(lines)
+        _parse_progress(t_id, line)
+    p.wait()
+    _tasks[t_id]["status"] = "done" if p.returncode == 0 else "error"
+
+
+def _task_status_response(task_id: str):
+    t = _tasks.get(task_id)
+    if not t:
+        return None
+    return {
+        "task_id": task_id,
+        "status": t["status"],
+        "detail": t["detail"],
+        "progress_current": t["progress_current"],
+        "progress_total": t["progress_total"],
+        "progress_pct": t["progress_pct"],
+        "progress_message": t["progress_message"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -244,20 +327,14 @@ async def api_trigger_ingest(request: Request):
     cmd = [sys.executable, str(ROOT / "scripts" / "ingest.py")]
     if file_list:
         cmd += file_list
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            cwd=str(ROOT),
+            cwd=str(ROOT), env=env,
         )
         _tasks[tid]["pid"] = proc.pid
-        import threading
-
-        def _watch(t_id, p):
-            out = p.communicate()[0] or ""
-            _tasks[t_id]["detail"] = out
-            _tasks[t_id]["status"] = "done" if p.returncode == 0 else "error"
-
-        threading.Thread(target=_watch, args=(tid, proc), daemon=True).start()
+        threading.Thread(target=_watch_process, args=(tid, proc), daemon=True).start()
     except Exception as e:
         _tasks[tid]["status"] = "error"
         _tasks[tid]["detail"] = str(e)
@@ -266,10 +343,10 @@ async def api_trigger_ingest(request: Request):
 
 @router.get("/api/settings/ingest/{task_id}/status")
 def api_ingest_status(task_id: str):
-    t = _tasks.get(task_id)
-    if not t:
+    resp = _task_status_response(task_id)
+    if not resp:
         return JSONResponse({"error": "Unknown task"}, status_code=404)
-    return {"task_id": task_id, "status": t["status"], "detail": t["detail"]}
+    return resp
 
 
 @router.post("/api/settings/rebuild")
@@ -283,20 +360,14 @@ async def api_trigger_rebuild(request: Request):
         cmd += ["--from", from_date]
     if to_date:
         cmd += ["--to", to_date]
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            cwd=str(ROOT),
+            cwd=str(ROOT), env=env,
         )
         _tasks[tid]["pid"] = proc.pid
-        import threading
-
-        def _watch(t_id, p):
-            out = p.communicate()[0] or ""
-            _tasks[t_id]["detail"] = out
-            _tasks[t_id]["status"] = "done" if p.returncode == 0 else "error"
-
-        threading.Thread(target=_watch, args=(tid, proc), daemon=True).start()
+        threading.Thread(target=_watch_process, args=(tid, proc), daemon=True).start()
     except Exception as e:
         _tasks[tid]["status"] = "error"
         _tasks[tid]["detail"] = str(e)
@@ -305,10 +376,10 @@ async def api_trigger_rebuild(request: Request):
 
 @router.get("/api/settings/rebuild/{task_id}/status")
 def api_rebuild_status(task_id: str):
-    t = _tasks.get(task_id)
-    if not t:
+    resp = _task_status_response(task_id)
+    if not resp:
         return JSONResponse({"error": "Unknown task"}, status_code=404)
-    return {"task_id": task_id, "status": t["status"], "detail": t["detail"]}
+    return resp
 
 
 # ===================================================================
@@ -970,22 +1041,52 @@ def settings_logs():
         }}
     }}
 
+    function escHtml(s) {{ const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }}
+
     function pollTask(url, el) {{
+        el.innerHTML = `
+            <div style="margin:8px 0;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                    <span class="progress-msg" style="font-size:12px;color:#475569;">Initializing\u2026</span>
+                    <span class="progress-pct" style="font-size:12px;font-weight:600;color:#3b82f6;"></span>
+                </div>
+                <div style="width:100%;height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden;">
+                    <div class="progress-bar" style="height:100%;width:0%;background:#3b82f6;border-radius:4px;transition:width 0.3s ease;"></div>
+                </div>
+                <div class="progress-detail" style="margin-top:6px;font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
+            </div>
+        `;
+        const bar = el.querySelector('.progress-bar');
+        const msg = el.querySelector('.progress-msg');
+        const pctEl = el.querySelector('.progress-pct');
+        const detail = el.querySelector('.progress-detail');
+
         const iv = setInterval(async () => {{
             try {{
                 const res = await fetch(url);
                 const d = await res.json();
                 if (d.status === 'running') {{
+                    const p = d.progress_pct || 0;
+                    bar.style.width = p + '%';
+                    pctEl.textContent = d.progress_total > 0 ? (p + '%') : '';
+                    msg.textContent = d.progress_message || 'Running\u2026';
                     const lines = (d.detail || '').trim().split('\\n');
-                    el.textContent = 'Running... ' + (lines[lines.length - 1] || '');
+                    const last = lines[lines.length - 1] || '';
+                    if (last) detail.textContent = last;
                 }} else {{
                     clearInterval(iv);
                     const ok = d.status === 'done';
-                    el.innerHTML = (ok
-                        ? '<span style="color:#16a34a;font-weight:600;">Completed.</span>'
-                        : '<span style="color:#dc2626;font-weight:600;">Error.</span>')
-                        + '<pre style="margin-top:6px;font-size:11px;max-height:200px;overflow:auto;background:#f8fafc;padding:8px;border-radius:4px;border:1px solid #e2e8f0;">'
-                        + escHtml(d.detail || '') + '</pre>';
+                    bar.style.width = '100%';
+                    bar.style.background = ok ? '#16a34a' : '#dc2626';
+                    pctEl.textContent = '';
+                    msg.innerHTML = ok
+                        ? '<span style="color:#16a34a;font-weight:600;">Completed</span>'
+                        : '<span style="color:#dc2626;font-weight:600;">Error</span>';
+                    detail.remove();
+                    const pre = document.createElement('pre');
+                    pre.style.cssText = 'margin-top:6px;font-size:11px;max-height:200px;overflow:auto;background:#f8fafc;padding:8px;border-radius:4px;border:1px solid #e2e8f0;';
+                    pre.textContent = d.detail || '';
+                    el.appendChild(pre);
                     setButtonsDisabled(false);
                     activeTask = null;
                 }}
@@ -996,8 +1097,6 @@ def settings_logs():
             }}
         }}, 1500);
     }}
-
-    function escHtml(s) {{ const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }}
     </script>
     """
     return _settings_page("Log File Manager", body)
@@ -1187,20 +1286,14 @@ async def api_gsc_sync(request: Request):
         cmd += ["--from", from_date, "--to", to_date]
     # else: daily (default)
 
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            cwd=str(ROOT),
+            cwd=str(ROOT), env=env,
         )
         _tasks[tid]["pid"] = proc.pid
-        import threading
-
-        def _watch(t_id, p):
-            out = p.communicate()[0] or ""
-            _tasks[t_id]["detail"] = out
-            _tasks[t_id]["status"] = "done" if p.returncode == 0 else "error"
-
-        threading.Thread(target=_watch, args=(tid, proc), daemon=True).start()
+        threading.Thread(target=_watch_process, args=(tid, proc), daemon=True).start()
     except Exception as e:
         _tasks[tid]["status"] = "error"
         _tasks[tid]["detail"] = str(e)
@@ -1209,10 +1302,10 @@ async def api_gsc_sync(request: Request):
 
 @router.get("/api/settings/gsc/sync/{task_id}/status")
 def api_gsc_sync_status(task_id: str):
-    t = _tasks.get(task_id)
-    if not t:
+    resp = _task_status_response(task_id)
+    if not resp:
         return JSONResponse({"error": "Unknown task"}, status_code=404)
-    return {"task_id": task_id, "status": t["status"], "detail": t["detail"]}
+    return resp
 
 
 @router.get("/api/settings/gsc/auth-url")
