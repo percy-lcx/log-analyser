@@ -344,8 +344,6 @@ def _try_build_native_parser() -> Optional[Path]:
     """Compile the Go parser from source if Go is available. Returns binary path or None."""
     parser_dir = ROOT / "parser"
     candidate = parser_dir / "log-parser"
-    if candidate.exists() and os.access(candidate, os.X_OK):
-        return candidate
     if not (parser_dir / "main.go").exists():
         return None
     go_bin = _find_go_binary()
@@ -386,9 +384,16 @@ def _try_build_native_parser() -> Optional[Path]:
 
 def _find_native_parser() -> Optional[Path]:
     """Return the path to the native log-parser binary, compiling it if needed."""
-    candidate = ROOT / "parser" / "log-parser"
+    parser_dir = ROOT / "parser"
+    candidate = parser_dir / "log-parser"
     if candidate.exists() and os.access(candidate, os.X_OK):
-        return candidate
+        # Recompile if source is newer than binary.
+        source = parser_dir / "main.go"
+        if source.exists() and source.stat().st_mtime > candidate.stat().st_mtime:
+            print("[parser] Source newer than binary — recompiling...", flush=True)
+            candidate.unlink()
+        else:
+            return candidate
     return _try_build_native_parser()
 
 
