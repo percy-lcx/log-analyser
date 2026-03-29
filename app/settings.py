@@ -345,6 +345,7 @@ def settings_hub():
         ("Locales", "/settings/locales", "Manage locale whitelist and BCP 47 fallback"),
         ("Sections", "/settings/sections", "Define section mappings for content classification"),
         ("Log Files", "/settings/logs", "Browse log files, trigger ingestion and rebuild"),
+        ("Search Console", "/settings/gsc", "Connect Google Search Console for search performance data"),
     ]
     html = "<div class='report-grid'>"
     for name, url, desc in cards:
@@ -1000,3 +1001,517 @@ def settings_logs():
     </script>
     """
     return _settings_page("Log File Manager", body)
+
+
+# ---------------------------------------------------------------------------
+# GSC API endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/api/settings/gsc/status")
+def api_gsc_status():
+    """Return GSC connection status, sync stats, and recent sync log."""
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect(MANIFEST_DB)
+    conn.row_factory = _sqlite3.Row
+    cur = conn.cursor()
+
+    # Ensure tables exist
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS gsc_tokens (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            access_token TEXT, refresh_token TEXT, expiry TEXT,
+            property_url TEXT, token_uri TEXT, client_id TEXT, client_secret TEXT
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS gsc_sync_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sync_date TEXT NOT NULL, status TEXT NOT NULL,
+            records_pulled INTEGER DEFAULT 0, error_message TEXT,
+            started_at TEXT NOT NULL, completed_at TEXT
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS gsc_sync_state (
+            date TEXT PRIMARY KEY, status TEXT NOT NULL,
+            records INTEGER DEFAULT 0, synced_at TEXT
+        )
+    """)
+    conn.commit()
+
+    # Check connection
+    cur.execute("SELECT property_url FROM gsc_tokens WHERE id = 1")
+    token_row = cur.fetchone()
+    connected = bool(token_row and token_row["property_url"])
+    property_url = token_row["property_url"] if connected else None
+
+    # Sync stats
+    cur.execute("SELECT COUNT(*) AS cnt, COALESCE(SUM(records), 0) AS total FROM gsc_sync_state WHERE status = 'done'")
+    stats_row = cur.fetchone()
+    dates_synced = stats_row["cnt"]
+    total_records = stats_row["total"]
+
+    # Last sync time
+    cur.execute("SELECT MAX(synced_at) AS last FROM gsc_sync_state WHERE status = 'done'")
+    last_row = cur.fetchone()
+    last_sync = last_row["last"] if last_row else None
+
+    # Recent sync log
+    cur.execute("SELECT * FROM gsc_sync_log ORDER BY id DESC LIMIT 10")
+    log_rows = [dict(r) for r in cur.fetchall()]
+
+    conn.close()
+
+    return {
+        "connected": connected,
+        "property_url": property_url,
+        "dates_synced": dates_synced,
+        "total_records": total_records,
+        "last_sync": last_sync,
+        "sync_log": log_rows,
+    }
+
+
+@router.post("/api/settings/gsc/auth")
+async def api_gsc_auth(request: Request):
+    """Step 2 of auth flow: exchange authorization code for tokens."""
+    body = await request.json()
+    auth_code = body.get("code", "").strip()
+    if not auth_code:
+        return JSONResponse({"error": "Authorization code required"}, status_code=400)
+
+    creds_path = STATE_DIR / "gsc_credentials.json"
+    if not creds_path.exists():
+        return JSONResponse({
+            "error": f"OAuth credentials file not found at {creds_path}. "
+                     "Download it from Google Cloud Console."
+        }, status_code=400)
+
+    try:
+        from google_auth_oauthlib.flow import InstalledAppFlow
+
+        flow = InstalledAppFlow.from_client_secrets_file(
+            str(creds_path),
+            scopes=["https://www.googleapis.com/auth/webmasters.readonly"],
+            redirect_uri="urn:ietf:wg:oauth:2.0:oob"
+        )
+        flow.fetch_token(code=auth_code)
+        creds = flow.credentials
+
+        # List properties
+        from googleapiclient.discovery import build as build_service
+        service = build_service("searchconsole", "v1", credentials=creds)
+        sites = service.sites().list().execute()
+        site_list = sites.get("siteEntry", [])
+
+        # Read client config
+        with open(creds_path) as f:
+            client_config = json.load(f)
+        client_info = client_config.get("installed") or client_config.get("web", {})
+
+        return {
+            "properties": [
+                {"url": s["siteUrl"], "permission": s.get("permissionLevel", "")}
+                for s in site_list
+            ],
+            "token": creds.token,
+            "refresh_token": creds.refresh_token,
+            "expiry": creds.expiry.isoformat() if creds.expiry else "",
+            "token_uri": client_info.get("token_uri", "https://oauth2.googleapis.com/token"),
+            "client_id": client_info.get("client_id", ""),
+            "client_secret": client_info.get("client_secret", ""),
+        }
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+@router.post("/api/settings/gsc/select-property")
+async def api_gsc_select_property(request: Request):
+    """Step 3: save tokens with the selected property."""
+    body = await request.json()
+    required = ["property_url", "token", "refresh_token", "token_uri",
+                "client_id", "client_secret"]
+    for key in required:
+        if not body.get(key):
+            return JSONResponse({"error": f"Missing: {key}"}, status_code=400)
+
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect(MANIFEST_DB)
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO gsc_tokens (id, access_token, refresh_token, expiry,
+                                property_url, token_uri, client_id, client_secret)
+        VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            access_token=excluded.access_token,
+            refresh_token=excluded.refresh_token,
+            expiry=excluded.expiry,
+            property_url=excluded.property_url,
+            token_uri=excluded.token_uri,
+            client_id=excluded.client_id,
+            client_secret=excluded.client_secret
+    """, (body["token"], body["refresh_token"], body.get("expiry", ""),
+          body["property_url"], body["token_uri"],
+          body["client_id"], body["client_secret"]))
+    conn.commit()
+    conn.close()
+    return {"ok": True, "property_url": body["property_url"]}
+
+
+@router.post("/api/settings/gsc/disconnect")
+def api_gsc_disconnect():
+    """Remove stored GSC tokens."""
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect(MANIFEST_DB)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM gsc_tokens WHERE id = 1")
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+
+@router.post("/api/settings/gsc/sync")
+async def api_gsc_sync(request: Request):
+    """Trigger GSC sync as a background subprocess."""
+    body = await request.json() if (await request.body()) else {}
+    mode = body.get("mode", "daily")  # daily | backfill | range
+    from_date = body.get("from_date", "")
+    to_date = body.get("to_date", "")
+
+    tid = _new_task("gsc_sync")
+    cmd = [sys.executable, str(ROOT / "scripts" / "gsc_sync.py")]
+
+    if mode == "backfill":
+        cmd.append("--backfill")
+    elif mode == "range" and from_date and to_date:
+        cmd += ["--from", from_date, "--to", to_date]
+    # else: daily (default)
+
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            cwd=str(ROOT),
+        )
+        _tasks[tid]["pid"] = proc.pid
+        import threading
+
+        def _watch(t_id, p):
+            out = p.communicate()[0] or ""
+            _tasks[t_id]["detail"] = out
+            _tasks[t_id]["status"] = "done" if p.returncode == 0 else "error"
+
+        threading.Thread(target=_watch, args=(tid, proc), daemon=True).start()
+    except Exception as e:
+        _tasks[tid]["status"] = "error"
+        _tasks[tid]["detail"] = str(e)
+    return {"task_id": tid}
+
+
+@router.get("/api/settings/gsc/sync/{task_id}/status")
+def api_gsc_sync_status(task_id: str):
+    t = _tasks.get(task_id)
+    if not t:
+        return JSONResponse({"error": "Unknown task"}, status_code=404)
+    return {"task_id": task_id, "status": t["status"], "detail": t["detail"]}
+
+
+@router.get("/api/settings/gsc/auth-url")
+def api_gsc_auth_url():
+    """Generate the OAuth authorization URL for the user to visit."""
+    creds_path = STATE_DIR / "gsc_credentials.json"
+    if not creds_path.exists():
+        return JSONResponse({
+            "error": f"OAuth credentials file not found at {creds_path}"
+        }, status_code=400)
+
+    try:
+        from google_auth_oauthlib.flow import InstalledAppFlow
+
+        flow = InstalledAppFlow.from_client_secrets_file(
+            str(creds_path),
+            scopes=["https://www.googleapis.com/auth/webmasters.readonly"],
+            redirect_uri="urn:ietf:wg:oauth:2.0:oob"
+        )
+        auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+        return {"auth_url": auth_url}
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+
+
+# ---------------------------------------------------------------------------
+# /settings/gsc — GSC connection and sync management page
+# ---------------------------------------------------------------------------
+
+@router.get("/settings/gsc", response_class=HTMLResponse)
+def settings_gsc():
+    body = f"""
+    <p style='margin-bottom:12px;'><a href='/settings' style='color:#3b82f6;text-decoration:none;font-size:13px;'>&larr; Back to Settings</a></p>
+
+    <div id='gscStatus' class='card' style='margin-bottom:16px;'>
+        <h2 style='margin-bottom:12px;'>Connection Status</h2>
+        <div id='statusContent'>Loading...</div>
+    </div>
+
+    <div id='setupSection' class='card' style='margin-bottom:16px;display:none;'>
+        <h2 style='margin-bottom:12px;'>Connect Google Search Console</h2>
+        <div style='font-size:13px;color:#64748b;line-height:1.6;margin-bottom:16px;'>
+            <p style='margin-bottom:8px;'><strong>Setup instructions:</strong></p>
+            <ol style='padding-left:20px;margin-bottom:12px;'>
+                <li>Go to <a href='https://console.cloud.google.com/apis/credentials' target='_blank' style='color:#3b82f6;'>Google Cloud Console</a></li>
+                <li>Create or select a project</li>
+                <li>Enable the <strong>Google Search Console API</strong></li>
+                <li>Create an <strong>OAuth 2.0 Client ID</strong> (Desktop application type)</li>
+                <li>Download the JSON credentials file</li>
+                <li>Save it as <code style='background:#f1f5f9;padding:2px 6px;border-radius:3px;'>state/gsc_credentials.json</code></li>
+            </ol>
+        </div>
+        <div id='authFlowSection'>
+            <button class='btn-sm btn-blue' onclick='startAuth()' id='btnStartAuth'>Get Authorization URL</button>
+            <div id='authUrlBox' style='display:none;margin-top:12px;'>
+                <p style='font-size:13px;margin-bottom:6px;'>Open this URL in your browser and authorize access:</p>
+                <input id='authUrl' readonly style='width:100%;padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px;background:#f8fafc;margin-bottom:10px;'>
+                <p style='font-size:13px;margin-bottom:6px;'>Paste the authorization code here:</p>
+                <div style='display:flex;gap:8px;'>
+                    <input id='authCode' placeholder='Authorization code' style='flex:1;padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;'>
+                    <button class='btn-sm btn-blue' onclick='exchangeCode()'>Connect</button>
+                </div>
+            </div>
+        </div>
+        <div id='propertySelect' style='display:none;margin-top:12px;'>
+            <p style='font-size:13px;margin-bottom:6px;'><strong>Select a Search Console property:</strong></p>
+            <div id='propertyList'></div>
+        </div>
+    </div>
+
+    <div id='connectedSection' style='display:none;'>
+        <div class='card' style='margin-bottom:16px;'>
+            <h2 style='margin-bottom:12px;'>Sync Controls</h2>
+            <div style='display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;'>
+                <button class='btn-sm btn-blue' onclick='triggerSync("daily")' id='btnDaily'>Sync Now (Last 3 Days)</button>
+                <button class='btn-sm' onclick='triggerSync("backfill")' id='btnBackfill'>Full Backfill (~16 Months)</button>
+            </div>
+            <div style='display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;'>
+                <label style='font-size:13px;'>From <input type='date' id='syncFrom' style='padding:5px 8px;border:1px solid #cbd5e1;border-radius:5px;font-size:13px;'></label>
+                <label style='font-size:13px;'>To <input type='date' id='syncTo' style='padding:5px 8px;border:1px solid #cbd5e1;border-radius:5px;font-size:13px;'></label>
+                <button class='btn-sm' onclick='triggerRangeSync()'>Sync Range</button>
+            </div>
+            <div id='syncOutput' style='font-size:13px;color:#64748b;'></div>
+        </div>
+
+        <div class='card' style='margin-bottom:16px;'>
+            <h2 style='margin-bottom:12px;'>Recent Sync Log</h2>
+            <div id='syncLog' class='table-wrapper'><p style='color:#94a3b8;font-size:13px;'>Loading...</p></div>
+        </div>
+
+        <div class='card'>
+            <button class='btn-sm btn-red' onclick='disconnect()'>Disconnect Search Console</button>
+        </div>
+    </div>
+
+    <style>
+    .btn-sm {{ padding:5px 12px; border:1px solid #cbd5e1; border-radius:5px; font-size:12px; cursor:pointer; background:#fff; color:#374151; }}
+    .btn-sm:hover {{ background:#f1f5f9; }}
+    .btn-sm:disabled {{ opacity:0.4; cursor:not-allowed; }}
+    .btn-blue {{ background:#3b82f6; color:#fff; border-color:#3b82f6; }}
+    .btn-blue:hover {{ background:#2563eb; }}
+    .btn-red {{ color:#dc2626; border-color:#fca5a5; }}
+    .btn-red:hover {{ background:#fef2f2; }}
+    .prop-btn {{ display:block; width:100%; text-align:left; padding:8px 12px; margin-bottom:6px;
+                 border:1px solid #e2e8f0; border-radius:6px; background:#fff; cursor:pointer; font-size:13px; }}
+    .prop-btn:hover {{ background:#eff6ff; border-color:#3b82f6; }}
+    </style>
+
+    <script>
+    let authTokenData = null;
+
+    async function loadStatus() {{
+        const res = await fetch('/api/settings/gsc/status');
+        const data = await res.json();
+        const el = document.getElementById('statusContent');
+
+        if (data.connected) {{
+            el.innerHTML = `
+                <div style='display:flex;gap:24px;flex-wrap:wrap;font-size:13px;'>
+                    <div><strong>Status:</strong> <span style='color:#16a34a;font-weight:600;'>Connected</span></div>
+                    <div><strong>Property:</strong> ${{data.property_url}}</div>
+                    <div><strong>Dates synced:</strong> ${{data.dates_synced}}</div>
+                    <div><strong>Total records:</strong> ${{(data.total_records || 0).toLocaleString()}}</div>
+                    <div><strong>Last sync:</strong> ${{data.last_sync || 'Never'}}</div>
+                </div>`;
+            document.getElementById('connectedSection').style.display = 'block';
+            document.getElementById('setupSection').style.display = 'none';
+            renderSyncLog(data.sync_log || []);
+        }} else {{
+            el.innerHTML = '<span style="color:#94a3b8;font-size:13px;">Not connected</span>';
+            document.getElementById('setupSection').style.display = 'block';
+            document.getElementById('connectedSection').style.display = 'none';
+        }}
+    }}
+
+    function renderSyncLog(logs) {{
+        if (!logs.length) {{
+            document.getElementById('syncLog').innerHTML = '<p style="color:#94a3b8;font-size:13px;">No sync history.</p>';
+            return;
+        }}
+        let html = '<table class="sortable" style="font-size:12px;"><thead><tr>' +
+            '<th>Date</th><th>Status</th><th>Records</th><th>Started</th><th>Error</th></tr></thead><tbody>';
+        logs.forEach(l => {{
+            const statusColor = l.status === 'success' ? '#16a34a' : '#dc2626';
+            html += `<tr>
+                <td>${{l.sync_date}}</td>
+                <td style="color:${{statusColor}};font-weight:600;">${{l.status}}</td>
+                <td>${{l.records_pulled}}</td>
+                <td>${{l.started_at || ''}}</td>
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;">${{l.error_message || ''}}</td>
+            </tr>`;
+        }});
+        html += '</tbody></table>';
+        document.getElementById('syncLog').innerHTML = html;
+    }}
+
+    async function startAuth() {{
+        const btn = document.getElementById('btnStartAuth');
+        btn.disabled = true;
+        btn.textContent = 'Loading...';
+        try {{
+            const res = await fetch('/api/settings/gsc/auth-url');
+            const data = await res.json();
+            if (data.error) {{ alert(data.error); btn.disabled = false; btn.textContent = 'Get Authorization URL'; return; }}
+            document.getElementById('authUrl').value = data.auth_url;
+            document.getElementById('authUrlBox').style.display = 'block';
+            btn.textContent = 'URL Generated';
+        }} catch(e) {{
+            alert('Error: ' + e.message);
+            btn.disabled = false;
+            btn.textContent = 'Get Authorization URL';
+        }}
+    }}
+
+    async function exchangeCode() {{
+        const code = document.getElementById('authCode').value.trim();
+        if (!code) return alert('Enter the authorization code');
+        try {{
+            const res = await fetch('/api/settings/gsc/auth', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{code}})
+            }});
+            const data = await res.json();
+            if (data.error) return alert(data.error);
+            authTokenData = data;
+            // Show property selection
+            const list = document.getElementById('propertyList');
+            list.innerHTML = '';
+            if (!data.properties || !data.properties.length) {{
+                list.innerHTML = '<p style="color:#dc2626;font-size:13px;">No properties found for this account.</p>';
+                return;
+            }}
+            data.properties.forEach(p => {{
+                const btn = document.createElement('button');
+                btn.className = 'prop-btn';
+                btn.textContent = p.url + (p.permission ? ' (' + p.permission + ')' : '');
+                btn.onclick = () => selectProperty(p.url);
+                list.appendChild(btn);
+            }});
+            document.getElementById('propertySelect').style.display = 'block';
+            document.getElementById('authFlowSection').querySelector('#authUrlBox').style.display = 'none';
+        }} catch(e) {{ alert('Error: ' + e.message); }}
+    }}
+
+    async function selectProperty(url) {{
+        try {{
+            const res = await fetch('/api/settings/gsc/select-property', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{
+                    property_url: url,
+                    token: authTokenData.token,
+                    refresh_token: authTokenData.refresh_token,
+                    expiry: authTokenData.expiry,
+                    token_uri: authTokenData.token_uri,
+                    client_id: authTokenData.client_id,
+                    client_secret: authTokenData.client_secret,
+                }})
+            }});
+            const data = await res.json();
+            if (data.error) return alert(data.error);
+            location.reload();
+        }} catch(e) {{ alert('Error: ' + e.message); }}
+    }}
+
+    async function triggerSync(mode) {{
+        const el = document.getElementById('syncOutput');
+        el.textContent = 'Starting sync...';
+        document.querySelectorAll('.btn-sm').forEach(b => b.disabled = true);
+        try {{
+            const res = await fetch('/api/settings/gsc/sync', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{mode}})
+            }});
+            const data = await res.json();
+            pollGscTask(data.task_id, el);
+        }} catch(e) {{
+            el.textContent = 'Error: ' + e.message;
+            document.querySelectorAll('.btn-sm').forEach(b => b.disabled = false);
+        }}
+    }}
+
+    function triggerRangeSync() {{
+        const from = document.getElementById('syncFrom').value;
+        const to = document.getElementById('syncTo').value;
+        if (!from || !to) return alert('Select both from and to dates');
+        const el = document.getElementById('syncOutput');
+        el.textContent = 'Starting range sync...';
+        document.querySelectorAll('.btn-sm').forEach(b => b.disabled = true);
+        fetch('/api/settings/gsc/sync', {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{mode: 'range', from_date: from, to_date: to}})
+        }}).then(r => r.json()).then(data => {{
+            pollGscTask(data.task_id, el);
+        }}).catch(e => {{
+            el.textContent = 'Error: ' + e.message;
+            document.querySelectorAll('.btn-sm').forEach(b => b.disabled = false);
+        }});
+    }}
+
+    function pollGscTask(taskId, el) {{
+        const iv = setInterval(async () => {{
+            try {{
+                const res = await fetch('/api/settings/gsc/sync/' + taskId + '/status');
+                const d = await res.json();
+                if (d.status === 'running') {{
+                    const lines = (d.detail || '').trim().split('\\n');
+                    el.textContent = 'Syncing... ' + (lines[lines.length - 1] || '');
+                }} else {{
+                    clearInterval(iv);
+                    const ok = d.status === 'done';
+                    el.innerHTML = (ok
+                        ? '<span style="color:#16a34a;font-weight:600;">Sync complete.</span>'
+                        : '<span style="color:#dc2626;font-weight:600;">Sync error.</span>')
+                        + '<pre style="margin-top:6px;font-size:11px;max-height:200px;overflow:auto;background:#f8fafc;padding:8px;border-radius:4px;border:1px solid #e2e8f0;">'
+                        + escHtml(d.detail || '') + '</pre>';
+                    document.querySelectorAll('.btn-sm').forEach(b => b.disabled = false);
+                    loadStatus();
+                }}
+            }} catch(e) {{
+                clearInterval(iv);
+                el.textContent = 'Poll error: ' + e.message;
+                document.querySelectorAll('.btn-sm').forEach(b => b.disabled = false);
+            }}
+        }}, 1500);
+    }}
+
+    async function disconnect() {{
+        if (!confirm('Disconnect Google Search Console? This removes stored tokens but keeps synced data.')) return;
+        await fetch('/api/settings/gsc/disconnect', {{method: 'POST'}});
+        location.reload();
+    }}
+
+    function escHtml(s) {{ const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }}
+
+    loadStatus();
+    </script>
+    """
+    return _settings_page("Search Console", body)
