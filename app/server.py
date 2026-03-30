@@ -3522,7 +3522,7 @@ def log_viewer(
     page_num: int = Query(1, alias="page"),
     per_page: int = Query(100, alias="per_page"),
     search: Optional[str] = Query(None),
-    status: Optional[int] = Query(None),
+    status: Optional[str] = Query(None),
     method: Optional[str] = Query(None),
     is_bot: Optional[str] = Query(None),
     bot_family: Optional[str] = Query(None),
@@ -3532,6 +3532,14 @@ def log_viewer(
     sort: str = Query("ts_utc"),
     order: str = Query("desc"),
 ):
+    # Parse status: accept empty string from form as None
+    status_int: Optional[int] = None
+    if status:
+        try:
+            status_int = int(status)
+        except (ValueError, TypeError):
+            pass
+
     avail = available_parsed_dates()
 
     # Default to latest available date if no range specified
@@ -3600,8 +3608,8 @@ def log_viewer(
 
     # ── Build SQL query ──
     clauses: list[str] = []
-    if status:
-        clauses.append(f"status = {int(status)}")
+    if status_int:
+        clauses.append(f"status = {status_int}")
     if method:
         clauses.append(f"method = '{sql_escape_string(method)}'")
     if is_bot == "true":
@@ -3682,8 +3690,8 @@ def log_viewer(
         params["to"] = date_to
     if search:
         params["search"] = search
-    if status:
-        params["status"] = str(status)
+    if status_int:
+        params["status"] = str(status_int)
     if method:
         params["method"] = method
     if is_bot:
