@@ -3551,6 +3551,15 @@ def log_viewer(
 
     paths = list_parsed_partitions(date_from, date_to)
 
+    # Check if 'country' column exists in the parquet files
+    has_country_col = False
+    if paths:
+        try:
+            _cols, _ = run_query(paths, "SELECT column_name FROM (DESCRIBE t) WHERE column_name = 'country'")
+            has_country_col = bool(_)
+        except Exception:
+            has_country_col = False
+
     # ── Filter form ──
     body = ""
 
@@ -3605,7 +3614,7 @@ def log_viewer(
         clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
     if locale:
         clauses.append(f"locale = '{sql_escape_string(locale)}'")
-    if country:
+    if country and has_country_col:
         clauses.append(f"country = '{sql_escape_string(country)}'")
     if search:
         esc = sql_escape_string(search)
@@ -3618,6 +3627,8 @@ def log_viewer(
 
     # Validate sort column
     allowed_sort = {"ts_utc", "edge_ip", "method", "path", "status", "bytes_sent", "is_bot", "bot_family", "user_agent", "url_group", "locale"}
+    if has_country_col:
+        allowed_sort.add("country")
     sort_col = sort if sort in allowed_sort else "ts_utc"
     sort_dir = "ASC" if order.lower() == "asc" else "DESC"
 
@@ -3632,9 +3643,10 @@ def log_viewer(
     total = count_rows[0][0] if count_rows else 0
 
     # Fetch page
+    country_col = "country" if has_country_col else "NULL AS country"
     data_sql = f"""
     SELECT ts_utc, edge_ip, method, path, status, bytes_sent,
-           is_bot, bot_family, user_agent, url_group, locale, country
+           is_bot, bot_family, user_agent, url_group, locale, {country_col}
     FROM t
     {where}
     ORDER BY {sort_col} {sort_dir}
