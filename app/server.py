@@ -153,6 +153,16 @@ def run_query(paths: List[str], sql: str):
     return cols, rows
 
 
+def _parse_int(value, default: int) -> int:
+    """Parse a query param that may arrive as '' from an HTML form."""
+    if not value:
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+
 def _coerce_numeric(df: pd.DataFrame, cols: List[str]) -> None:
     for c in cols:
         if c in df.columns:
@@ -1586,8 +1596,9 @@ def status_codes_report(
     date_to: Optional[str] = Query(None, alias="to"),
     include_assets: bool = False,
     url_group: Optional[str] = None,
-    limit: int = 500,
+    limit: str = "500",
 ):
+    limit = _parse_int(limit, 500)
     avail = available_dates()
     body = date_filters_html(date_from, date_to, avail)
 
@@ -1814,8 +1825,9 @@ def content_report(
     date_to: Optional[str] = Query(None, alias="to"),
     include_assets: bool = False,
     url_group: Optional[str] = None,
-    limit: int = 500,
+    limit: str = "500",
 ):
+    limit = _parse_int(limit, 500)
     avail = available_dates()
     body = date_filters_html(date_from, date_to, avail)
 
@@ -1955,8 +1967,9 @@ def locales(
     locale: Optional[str] = None,
     url_group: Optional[str] = None,
     content_only: bool = False,
-    limit: int = 999,
+    limit: str = "999",
 ):
+    limit = _parse_int(limit, 999)
     avail = available_dates()
     body = date_filters_html(date_from, date_to, avail)
 
@@ -2076,8 +2089,9 @@ def bots_report(
     strict: bool = False,
     url_group: Optional[str] = None,
     category: Optional[str] = None,
-    limit: int = 500,
+    limit: str = "500",
 ):
+    limit = _parse_int(limit, 500)
     avail = available_dates()
     body = date_filters_html(date_from, date_to, avail)
 
@@ -2440,9 +2454,18 @@ def referer_flow_report(
 
     paths_rf = list_partitions("referer_flow_daily", date_from, date_to)
 
+    # Check if 'referer_path' column exists in the parquet files
+    has_referer_path = False
+    if paths_rf:
+        try:
+            _, _r = run_query(paths_rf, "SELECT column_name FROM (DESCRIBE t) WHERE column_name = 'referer_path'")
+            has_referer_path = bool(_r)
+        except Exception:
+            pass
+
     # ── Internal Navigation tab ──
     internal_nav = ""
-    if not paths_rf:
+    if not paths_rf or not has_referer_path:
         internal_nav = no_data_notice()
     else:
         sql_nav = f"""
@@ -2524,8 +2547,9 @@ def utm_report(
     utm_source: Optional[str] = None,
     group_by: str = "path",
     traffic: str = "all",
-    limit: int = 200,
+    limit: str = "200",
 ):
+    limit = _parse_int(limit, 200)
     sources_table = "utm_sources_daily"
     urls_table = "utm_source_urls_daily"
     sources_paths = list_partitions(sources_table, date_from, date_to)
@@ -3412,6 +3436,15 @@ def export(
 
     if report == "referer-flow-internal":
         paths = list_partitions("referer_flow_daily", date_from, date_to)
+        has_rp = False
+        if paths:
+            try:
+                _, _r = run_query(paths, "SELECT column_name FROM (DESCRIBE t) WHERE column_name = 'referer_path'")
+                has_rp = bool(_r)
+            except Exception:
+                pass
+        if not has_rp:
+            return PlainTextResponse("Internal navigation data not available for this date range.", status_code=404)
         sql = f"""
         SELECT referer_path AS from_path, path AS to_path, SUM(hits) AS hits
         FROM t WHERE referer_type = 'Internal' AND referer_path IS NOT NULL
@@ -3532,13 +3565,7 @@ def log_viewer(
     sort: str = Query("ts_utc"),
     order: str = Query("desc"),
 ):
-    # Parse status: accept empty string from form as None
-    status_int: Optional[int] = None
-    if status:
-        try:
-            status_int = int(status)
-        except (ValueError, TypeError):
-            pass
+    status_int = _parse_int(status, 0) or None
 
     avail = available_parsed_dates()
 
