@@ -2458,7 +2458,7 @@ def referer_flow_report(
     has_referer_path = False
     if paths_rf:
         try:
-            _, _r = run_query(paths_rf, "SELECT column_name FROM (DESCRIBE t) WHERE column_name = 'referer_path'")
+            _, _r = run_query(paths_rf, "SELECT column_name FROM (DESCRIBE t) WHERE column_name = 'from_path'")
             has_referer_path = bool(_r)
         except Exception:
             pass
@@ -2469,10 +2469,10 @@ def referer_flow_report(
         internal_nav = no_data_notice()
     else:
         sql_nav = f"""
-        SELECT referer_path AS from_path, path AS to_path, SUM(hits) AS hits
+        SELECT from_path, to_path, SUM(hit_count) AS hits
         FROM t
-        WHERE referer_type = 'Internal' AND referer_path IS NOT NULL
-        GROUP BY referer_path, path
+        WHERE referer_type = 'Internal' AND from_path IS NOT NULL
+        GROUP BY from_path, to_path
         ORDER BY hits DESC LIMIT {int(limit)};
         """
         cols_n, rows_n = run_query(paths_rf, sql_nav)
@@ -2489,9 +2489,9 @@ def referer_flow_report(
         entry_points = no_data_notice()
     else:
         sql_entry = f"""
-        SELECT referer_type, path AS landing_page, SUM(hits) AS hits
+        SELECT referer_type, to_path AS landing_page, SUM(hit_count) AS hits
         FROM t
-        GROUP BY referer_type, path
+        GROUP BY referer_type, to_path
         ORDER BY hits DESC LIMIT {int(limit)};
         """
         cols_e, rows_e = run_query(paths_rf, sql_entry)
@@ -2508,7 +2508,7 @@ def referer_flow_report(
         referer_types = no_data_notice()
     else:
         sql_types = """
-        SELECT referer_type, SUM(hits) AS hits
+        SELECT referer_type, SUM(hit_count) AS hits
         FROM t GROUP BY referer_type ORDER BY hits DESC;
         """
         cols_rt, rows_rt = run_query(paths_rf, sql_types)
