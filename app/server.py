@@ -3603,16 +3603,6 @@ def log_viewer(
         date_from = avail[-1]
         date_to = avail[-1]
 
-    # Enforce max 7-day range
-    if date_from and date_to:
-        try:
-            d_from = datetime.strptime(date_from, "%Y-%m-%d")
-            d_to = datetime.strptime(date_to, "%Y-%m-%d")
-            if (d_to - d_from).days > 7:
-                date_to = (d_from + timedelta(days=7)).strftime("%Y-%m-%d")
-        except ValueError:
-            pass
-
     paths = list_parsed_partitions(date_from, date_to)
 
     # Check if 'country' column exists in the parquet files
