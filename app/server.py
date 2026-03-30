@@ -370,7 +370,7 @@ def distinct_parsed_values(column: str, date_from: Optional[str], date_to: Optio
     sql = f"""
     SELECT DISTINCT {column} AS value
     FROM t
-    WHERE {column} IS NOT NULL AND {column} != ''
+    WHERE {column} IS NOT NULL AND CAST({column} AS VARCHAR) != ''
     ORDER BY value;
     """
     _, rows = run_query(paths, sql)
