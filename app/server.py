@@ -163,6 +163,20 @@ def _parse_int(value, default: int) -> int:
         return default
 
 
+def _parse_status_list(value: Optional[str]) -> List[int]:
+    """Parse comma-separated status codes, e.g. '404,500' -> [404, 500]."""
+    if not value:
+        return []
+    codes = []
+    for part in value.split(","):
+        part = part.strip()
+        try:
+            codes.append(int(part))
+        except ValueError:
+            continue
+    return codes
+
+
 def _coerce_numeric(df: pd.DataFrame, cols: List[str]) -> None:
     for c in cols:
         if c in df.columns:
@@ -339,6 +353,21 @@ def distinct_values(table: str, column: str, date_from: Optional[str], date_to: 
     """
     _, rows = run_query(paths, sql)
     return [r[0] for r in rows if r and r[0] is not None]
+
+
+def distinct_parsed_values(column: str, date_from: Optional[str], date_to: Optional[str]) -> List[str]:
+    """Return sorted distinct values for a column in parsed parquet files."""
+    paths = list_parsed_partitions(date_from, date_to)
+    if not paths:
+        return []
+    sql = f"""
+    SELECT DISTINCT {column} AS value
+    FROM t
+    WHERE {column} IS NOT NULL AND {column} != ''
+    ORDER BY value;
+    """
+    _, rows = run_query(paths, sql)
+    return [str(r[0]) for r in rows if r and r[0] is not None]
 
 
 def no_data_notice() -> str:
@@ -3565,7 +3594,7 @@ def log_viewer(
     sort: str = Query("ts_utc"),
     order: str = Query("desc"),
 ):
-    status_int = _parse_int(status, 0) or None
+    status_codes = _parse_status_list(status)
 
     avail = available_parsed_dates()
 
@@ -3595,6 +3624,12 @@ def log_viewer(
         except Exception:
             has_country_col = False
 
+    # ── Populate filter dropdown options ──
+    bot_family_opts = distinct_parsed_values("bot_family", date_from, date_to) if paths else []
+    url_group_opts = distinct_parsed_values("url_group", date_from, date_to) if paths else []
+    locale_opts = distinct_parsed_values("locale", date_from, date_to) if paths else []
+    country_opts = distinct_parsed_values("country", date_from, date_to) if paths and has_country_col else []
+
     # ── Filter form ──
     body = ""
 
@@ -3605,7 +3640,7 @@ def log_viewer(
     body += f"<label>From<input type='date' name='from' value='{date_from or ''}' min='{min_date}' max='{max_date}'></label>"
     body += f"<label>To<input type='date' name='to' value='{date_to or ''}' min='{min_date}' max='{max_date}'></label>"
     body += f"<label>Search<input type='text' name='search' value='{search or ''}' placeholder='path, IP, UA, referer'></label>"
-    body += f"<label>Status<input type='number' name='status' value='{status or ''}' placeholder='e.g. 404' style='width:80px'></label>"
+    body += f"<label>Status<input type='text' name='status' value='{status or ''}' placeholder='e.g. 404,500' style='width:120px'></label>"
 
     # Method select
     method_opts = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]
@@ -3622,6 +3657,13 @@ def log_viewer(
         body += f"<option value='{val}' {sel}>{lbl}</option>"
     body += "</select></label>"
 
+    # Column filters
+    body += select_html("bot_family", bot_family_opts, bot_family, "Bot family")
+    body += select_html("url_group", url_group_opts, url_group, "URL group")
+    body += select_html("locale", locale_opts, locale, "Locale")
+    if has_country_col:
+        body += select_html("country", country_opts, country, "Country")
+
     body += f"<label>Per page<select name='per_page'>"
     for pp in [50, 100, 200, 500]:
         sel = "selected" if per_page == pp else ""
@@ -3635,8 +3677,11 @@ def log_viewer(
 
     # ── Build SQL query ──
     clauses: list[str] = []
-    if status_int:
-        clauses.append(f"status = {status_int}")
+    if status_codes:
+        if len(status_codes) == 1:
+            clauses.append(f"status = {status_codes[0]}")
+        else:
+            clauses.append(f"status IN ({','.join(str(c) for c in status_codes)})")
     if method:
         clauses.append(f"method = '{sql_escape_string(method)}'")
     if is_bot == "true":
@@ -3717,8 +3762,8 @@ def log_viewer(
         params["to"] = date_to
     if search:
         params["search"] = search
-    if status_int:
-        params["status"] = str(status_int)
+    if status_codes:
+        params["status"] = ",".join(str(c) for c in status_codes)
     if method:
         params["method"] = method
     if is_bot:
