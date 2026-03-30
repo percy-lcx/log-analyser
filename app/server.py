@@ -144,7 +144,7 @@ def run_query(paths: List[str], sql: str):
     conn.execute("PRAGMA threads=4;")
 
     files_sql = "[" + ",".join("'" + p.replace("'", "''") + "'" for p in paths) + "]"
-    conn.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet({files_sql});")
+    conn.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet({files_sql}, union_by_name=true);")
 
     res = conn.execute(sql)
     cols = [d[0] for d in res.description]
@@ -3018,7 +3018,7 @@ def export(
         conn = duckdb.connect(database=":memory:")
         conn.execute("PRAGMA threads=4;")
         files_sql = "[" + ",".join("'" + p.replace("'", "''") + "'" for p in paths) + "]"
-        conn.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet({files_sql});")
+        conn.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet({files_sql}, union_by_name=true);")
 
         def gen():
             try:
