@@ -177,6 +177,13 @@ def _parse_status_list(value: Optional[str]) -> List[int]:
     return codes
 
 
+def _parse_csv_param(value: Optional[str]) -> List[str]:
+    """Parse comma-separated query param into list of non-empty strings."""
+    if not value:
+        return []
+    return [v.strip() for v in value.split(",") if v.strip()]
+
+
 def _coerce_numeric(df: pd.DataFrame, cols: List[str]) -> None:
     for c in cols:
         if c in df.columns:
@@ -731,6 +738,32 @@ def select_html(name: str, options: List[str], current: Optional[str], label: st
     return f"<label>{label}: <select name='{name}'>{''.join(opts)}</select></label>"
 
 
+def multi_select_html(name: str, options: List[str], selected: List[str], label: str) -> str:
+    """Render a checkbox-dropdown multi-select widget."""
+    sel_set = set(selected)
+    # Button label
+    if not sel_set:
+        btn_text = "All"
+    elif len(sel_set) == 1:
+        btn_text = next(iter(sel_set))
+    else:
+        btn_text = f"{len(sel_set)} selected"
+    hidden_val = ",".join(selected)
+    # Build checkbox list
+    cbs = ""
+    for opt in options:
+        chk = "checked" if opt in sel_set else ""
+        cbs += f"<label><input type='checkbox' value='{opt}' {chk}> {opt}</label>"
+    return (
+        f"<div class='ms-wrap'>"
+        f"<span class='ms-label'>{label}</span>"
+        f"<button type='button' class='ms-toggle'>{btn_text} &#9662;</button>"
+        f"<div class='ms-dropdown'>{cbs}</div>"
+        f"<input type='hidden' name='{name}' value='{hidden_val}'>"
+        f"</div>"
+    )
+
+
 def tab_bar(tabs: List[Tuple[str, str]]) -> str:
     """Render a tab bar. tabs = [(id, label), ...]."""
     btns = "".join(
@@ -932,6 +965,16 @@ body {
     box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
 }
 .content form input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: #3b82f6; }
+
+/* ── Multi-select checkbox dropdown ── */
+.ms-wrap { position: relative; display: flex; flex-direction: column; gap: 4px; }
+.ms-label { font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.4px; }
+.ms-toggle { padding: 7px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; color: #334155; background: #fff; min-width: 110px; text-align: left; cursor: pointer; }
+.ms-toggle:hover { border-color: #94a3b8; }
+.ms-dropdown { display: none; position: absolute; top: 100%; left: 0; z-index: 50; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 240px; overflow-y: auto; min-width: 160px; padding: 6px 0; margin-top: 2px; }
+.ms-dropdown.open { display: block; }
+.ms-dropdown label { display: flex; align-items: center; gap: 6px; padding: 4px 12px; font-size: 13px; cursor: pointer; text-transform: none; font-weight: 400; color: #334155; letter-spacing: 0; }
+.ms-dropdown label:hover { background: #f1f5f9; }
 
 /* ── Buttons ── */
 button[type=submit] {
@@ -1267,6 +1310,47 @@ document.addEventListener("DOMContentLoaded", () => {
             activeTab = tabBtns[0].getAttribute('data-tab');
         }
         activateTab(activeTab);
+    })();
+
+    // Multi-select checkbox dropdown
+    (function() {
+        document.querySelectorAll('.ms-wrap').forEach(function(wrap) {
+            var toggle = wrap.querySelector('.ms-toggle');
+            var dropdown = wrap.querySelector('.ms-dropdown');
+            var hidden = wrap.querySelector('input[type=hidden]');
+            if (!toggle || !dropdown || !hidden) return;
+
+            toggle.addEventListener('click', function(e) {
+                e.preventDefault();
+                // Close other open dropdowns
+                document.querySelectorAll('.ms-dropdown.open').forEach(function(d) {
+                    if (d !== dropdown) d.classList.remove('open');
+                });
+                dropdown.classList.toggle('open');
+            });
+
+            function updateState() {
+                var checked = dropdown.querySelectorAll('input[type=checkbox]:checked');
+                var vals = Array.from(checked).map(function(cb) { return cb.value; });
+                hidden.value = vals.join(',');
+                if (vals.length === 0) toggle.textContent = 'All \u25BE';
+                else if (vals.length === 1) toggle.textContent = vals[0] + ' \u25BE';
+                else toggle.textContent = vals.length + ' selected \u25BE';
+            }
+
+            dropdown.querySelectorAll('input[type=checkbox]').forEach(function(cb) {
+                cb.addEventListener('change', updateState);
+            });
+        });
+
+        // Close dropdowns when clicking outside
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.ms-wrap')) {
+                document.querySelectorAll('.ms-dropdown.open').forEach(function(d) {
+                    d.classList.remove('open');
+                });
+            }
+        });
     })();
 });
 })();
@@ -3584,6 +3668,7 @@ def log_viewer(
     page_num: int = Query(1, alias="page"),
     per_page: int = Query(100, alias="per_page"),
     search: Optional[str] = Query(None),
+    search_mode: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     method: Optional[str] = Query(None),
     is_bot: Optional[str] = Query(None),
@@ -3595,6 +3680,13 @@ def log_viewer(
     order: str = Query("desc"),
 ):
     status_codes = _parse_status_list(status)
+    methods = _parse_csv_param(method)
+    bot_families = _parse_csv_param(bot_family)
+    url_groups = _parse_csv_param(url_group)
+    locales = _parse_csv_param(locale)
+    countries = _parse_csv_param(country)
+    if search_mode not in ("contains", "not_contains", "regex"):
+        search_mode = "contains"
 
     avail = available_parsed_dates()
 
@@ -3625,6 +3717,7 @@ def log_viewer(
             has_country_col = False
 
     # ── Populate filter dropdown options ──
+    status_opts = distinct_parsed_values("status", date_from, date_to) if paths else []
     bot_family_opts = distinct_parsed_values("bot_family", date_from, date_to) if paths else []
     url_group_opts = distinct_parsed_values("url_group", date_from, date_to) if paths else []
     locale_opts = distinct_parsed_values("locale", date_from, date_to) if paths else []
@@ -3639,16 +3732,18 @@ def log_viewer(
     body += "<form method='get'>"
     body += f"<label>From<input type='date' name='from' value='{date_from or ''}' min='{min_date}' max='{max_date}'></label>"
     body += f"<label>To<input type='date' name='to' value='{date_to or ''}' min='{min_date}' max='{max_date}'></label>"
+    # Search with mode selector
     body += f"<label>Search<input type='text' name='search' value='{search or ''}' placeholder='path, IP, UA, referer'></label>"
-    body += f"<label>Status<input type='text' name='status' value='{status or ''}' placeholder='e.g. 404,500' style='width:120px'></label>"
-
-    # Method select
-    method_opts = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]
-    body += "<label>Method<select name='method'><option value=''>All</option>"
-    for m in method_opts:
-        sel = "selected" if method == m else ""
-        body += f"<option value='{m}' {sel}>{m}</option>"
+    body += "<label>Mode<select name='search_mode'>"
+    for val, lbl in [("contains", "contains"), ("not_contains", "does not contain"), ("regex", "regex")]:
+        sel = "selected" if search_mode == val else ""
+        body += f"<option value='{val}' {sel}>{lbl}</option>"
     body += "</select></label>"
+
+    # Multi-select filters
+    method_opts = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]
+    body += multi_select_html("status", status_opts, [str(c) for c in status_codes], "Status")
+    body += multi_select_html("method", method_opts, methods, "Method")
 
     # Bot filter
     body += "<label>Bot<select name='is_bot'><option value=''>All</option>"
@@ -3657,12 +3752,12 @@ def log_viewer(
         body += f"<option value='{val}' {sel}>{lbl}</option>"
     body += "</select></label>"
 
-    # Column filters
-    body += select_html("bot_family", bot_family_opts, bot_family, "Bot family")
-    body += select_html("url_group", url_group_opts, url_group, "URL group")
-    body += select_html("locale", locale_opts, locale, "Locale")
+    # Column filters (multi-select)
+    body += multi_select_html("bot_family", bot_family_opts, bot_families, "Bot family")
+    body += multi_select_html("url_group", url_group_opts, url_groups, "URL group")
+    body += multi_select_html("locale", locale_opts, locales, "Locale")
     if has_country_col:
-        body += select_html("country", country_opts, country, "Country")
+        body += multi_select_html("country", country_opts, countries, "Country")
 
     body += f"<label>Per page<select name='per_page'>"
     for pp in [50, 100, 200, 500]:
@@ -3682,26 +3777,40 @@ def log_viewer(
             clauses.append(f"status = {status_codes[0]}")
         else:
             clauses.append(f"status IN ({','.join(str(c) for c in status_codes)})")
-    if method:
-        clauses.append(f"method = '{sql_escape_string(method)}'")
+    if methods:
+        escaped = ",".join(f"'{sql_escape_string(m)}'" for m in methods)
+        clauses.append(f"method IN ({escaped})")
     if is_bot == "true":
         clauses.append("is_bot = true")
     elif is_bot == "false":
         clauses.append("is_bot = false")
-    if bot_family:
-        clauses.append(f"bot_family = '{sql_escape_string(bot_family)}'")
-    if url_group:
-        clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
-    if locale:
-        clauses.append(f"locale = '{sql_escape_string(locale)}'")
-    if country and has_country_col:
-        clauses.append(f"country = '{sql_escape_string(country)}'")
+    if bot_families:
+        escaped = ",".join(f"'{sql_escape_string(b)}'" for b in bot_families)
+        clauses.append(f"bot_family IN ({escaped})")
+    if url_groups:
+        escaped = ",".join(f"'{sql_escape_string(u)}'" for u in url_groups)
+        clauses.append(f"url_group IN ({escaped})")
+    if locales:
+        escaped = ",".join(f"'{sql_escape_string(l)}'" for l in locales)
+        clauses.append(f"locale IN ({escaped})")
+    if countries and has_country_col:
+        escaped = ",".join(f"'{sql_escape_string(c)}'" for c in countries)
+        clauses.append(f"country IN ({escaped})")
     if search:
         esc = sql_escape_string(search)
-        clauses.append(
-            f"(path ILIKE '%{esc}%' OR edge_ip ILIKE '%{esc}%'"
-            f" OR user_agent ILIKE '%{esc}%' OR referer ILIKE '%{esc}%')"
-        )
+        search_cols = ["path", "edge_ip", "user_agent", "referer"]
+        if search_mode == "not_contains":
+            clauses.append(
+                " AND ".join(f"{col} NOT ILIKE '%{esc}%'" for col in search_cols)
+            )
+        elif search_mode == "regex":
+            clauses.append(
+                "(" + " OR ".join(f"regexp_matches({col}, '{esc}')" for col in search_cols) + ")"
+            )
+        else:
+            clauses.append(
+                "(" + " OR ".join(f"{col} ILIKE '%{esc}%'" for col in search_cols) + ")"
+            )
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
@@ -3762,20 +3871,22 @@ def log_viewer(
         params["to"] = date_to
     if search:
         params["search"] = search
+    if search_mode and search_mode != "contains":
+        params["search_mode"] = search_mode
     if status_codes:
         params["status"] = ",".join(str(c) for c in status_codes)
-    if method:
-        params["method"] = method
+    if methods:
+        params["method"] = ",".join(methods)
     if is_bot:
         params["is_bot"] = is_bot
-    if bot_family:
-        params["bot_family"] = bot_family
-    if url_group:
-        params["url_group"] = url_group
-    if locale:
-        params["locale"] = locale
-    if country:
-        params["country"] = country
+    if bot_families:
+        params["bot_family"] = ",".join(bot_families)
+    if url_groups:
+        params["url_group"] = ",".join(url_groups)
+    if locales:
+        params["locale"] = ",".join(locales)
+    if countries:
+        params["country"] = ",".join(countries)
     if per_page != 100:
         params["per_page"] = str(per_page)
     if sort != "ts_utc":
