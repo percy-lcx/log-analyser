@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 import json
 from datetime import datetime, timedelta
@@ -137,20 +138,42 @@ def html_table(rows, columns, max_rows: int = 999) -> str:
     return f"<div class='card'><div class='table-wrapper'>{table}</div></div>"
 
 
+_DB_CONN: Optional[duckdb.DuckDBPyConnection] = None
+_DB_INIT_LOCK = threading.Lock()
+
+
+def _get_db() -> duckdb.DuckDBPyConnection:
+    global _DB_CONN
+    if _DB_CONN is None:
+        with _DB_INIT_LOCK:
+            if _DB_CONN is None:
+                conn = duckdb.connect(database=":memory:")
+                conn.execute("PRAGMA threads=4;")
+                conn.execute("PRAGMA enable_object_cache=true;")
+                _DB_CONN = conn
+    return _DB_CONN
+
+
+def _wrap_with_parquet_cte(paths: List[str], sql: str) -> str:
+    files_sql = "[" + ",".join("'" + p.replace("'", "''") + "'" for p in paths) + "]"
+    sql_clean = sql.strip().rstrip(";").strip()
+    return (
+        f"WITH t AS (SELECT * FROM read_parquet({files_sql}, union_by_name=true)) "
+        f"{sql_clean}"
+    )
+
+
 def run_query(paths: List[str], sql: str):
     if not paths:
         return [], []
-    conn = duckdb.connect(database=":memory:")
-    conn.execute("PRAGMA threads=4;")
-
-    files_sql = "[" + ",".join("'" + p.replace("'", "''") + "'" for p in paths) + "]"
-    conn.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet({files_sql}, union_by_name=true);")
-
-    res = conn.execute(sql)
-    cols = [d[0] for d in res.description]
-    rows = res.fetchall()
-    conn.close()
-    return cols, rows
+    cur = _get_db().cursor()
+    try:
+        res = cur.execute(_wrap_with_parquet_cte(paths, sql))
+        cols = [d[0] for d in res.description]
+        rows = res.fetchall()
+        return cols, rows
+    finally:
+        cur.close()
 
 
 def _parse_int(value, default: int) -> int:
@@ -3150,17 +3173,13 @@ def export(
         if not paths:
             return PlainTextResponse("No data found for the selected date range.", status_code=404)
 
-        sql_clean = sql.strip().rstrip(";").strip()
-
-        conn = duckdb.connect(database=":memory:")
-        conn.execute("PRAGMA threads=4;")
-        files_sql = "[" + ",".join("'" + p.replace("'", "''") + "'" for p in paths) + "]"
-        conn.execute(f"CREATE OR REPLACE VIEW t AS SELECT * FROM read_parquet({files_sql}, union_by_name=true);")
+        wrapped_sql = _wrap_with_parquet_cte(paths, sql)
+        cur = _get_db().cursor()
 
         def gen():
             try:
-                cur = conn.execute(sql_clean)
-                cols = [d[0] for d in cur.description]
+                res = cur.execute(wrapped_sql)
+                cols = [d[0] for d in res.description]
 
                 s = io.StringIO()
                 w = csv.writer(s)
@@ -3170,7 +3189,7 @@ def export(
                 s.truncate(0)
 
                 while True:
-                    batch = cur.fetchmany(1000)
+                    batch = res.fetchmany(1000)
                     if not batch:
                         break
                     for row in batch:
@@ -3179,7 +3198,7 @@ def export(
                     s.seek(0)
                     s.truncate(0)
             finally:
-                conn.close()
+                cur.close()
 
         headers = {
             "Content-Disposition": f'attachment; filename="{filename}"',
