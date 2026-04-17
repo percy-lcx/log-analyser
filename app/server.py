@@ -20,6 +20,7 @@ from fastapi.responses import (
 
 import csv
 import io
+from html import escape as html_escape
 
 import plotly.express as px
 import plotly.graph_objects as go
@@ -175,13 +176,15 @@ STATUS_CODE_LABELS = {
 }
 
 
-def html_table(rows, columns, max_rows: int = 999) -> str:
+def html_table(rows, columns, max_rows: int = 999, server_paginated: bool = False) -> str:
     """
-    Styled HTML table with client-side sorting.
-    Click a header to sort; click again to reverse.
+    Styled HTML table. A shared JS controller auto-enhances every
+    .sortable table on DOMContentLoaded: non-server-paginated tables get
+    client-side pagination (25/50/100/200 presets) and full-dataset sort;
+    server-paginated tables (e.g. /logs) flip ?sort=&order= on header click.
     """
     head = "".join(
-        f"<th scope='col' data-col='{i}' title='{STATUS_CODE_LABELS.get(c, '')}'>{c}</th>"
+        f"<th scope='col' data-col='{i}' data-sort-col='{c}' title='{STATUS_CODE_LABELS.get(c, '')}'>{c}</th>"
         for i, c in enumerate(columns)
     )
 
@@ -193,13 +196,19 @@ def html_table(rows, columns, max_rows: int = 999) -> str:
         body_rows.append(f"<tr>{tds}</tr>")
     body = "\n".join(body_rows)
 
+    table_cls = "sortable server-paginated" if server_paginated else "sortable"
     table = (
-        "<table class='sortable'>"
+        f"<table class='{table_cls}'>"
         f"<thead><tr>{head}</tr></thead>"
         f"<tbody>{body}</tbody>"
         "</table>"
     )
-    return f"<div class='card'><div class='table-wrapper'>{table}</div></div>"
+    return (
+        "<div class='card'>"
+        f"<div class='table-wrapper'>{table}</div>"
+        "<div class='table-controls' data-table-controls hidden></div>"
+        "</div>"
+    )
 
 
 _DB_CONN: Optional[duckdb.DuckDBPyConnection] = None
@@ -968,18 +977,8 @@ body {
     top: 0;
     z-index: 50;
 }
-.topbar { display: flex; align-items: center; justify-content: space-between; }
+.topbar { display: flex; align-items: center; }
 .topbar h1 { font-size: 18px; font-weight: 700; color: #1e293b; }
-.scroll-toggle {
-    display: inline-flex; align-items: center; gap: 6px;
-    font-size: 12px; font-weight: 500; color: #64748b;
-    cursor: pointer; padding: 4px 10px;
-    border: 1px solid #e2e8f0; border-radius: 6px;
-    background: #fff; transition: background 0.12s, color 0.12s;
-    user-select: none;
-}
-.scroll-toggle:hover { background: #f1f5f9; color: #1e293b; }
-.scroll-toggle.active { background: #eff6ff; color: #3b82f6; border-color: #bfdbfe; }
 .content { padding: 20px 24px; flex: 1; overflow: hidden; }
 
 /* Hide raw <br> separators between cards */
@@ -1105,12 +1104,8 @@ a[href^='/export']:hover { background: #e2e8f0; color: #1e293b; }
 .content p:has(a[href^='/export']) { margin-bottom: 0; }
 
 /* ── Tables ── */
-.table-wrapper { overflow-x: auto; max-height: 400px; overflow-y: auto; }
-.table-wrapper.expanded { max-height: none; overflow-y: visible; }
-.table-wrapper:not(.expanded) table.sortable thead th {
-    position: sticky;
-    top: 0;
-    z-index: 2;
+.table-wrapper { overflow-x: auto; }
+.table-wrapper table.sortable thead th {
     background: #f8fafc;
     box-shadow: 0 1px 0 #e2e8f0;
 }
@@ -1147,6 +1142,31 @@ table.sortable td {
 }
 table.sortable tbody tr:hover { background: #f8fafc; }
 table.sortable tbody tr:last-child td { border-bottom: none; }
+
+/* ── Per-table pagination / sort controls ── */
+.table-controls {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 8px 12px; border-top: 1px solid #e2e8f0;
+    font-size: 12px; color: #475569; background: #fafbfc;
+    margin: 0 -20px -18px; padding-left: 20px; padding-right: 20px;
+    border-radius: 0 0 8px 8px;
+}
+.table-controls[hidden] { display: none; }
+.table-controls .tc-count { color: #64748b; }
+.table-controls label { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; color: #475569; }
+.table-controls select,
+.table-controls input[type=number] {
+    padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px;
+    font-size: 12px; color: #334155; background: #fff; outline: none;
+}
+.table-controls input[type=number] { width: 60px; }
+.table-controls .tc-nav { display: inline-flex; gap: 4px; align-items: center; }
+.table-controls button {
+    padding: 3px 9px; border: 1px solid #cbd5e1; background: #fff;
+    border-radius: 4px; cursor: pointer; font-size: 12px; color: #3b82f6;
+}
+.table-controls button:hover:not(:disabled) { background: #eff6ff; }
+.table-controls button:disabled { color: #cbd5e1; cursor: default; }
 
 /* ── No-data notice ── */
 .no-data { color: #94a3b8; font-style: italic; padding: 8px 0; }
@@ -1333,54 +1353,171 @@ function parseNumber(s) {
     return Number.isFinite(n) ? n : null;
 }
 
-function sortTable(table, colIndex, asc) {
-    const tbody = table.tBodies[0];
-    if (!tbody) return;
-    const rows = Array.from(tbody.rows);
-    rows.sort((ra, rb) => {
-        const a = (ra.cells[colIndex]?.innerText ?? "").trim();
-        const b = (rb.cells[colIndex]?.innerText ?? "").trim();
-        const na = parseNumber(a);
-        const nb = parseNumber(b);
-        if (na !== null && nb !== null) return asc ? (na - nb) : (nb - na);
-        return asc ? a.localeCompare(b) : b.localeCompare(a);
-    });
-    for (const r of rows) tbody.appendChild(r);
+const PER_PAGE_PRESETS = [25, 50, 100, 200];
+const DEFAULT_PER_PAGE = 50;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$/;
+
+function cellValue(tr, idx) {
+    return (tr.cells[idx]?.innerText ?? "").trim();
+}
+function cmpValues(a, b) {
+    const na = parseNumber(a), nb = parseNumber(b);
+    if (na !== null && nb !== null) return na - nb;
+    if (DATE_RE.test(a) && DATE_RE.test(b)) {
+        const da = Date.parse(a), db = Date.parse(b);
+        if (!Number.isNaN(da) && !Number.isNaN(db)) return da - db;
+    }
+    return a.localeCompare(b);
 }
 
-function attachSortable(table) {
+function enhanceTable(table) {
+    if (table.dataset.enhanced === "1") return;
+    table.dataset.enhanced = "1";
+
+    const serverPaginated = table.classList.contains("server-paginated");
+    const tbody = table.tBodies[0];
+    if (!tbody) return;
     const headers = table.tHead ? Array.from(table.tHead.rows[0].cells) : [];
+
+    if (serverPaginated) {
+        // /logs: headers flip ?sort=&order= and reload. Reflect current
+        // URL state in the header indicator; do not touch tbody/controls.
+        const url = new URL(window.location);
+        const curSort = url.searchParams.get("sort");
+        const curOrder = (url.searchParams.get("order") || "desc").toLowerCase();
+        headers.forEach(th => {
+            const col = th.getAttribute("data-sort-col");
+            if (col && col === curSort) {
+                th.classList.add(curOrder === "asc" ? "sorted-asc" : "sorted-desc");
+            }
+            th.addEventListener("click", () => {
+                if (!col) return;
+                const u = new URL(window.location);
+                const prevSort = u.searchParams.get("sort");
+                const prevOrder = (u.searchParams.get("order") || "desc").toLowerCase();
+                const nextOrder = (prevSort === col && prevOrder === "asc") ? "desc" : "asc";
+                u.searchParams.set("sort", col);
+                u.searchParams.set("order", nextOrder);
+                u.searchParams.set("page", "1");
+                window.location.assign(u.toString());
+            });
+        });
+        return;
+    }
+
+    // Client-paginated path: cache full row set, re-render slice on sort/page change.
+    const state = {
+        rows: Array.from(tbody.rows),
+        sortIdx: null,
+        sortAsc: true,
+        page: 1,
+        perPage: DEFAULT_PER_PAGE,
+    };
+
     headers.forEach((th, idx) => {
         th.addEventListener("click", () => {
-            const currentlyAsc = th.classList.contains("sorted-asc");
-            const asc = !currentlyAsc;
+            const asc = !(state.sortIdx === idx && state.sortAsc);
+            state.sortIdx = idx;
+            state.sortAsc = asc;
+            state.rows.sort((ra, rb) => {
+                const r = cmpValues(cellValue(ra, idx), cellValue(rb, idx));
+                return asc ? r : -r;
+            });
             headers.forEach(h => h.classList.remove("sorted-asc", "sorted-desc"));
             th.classList.add(asc ? "sorted-asc" : "sorted-desc");
-            sortTable(table, idx, asc);
+            state.page = 1;
+            render();
         });
     });
+
+    const card = table.closest(".card");
+    const controls = card ? card.querySelector("[data-table-controls]") : null;
+    const total = state.rows.length;
+
+    if (!controls || total <= PER_PAGE_PRESETS[0]) {
+        // Small table: no controls, render once.
+        render();
+        return;
+    }
+
+    controls.hidden = false;
+    const ppOptions = PER_PAGE_PRESETS.map(n => `<option value="${n}">${n}</option>`).join("");
+    controls.innerHTML =
+        `<span class="tc-count"></span>` +
+        `<label>Per page <select class="tc-pp">${ppOptions}</select></label>` +
+        `<span class="tc-nav">` +
+            `<button type="button" data-nav="first" title="First">&laquo;</button>` +
+            `<button type="button" data-nav="prev" title="Prev">&lsaquo;</button>` +
+            `<label>Page <input type="number" class="tc-page" min="1" value="1"> of <span class="tc-total-pages"></span></label>` +
+            `<button type="button" data-nav="next" title="Next">&rsaquo;</button>` +
+            `<button type="button" data-nav="last" title="Last">&raquo;</button>` +
+        `</span>`;
+
+    const ppSel = controls.querySelector(".tc-pp");
+    ppSel.value = String(state.perPage);
+    ppSel.addEventListener("change", () => {
+        const v = parseInt(ppSel.value, 10);
+        state.perPage = Number.isFinite(v) && v > 0 ? v : DEFAULT_PER_PAGE;
+        state.page = 1;
+        render();
+    });
+
+    controls.querySelectorAll("[data-nav]").forEach(btn => {
+        btn.addEventListener("click", () => {
+            const tp = Math.max(1, Math.ceil(state.rows.length / state.perPage));
+            const nav = btn.getAttribute("data-nav");
+            if (nav === "first") state.page = 1;
+            else if (nav === "prev") state.page = Math.max(1, state.page - 1);
+            else if (nav === "next") state.page = Math.min(tp, state.page + 1);
+            else if (nav === "last") state.page = tp;
+            render();
+        });
+    });
+
+    const pageInput = controls.querySelector(".tc-page");
+    const commitPage = () => {
+        const tp = Math.max(1, Math.ceil(state.rows.length / state.perPage));
+        let v = parseInt(pageInput.value, 10);
+        if (!Number.isFinite(v) || v < 1) v = 1;
+        if (v > tp) v = tp;
+        state.page = v;
+        render();
+    };
+    pageInput.addEventListener("change", commitPage);
+    pageInput.addEventListener("keydown", e => {
+        if (e.key === "Enter") { e.preventDefault(); commitPage(); }
+    });
+
+    render();
+
+    function render() {
+        const total = state.rows.length;
+        const tp = Math.max(1, Math.ceil(total / state.perPage));
+        if (state.page > tp) state.page = tp;
+        const start = (state.page - 1) * state.perPage;
+        const end = Math.min(total, start + state.perPage);
+        tbody.replaceChildren(...state.rows.slice(start, end));
+        if (!controls || controls.hidden) return;
+        controls.querySelector(".tc-count").textContent =
+            `${total.toLocaleString()} rows · showing ${(start + 1).toLocaleString()}-${end.toLocaleString()}`;
+        controls.querySelector(".tc-total-pages").textContent = tp.toLocaleString();
+        pageInput.value = String(state.page);
+        pageInput.max = String(tp);
+        const firstBtn = controls.querySelector('[data-nav="first"]');
+        const prevBtn = controls.querySelector('[data-nav="prev"]');
+        const nextBtn = controls.querySelector('[data-nav="next"]');
+        const lastBtn = controls.querySelector('[data-nav="last"]');
+        firstBtn.disabled = prevBtn.disabled = state.page <= 1;
+        nextBtn.disabled = lastBtn.disabled = state.page >= tp;
+    }
+}
+
+function enhanceAllTables(root) {
+    (root || document).querySelectorAll("table.sortable").forEach(enhanceTable);
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-    document.querySelectorAll("table.sortable").forEach(attachSortable);
-
-    // Table scroll toggle (scrollable by default; "Expand tables" opts out)
-    (function() {
-        var STORAGE_KEY = 'tablesExpanded';
-        function applyExpanded(expanded) {
-            document.querySelectorAll('.table-wrapper').forEach(function(el) {
-                el.classList.toggle('expanded', expanded);
-            });
-            var btn = document.getElementById('scrollToggle');
-            if (btn) btn.classList.toggle('active', expanded);
-            localStorage.setItem(STORAGE_KEY, expanded ? '1' : '0');
-        }
-        window.toggleTableScroll = function() {
-            applyExpanded(localStorage.getItem(STORAGE_KEY) !== '1');
-        };
-        // Restore preference on load; default is scrollable (not expanded)
-        if (localStorage.getItem(STORAGE_KEY) === '1') applyExpanded(true);
-    })();
+    enhanceAllTables();
 
     // Tab navigation
     (function() {
@@ -1429,7 +1566,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     panel.removeAttribute('data-lazy-loaded-from');
                     panel.setAttribute('data-lazy-loaded', '1');
                     executeScripts(panel);
-                    panel.querySelectorAll('table.sortable').forEach(attachSortable);
+                    enhanceAllTables(panel);
                 })
                 .catch(function(err) {
                     panel.innerHTML = "<p style='color:#e74c3c;'>Failed to load: " + (err && err.message ? err.message : 'error') + "</p>";
@@ -1519,7 +1656,7 @@ document.addEventListener("DOMContentLoaded", () => {
         {nav_links}
     </nav>
     <div class="main">
-        <div class="topbar"><h1>{title}</h1><button class="scroll-toggle" id="scrollToggle" onclick="toggleTableScroll()">&#8597; Expand tables</button></div>
+        <div class="topbar"><h1>{title}</h1></div>
         <div class="content">
             {body}
         </div>
@@ -3996,7 +4133,7 @@ def log_viewer(
         body += multi_select_html("country", country_opts, countries, "Country")
 
     body += f"<label>Per page<select name='per_page'>"
-    for pp in [50, 100, 200, 500]:
+    for pp in [25, 50, 100, 200]:
         sel = "selected" if per_page == pp else ""
         body += f"<option value='{pp}' {sel}>{pp}</option>"
     body += "</select></label>"
@@ -4058,7 +4195,7 @@ def log_viewer(
     sort_dir = "ASC" if order.lower() == "asc" else "DESC"
 
     # Clamp pagination
-    per_page = min(max(per_page, 10), 500)
+    per_page = min(max(per_page, 25), 200)
     page_num = max(page_num, 1)
     offset = (page_num - 1) * per_page
 
@@ -4134,18 +4271,35 @@ def log_viewer(
         qs = "&".join(f"{k}={v}" for k, v in params.items())
         return f"<a href='/logs?page={p}&{qs}' style='padding:4px 10px;border:1px solid #cbd5e1;border-radius:4px;text-decoration:none;color:#3b82f6;font-size:13px;margin:0 2px;'>{label}</a>"
 
+    hidden_inputs = "".join(
+        f"<input type='hidden' name='{k}' value='{html_escape(v)}'>"
+        for k, v in params.items() if k != "page"
+    )
+    jump_form = (
+        "<form method='get' action='/logs' style='display:inline-flex;align-items:center;gap:4px;margin:0;'>"
+        f"{hidden_inputs}"
+        "<label style='font-size:12px;color:#64748b;text-transform:none;letter-spacing:0;font-weight:500;'>Go to page "
+        f"<input type='number' name='page' value='{page_num}' min='1' max='{total_pages}' "
+        "style='width:64px;padding:3px 6px;border:1px solid #cbd5e1;border-radius:4px;font-size:12px;'>"
+        "</label>"
+        "<button type='submit' style='padding:3px 10px;border:1px solid #cbd5e1;border-radius:4px;"
+        "background:#fff;color:#3b82f6;font-size:12px;cursor:pointer;'>Go</button>"
+        "</form>"
+    )
+
     pagination = f"<div style='display:flex;align-items:center;gap:8px;margin:12px 0;flex-wrap:wrap;'>"
     pagination += f"<span style='font-size:13px;color:#64748b;'>{total:,} rows &middot; page {page_num} of {total_pages:,}</span>"
     if page_num > 1:
         pagination += page_link(1, "&laquo; First")
         pagination += page_link(page_num - 1, "&lsaquo; Prev")
+    pagination += jump_form
     if page_num < total_pages:
         pagination += page_link(page_num + 1, "Next &rsaquo;")
         pagination += page_link(total_pages, "Last &raquo;")
     pagination += "</div>"
 
     body += pagination
-    body += html_table(display_rows, cols, max_rows=per_page)
+    body += html_table(display_rows, cols, max_rows=per_page, server_paginated=True)
     body += pagination
 
     return page("Log Viewer", body)
