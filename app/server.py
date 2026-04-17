@@ -472,8 +472,12 @@ def distinct_parsed_values(column: str, date_from: Optional[str], date_to: Optio
     paths = list_parsed_partitions(date_from, date_to)
     if not paths:
         return []
+    # `country` can be JSON-typed in old partitions (all-null days) and VARCHAR
+    # in newer ones. union_by_name promotes the union to JSON; ORDER BY then
+    # tries to JSON-parse values like "US" and fails. Cast to VARCHAR for it.
+    select_expr = f"CAST({column} AS VARCHAR)" if column == "country" else column
     sql = f"""
-    SELECT DISTINCT {column} AS value
+    SELECT DISTINCT {select_expr} AS value
     FROM t
     WHERE {column} IS NOT NULL AND CAST({column} AS VARCHAR) != ''
     ORDER BY value;
@@ -4146,6 +4150,7 @@ def log_viewer(
     country: Optional[str] = Query(None),
     sort: str = Query("ts_utc"),
     order: str = Query("desc"),
+    chart: Optional[str] = Query(None),
 ):
     status_codes = _parse_status_list(status)
     methods = _parse_csv_param(method)
@@ -4153,6 +4158,7 @@ def log_viewer(
     url_groups = _parse_csv_param(url_group)
     locales = _parse_csv_param(locale)
     countries = _parse_csv_param(country)
+    show_chart = chart == "1"
     if search_mode not in ("contains", "not_contains", "regex"):
         search_mode = "contains"
 
@@ -4223,6 +4229,9 @@ def log_viewer(
         body += f"<option value='{pp}' {sel}>{pp}</option>"
     body += "</select></label>"
 
+    chart_checked = "checked" if show_chart else ""
+    body += f" <label><input type='checkbox' name='chart' value='1' {chart_checked}> Show chart</label>"
+
     body += " <button type='submit'>Apply</button></form>"
 
     if not paths:
@@ -4253,7 +4262,7 @@ def log_viewer(
         clauses.append(f"locale IN ({escaped})")
     if countries and has_country_col:
         escaped = ",".join(f"'{sql_escape_string(c)}'" for c in countries)
-        clauses.append(f"country IN ({escaped})")
+        clauses.append(f"CAST(country AS VARCHAR) IN ({escaped})")
     if search:
         esc = sql_escape_string(search)
         search_cols = ["path", "edge_ip", "user_agent", "referer"]
@@ -4271,6 +4280,34 @@ def log_viewer(
             )
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    # ── Chart aggregation (when requested) ──
+    chart_html = ""
+    if show_chart and paths:
+        single_day = date_from and date_to and date_from == date_to
+        if single_day:
+            time_expr = "date_trunc('hour', ts_utc)"
+            granularity_label = "hourly"
+        else:
+            time_expr = "CAST(ts_utc AS DATE)"
+            granularity_label = "daily"
+        chart_sql = f"""
+        SELECT {time_expr} AS time_bucket,
+               COUNT(*) FILTER (WHERE status >= 200 AND status < 300) AS s2xx,
+               COUNT(*) FILTER (WHERE status >= 300 AND status < 400) AS s3xx,
+               COUNT(*) FILTER (WHERE status >= 400 AND status < 500) AS s4xx,
+               COUNT(*) FILTER (WHERE status >= 500 AND status < 600) AS s5xx
+        FROM t
+        {where}
+        GROUP BY time_bucket
+        ORDER BY time_bucket;
+        """
+        chart_cols, chart_rows = run_query(paths, chart_sql)
+        chart_html = line_chart(
+            chart_rows, chart_cols, x_col="time_bucket",
+            y_cols=["s2xx", "s3xx", "s4xx", "s5xx"],
+            title=f"Requests over time ({granularity_label})",
+        )
 
     # Validate sort column
     allowed_sort = {"ts_utc", "edge_ip", "method", "path", "status", "bytes_sent", "is_bot", "bot_family", "user_agent", "url_group", "locale"}
@@ -4290,7 +4327,7 @@ def log_viewer(
     total = count_rows[0][0] if count_rows else 0
 
     # Fetch page
-    country_col = "country" if has_country_col else "NULL AS country"
+    country_col = "CAST(country AS VARCHAR) AS country" if has_country_col else "NULL AS country"
     data_sql = f"""
     SELECT ts_utc, edge_ip, method, path, status, bytes_sent,
            is_bot, bot_family, user_agent, url_group, locale, {country_col}
@@ -4351,6 +4388,8 @@ def log_viewer(
         params["sort"] = sort
     if order != "desc":
         params["order"] = order
+    if show_chart:
+        params["chart"] = "1"
 
     def page_link(p: int, label: str) -> str:
         qs = "&".join(f"{k}={v}" for k, v in params.items())
@@ -4383,6 +4422,8 @@ def log_viewer(
         pagination += page_link(total_pages, "Last &raquo;")
     pagination += "</div>"
 
+    if chart_html:
+        body += chart_html
     body += pagination
     body += html_table(display_rows, cols, max_rows=per_page, server_paginated=True)
     body += pagination
