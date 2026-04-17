@@ -1067,6 +1067,31 @@ def build_aggregates_for_date(log_date: str) -> None:
     GROUP BY date, COALESCE(bot_family, 'Unknown bot'), path, url_group
     """
 
+    # Skinnier pre-ranked variant — top 50 URLs per (date, bot_family) by hits.
+    # /reports/bots uses this for unfiltered previews and AI-crawler top-20s to
+    # avoid scanning the full ~500 MB bot_urls_daily table. The full table is
+    # still built and used when a specific bot is selected.
+    bot_top_urls_daily_sql = """
+    WITH per_family AS (
+      SELECT
+        date,
+        COALESCE(bot_family, 'Unknown bot') AS bot_family,
+        path,
+        url_group,
+        COUNT(*) AS hits
+      FROM parsed
+      WHERE is_bot
+      GROUP BY date, COALESCE(bot_family, 'Unknown bot'), path, url_group
+    ),
+    ranked AS (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY bot_family ORDER BY hits DESC) AS rn
+      FROM per_family
+    )
+    SELECT date, bot_family, path, url_group, hits
+    FROM ranked
+    WHERE rn <= 50
+    """
+
     # ----------------------------
     # legacy UTM chatgpt aggregates (kept, derived from utm_source_norm)
     # ----------------------------
@@ -1139,6 +1164,7 @@ def build_aggregates_for_date(log_date: str) -> None:
     agg_write_one(conn, wasted_crawl_daily_sql, out("wasted_crawl_daily"))
     agg_write_one(conn, top_resource_waste_daily_sql, out("top_resource_waste_daily"))
     agg_write_one(conn, bot_urls_daily_sql, out("bot_urls_daily"))
+    agg_write_one(conn, bot_top_urls_daily_sql, out("bot_top_urls_daily"))
     agg_write_one(conn, human_urls_daily_sql, out("human_urls_daily"))
 
     # legacy
