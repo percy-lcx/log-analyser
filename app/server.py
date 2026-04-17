@@ -19,8 +19,11 @@ from fastapi.responses import (
 )
 
 import csv
+import functools
 import io
 from html import escape as html_escape
+
+import yaml
 
 import plotly.express as px
 import plotly.graph_objects as go
@@ -585,6 +588,37 @@ def issue_card(severity: str, title: str, detail: str, link: str) -> str:
     )
 
 
+_BOTS_YML_PATH = ROOT / "detectors" / "bots.yml"
+
+
+@functools.lru_cache(maxsize=1)
+def _load_bots_yml() -> dict:
+    try:
+        with open(_BOTS_YML_PATH, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        return {}
+
+
+def bot_family_detection_blurb(family: str) -> str:
+    """Return a human-readable description of how *family* is classified.
+
+    Empty string when the family is absent from detectors/bots.yml, so the
+    caller hides the snippet entirely.
+    """
+    cfg = _load_bots_yml()
+    for r in cfg.get("referer_rules", []) or []:
+        if r.get("family") == family:
+            return f"Detected by referer match: {r.get('pattern', '')}"
+    for r in cfg.get("rules", []) or []:
+        if r.get("family") == family:
+            pat = r.get("pattern", "")
+            if pat == "^-$":
+                return "Detected when User-Agent header is missing"
+            return f"Detected by User-Agent regex: {pat}"
+    return ""
+
+
 def recommendations_section(items: List[Tuple[str, str, str]]) -> str:
     """Render a 'Recommended Actions' box.
 
@@ -1007,7 +1041,7 @@ body {
 .content h2:first-child { margin-top: 0; }
 
 /* ── Forms (filter bars) ── */
-.content form {
+.content form.filter-bar {
     background: #fff;
     border: 1px solid #e2e8f0;
     border-radius: 8px;
@@ -1019,7 +1053,7 @@ body {
     align-items: flex-end;
     box-shadow: 0 1px 2px rgba(0,0,0,0.04);
 }
-.content form label {
+.content form.filter-bar label {
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -1029,7 +1063,7 @@ body {
     text-transform: uppercase;
     letter-spacing: 0.4px;
 }
-.content form label:has(input[type=checkbox]) {
+.content form.filter-bar label:has(input[type=checkbox]) {
     flex-direction: row;
     align-items: center;
     gap: 6px;
@@ -1040,28 +1074,35 @@ body {
     font-weight: 500;
     padding-bottom: 2px;
 }
-.content form input:not([type=checkbox]):not([type=hidden]),
-.content form select {
-    padding: 7px 10px;
+.content form.filter-bar input:not([type=checkbox]):not([type=hidden]),
+.content form.filter-bar select,
+.content form.filter-bar .ms-toggle {
+    box-sizing: border-box;
+    width: 140px;
+    height: 34px;
+    padding: 0 10px;
     border: 1px solid #cbd5e1;
     border-radius: 6px;
     font-size: 13px;
     color: #334155;
     background: #fff;
-    min-width: 110px;
     outline: none;
     transition: border-color 0.12s, box-shadow 0.12s;
 }
-.content form input:focus, .content form select:focus {
+.content form.filter-bar input[type=date] { width: 150px; }
+.content form.filter-bar input[type=text][name=search] { width: 240px; }
+.content form.filter-bar select[name=per_page] { width: 90px; }
+.content form.filter-bar input:focus, .content form.filter-bar select:focus {
     border-color: #3b82f6;
     box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
 }
-.content form input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: #3b82f6; }
+.content form.filter-bar input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: #3b82f6; }
+.content form.filter-bar button[type=submit] { height: 34px; padding: 0 18px; }
 
 /* ── Multi-select checkbox dropdown ── */
 .ms-wrap { position: relative; display: flex; flex-direction: column; gap: 4px; }
 .ms-label { font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.4px; }
-.ms-toggle { padding: 7px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; color: #334155; background: #fff; min-width: 110px; text-align: left; cursor: pointer; }
+.ms-toggle { text-align: left; cursor: pointer; }
 .ms-toggle:hover { border-color: #94a3b8; }
 .ms-dropdown { display: none; position: absolute; top: 100%; left: 0; z-index: 50; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 240px; overflow-y: auto; min-width: 160px; padding: 6px 0; margin-top: 2px; }
 .ms-dropdown.open { display: block; }
@@ -1672,7 +1713,7 @@ def date_filters_html(date_from, date_to, available: List[str] = []):
     max_date = available[-1] if available else ""
     available_json = json.dumps(available)
     return f"""
-    <form method="get" onsubmit="return validateDates(this, {available_json})">
+    <form method="get" class="filter-bar" onsubmit="return validateDates(this, {available_json})">
     <label>From<input type="date" name="from" value="{date_from or ''}"
            min="{min_date}" max="{max_date}"></label>
     <label>To<input type="date" name="to" value="{date_to or ''}"
@@ -2013,7 +2054,7 @@ def status_codes_report(
     groups_urls = distinct_values("top_urls_daily", "url_group", date_from, date_to)
     all_groups = sorted(set(groups_4xx + groups_5xx + groups_urls))
     checked = "checked" if include_assets else ""
-    body += "<form method='get'>"
+    body += "<form method='get' class='filter-bar'>"
     body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
     body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
     body += select_html("url_group", all_groups, url_group, "URL group")
@@ -2034,18 +2075,37 @@ def status_codes_report(
 
     # ── Trends tab ──
     trends = ""
-    paths_daily = list_partitions("daily", date_from, date_to)
-    if not paths_daily:
+    # When url_group/include_assets filters are active, re-aggregate from
+    # top_urls_daily (which carries url_group) so the trend chart honors them.
+    # Otherwise use the cheaper pre-aggregated `daily` partition.
+    if where:
+        paths_trend = list_partitions("top_urls_daily", date_from, date_to)
+    else:
+        paths_trend = list_partitions("daily", date_from, date_to)
+    if not paths_trend:
         trends = no_data_notice()
     else:
-        sql_status = """
-        SELECT date, s2xx, s3xx, s4xx, s5xx, hits FROM t ORDER BY date;
-        """
-        cols_s, rows_s = run_query(paths_daily, sql_status)
+        if where:
+            sql_status = f"""
+            SELECT date,
+                   SUM(hits_total) - SUM(s3xx) - SUM(s4xx) - SUM(s5xx) AS s2xx,
+                   SUM(s3xx) AS s3xx, SUM(s4xx) AS s4xx, SUM(s5xx) AS s5xx,
+                   SUM(hits_total) AS hits
+            FROM t {where}
+            GROUP BY date ORDER BY date;
+            """
+        else:
+            sql_status = """
+            SELECT date, s2xx, s3xx, s4xx, s5xx, hits FROM t ORDER BY date;
+            """
+        cols_s, rows_s = run_query(paths_trend, sql_status)
         trends += export_link("daily-status", date_from, date_to)
+        title_trend = "Status Codes Over Time"
+        if url_group:
+            title_trend += f" — url_group={url_group}"
         trends += line_chart(rows_s, cols_s, x_col="date",
                              y_cols=["s2xx", "s3xx", "s4xx", "s5xx"],
-                             title="Status Codes Over Time")
+                             title=title_trend)
         trends += html_table(rows_s, cols_s)
 
     # ── Redirects (3xx) tab ──
@@ -2239,7 +2299,7 @@ def content_report(
     # Shared filter form
     groups = distinct_values("top_urls_daily", "url_group", date_from, date_to)
     checked = "checked" if include_assets else ""
-    body += "<form method='get'>"
+    body += "<form method='get' class='filter-bar'>"
     body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
     body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
     body += select_html("url_group", groups, url_group, "URL group")
@@ -2340,6 +2400,8 @@ def content_report(
         human_clauses = []
         if not include_assets:
             human_clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+        if url_group:
+            human_clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
         human_where = ("WHERE " + " AND ".join(human_clauses)) if human_clauses else ""
         sql_human = f"""
         SELECT url_group, path, SUM(hits) AS hits
@@ -2348,9 +2410,12 @@ def content_report(
         """
         cols_h, rows_h = run_query(paths_human, sql_human)
         human_content += export_link("human-urls", date_from, date_to,
-                                     extra=f"&include_assets={'true' if include_assets else 'false'}&limit={int(limit)}")
+                                     extra=f"&include_assets={'true' if include_assets else 'false'}"
+                                           + (f"&url_group={url_group}" if url_group else "")
+                                           + f"&limit={int(limit)}")
+        chart_title = f"Top {CHART_BAR_LIMIT} human URLs" + (f" — {url_group}" if url_group else "")
         human_content += bar_chart(rows_h[:CHART_BAR_LIMIT], cols_h, x_col="path", y_col="hits",
-                                   title=f"Top {CHART_BAR_LIMIT} human URLs")
+                                   title=chart_title)
         human_content += html_table(rows_h, cols_h)
 
     tabs = tab_bar([("top-urls", "Top URLs"), ("url-groups", "URL Groups"),
@@ -2451,7 +2516,7 @@ def locales(
         locale_options = distinct_values("locale_daily", "locale", date_from, date_to)
         group_options = distinct_values("group_daily", "url_group", date_from, date_to)
         heatmap_content += f"""
-        <form method="get">
+        <form method="get" class="filter-bar">
         <input type="hidden" name="from" value="{date_from or ''}">
         <input type="hidden" name="to" value="{date_to or ''}">
         <input type="hidden" name="tab" value="heatmap">
@@ -2466,13 +2531,19 @@ def locales(
                                        extra=f"&locale={locale or ''}&url_group={url_group or ''}&limit={limit}")
 
         url_group_idx = cols_lg.index("url_group") if "url_group" in cols_lg else None
-        if not locale and not url_group:
-            heatmap_rows = rows_lg
-            if content_only and url_group_idx is not None:
-                heatmap_rows = [r for r in rows_lg if r[url_group_idx] not in NON_CONTENT_GROUPS]
-            title_hm = "Hits heatmap — locale × URL group" + (" (content only)" if content_only else "")
-            heatmap_content += heatmap_chart(heatmap_rows, cols_lg, x_col="url_group", y_col="locale",
-                                             z_col="hits", title=title_hm)
+        heatmap_rows = rows_lg
+        if content_only and url_group_idx is not None:
+            heatmap_rows = [r for r in rows_lg if r[url_group_idx] not in NON_CONTENT_GROUPS]
+        title_suffix = ""
+        if locale and url_group:
+            title_suffix = f" — locale={locale}, url_group={url_group}"
+        elif locale:
+            title_suffix = f" — locale={locale}"
+        elif url_group:
+            title_suffix = f" — url_group={url_group}"
+        title_hm = "Hits heatmap — locale × URL group" + title_suffix + (" (content only)" if content_only else "")
+        heatmap_content += heatmap_chart(heatmap_rows, cols_lg, x_col="url_group", y_col="locale",
+                                         z_col="hits", title=title_hm)
         heatmap_content += html_table(rows_lg, cols_lg, max_rows=min(int(limit), 500))
 
     tabs = tab_bar([("breakdown", "Locale Breakdown"), ("heatmap", "Locale × Group Heatmap")])
@@ -2512,14 +2583,28 @@ def _bots_tab_families(
     """
     cols_bf, rows_bf = run_query(paths_summary, sql_summary)
 
-    top_families = [r[0] for r in rows_bf[:10]]
-    if top_families:
-        families_in = ", ".join(f"'{sql_escape_string(f)}'" for f in top_families)
+    if bot:
         trend_sql = f"""
         SELECT date, bot_family, SUM(hits) AS hits
-        FROM t WHERE bot_family IN ({families_in}) {cat_and}
+        FROM t WHERE bot_family = '{sql_escape_string(bot)}' {cat_and}
         GROUP BY date, bot_family ORDER BY date, bot_family;
         """
+        trend_heading = f"Activity over time — {bot}"
+        trend_title = f"Bot hits over time — {bot}"
+    else:
+        top_families = [r[0] for r in rows_bf[:10]]
+        trend_sql = None
+        if top_families:
+            families_in = ", ".join(f"'{sql_escape_string(f)}'" for f in top_families)
+            trend_sql = f"""
+            SELECT date, bot_family, SUM(hits) AS hits
+            FROM t WHERE bot_family IN ({families_in}) {cat_and}
+            GROUP BY date, bot_family ORDER BY date, bot_family;
+            """
+            trend_heading = "Activity over time (top 10 families)"
+            trend_title = "Bot hits over time (top 10 families)"
+
+    if trend_sql:
         cols_bt, rows_bt = run_query(paths_summary, trend_sql)
         if rows_bt:
             df_t = pd.DataFrame(rows_bt, columns=cols_bt)
@@ -2527,9 +2612,9 @@ def _bots_tab_families(
             pivot_cols = list(df_pivot.columns)
             pivot_rows = [tuple(r) for r in df_pivot.itertuples(index=False, name=None)]
             y_families = [c for c in pivot_cols if c != "date"]
-            bot_families_content += "<h3>Activity over time (top 10 families)</h3>"
+            bot_families_content += f"<h3>{trend_heading}</h3>"
             bot_families_content += line_chart(pivot_rows, pivot_cols, x_col="date", y_cols=y_families,
-                                               title="Bot hits over time (top 10 families)")
+                                               title=trend_title)
 
     curr_from_b, curr_to_b, prev_from_b, prev_to_b = _compute_periods(date_from, date_to, avail)
     prev_paths_b = list_partitions("bot_daily", prev_from_b, prev_to_b)
@@ -2576,10 +2661,10 @@ def _bots_tab_families(
         error_rate = (s4xx_val + s5xx_val) / hits_val
         if error_rate > 0.5 and hits_val > 50:
             bot_recs.append(("Block", f"{family} has {error_rate:.0%} error rate across {hits_val:,} requests",
-                             f"User-agent: {family}\nDisallow: /"))
+                             bot_family_detection_blurb(family)))
         elif resource_pct > 80 and hits_val > 100:
             bot_recs.append(("Restrict", f"{family} spends {resource_pct:.0f}% of crawl on static assets ({hits_val:,} hits)",
-                             f"User-agent: {family}\nDisallow: /_nuxt/\nDisallow: /assets/"))
+                             bot_family_detection_blurb(family)))
     if bot_recs:
         bot_families_content += recommendations_section(bot_recs[:5])
 
@@ -2891,7 +2976,7 @@ def bots_report(
     checked_assets = "checked" if include_assets else ""
     checked_strict = "checked" if strict else ""
     body += f"""
-    <form method="get">
+    <form method="get" class="filter-bar">
     <input type="hidden" name="from" value="{date_from or ''}">
     <input type="hidden" name="to" value="{date_to or ''}">
     {select_html("bot", sorted(set(bots_list + waste_bots)), bot, "Bot family")}
@@ -3073,7 +3158,7 @@ def utm_report(
         traffic = "all"
 
     body += f"""
-    <form method="get">
+    <form method="get" class="filter-bar">
       <input type="hidden" name="from" value="{date_from or ''}">
       <input type="hidden" name="to" value="{date_to or ''}">
       {select_html("utm_source", utm_options, utm_source, "UTM source")}
@@ -4102,7 +4187,7 @@ def log_viewer(
     # Date filters
     min_date = avail[0] if avail else ""
     max_date = avail[-1] if avail else ""
-    body += "<form method='get'>"
+    body += "<form method='get' class='filter-bar'>"
     body += f"<label>From<input type='date' name='from' value='{date_from or ''}' min='{min_date}' max='{max_date}'></label>"
     body += f"<label>To<input type='date' name='to' value='{date_to or ''}' min='{min_date}' max='{max_date}'></label>"
     # Search with mode selector
@@ -4283,7 +4368,7 @@ def log_viewer(
         "style='width:64px;padding:3px 6px;border:1px solid #cbd5e1;border-radius:4px;font-size:12px;'>"
         "</label>"
         "<button type='submit' style='padding:3px 10px;border:1px solid #cbd5e1;border-radius:4px;"
-        "background:#fff;color:#3b82f6;font-size:12px;cursor:pointer;'>Go</button>"
+        "background:#f8fafc;color:#3b82f6;font-size:12px;cursor:pointer;'>Go</button>"
         "</form>"
     )
 
