@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import threading
+import time
+from collections import OrderedDict
 from pathlib import Path
 import json
 from datetime import datetime, timedelta
@@ -49,13 +51,66 @@ from app.settings import router as settings_router
 app.include_router(settings_router)
 
 
+REPORT_CACHE_TTL_SECONDS = int(os.environ.get("REPORT_CACHE_TTL_SECONDS", "900"))
+REPORT_CACHE_MAX_ENTRIES = int(os.environ.get("REPORT_CACHE_MAX_ENTRIES", "256"))
+
+
+class _TTLCache:
+    """Thread-safe TTL + LRU cache. Used for DuckDB query results and filesystem
+    partition scans. Keys are arbitrary hashables; values are any Python object
+    (we rely on callers not mutating cached results)."""
+
+    def __init__(self, ttl_seconds: int, max_entries: int):
+        self._ttl = max(0, ttl_seconds)
+        self._max = max(1, max_entries)
+        self._store: "OrderedDict[object, tuple[float, object]]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key):
+        if self._ttl == 0:
+            return None
+        now = time.monotonic()
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            expires_at, value = entry
+            if expires_at < now:
+                self._store.pop(key, None)
+                return None
+            self._store.move_to_end(key)
+            return value
+
+    def set(self, key, value):
+        if self._ttl == 0:
+            return
+        expires_at = time.monotonic() + self._ttl
+        with self._lock:
+            self._store[key] = (expires_at, value)
+            self._store.move_to_end(key)
+            while len(self._store) > self._max:
+                self._store.popitem(last=False)
+
+    def clear(self):
+        with self._lock:
+            self._store.clear()
+
+
+_REPORT_CACHE = _TTLCache(REPORT_CACHE_TTL_SECONDS, REPORT_CACHE_MAX_ENTRIES)
+
+
 def list_partitions(table: str, date_from: Optional[str], date_to: Optional[str]) -> List[str]:
     """
     We store partitions as: data/aggregates/<table>/date=YYYY-MM-DD/part.parquet
     To keep this beginner-friendly, we scan the filesystem and filter by date string.
     """
+    cache_key = ("list_partitions", table, date_from, date_to)
+    cached = _REPORT_CACHE.get(cache_key)
+    if cached is not None:
+        return list(cached)
     base = AGG / table
     if not base.exists():
+        _REPORT_CACHE.set(cache_key, [])
         return []
     out = []
     for p in base.glob("date=*/part.parquet"):
@@ -68,18 +123,27 @@ def list_partitions(table: str, date_from: Optional[str], date_to: Optional[str]
         if date_to and d > date_to:
             continue
         out.append(p.as_posix())
-    return sorted(out)
+    out.sort()
+    _REPORT_CACHE.set(cache_key, out)
+    return list(out)
 
 def available_dates() -> List[str]:
     """Return sorted list of dates that have at least one aggregate partition."""
+    cache_key = ("available_dates",)
+    cached = _REPORT_CACHE.get(cache_key)
+    if cached is not None:
+        return list(cached)
     dates: set[str] = set()
     if not AGG.exists():
+        _REPORT_CACHE.set(cache_key, [])
         return []
     for p in AGG.glob("*/date=*/part.parquet"):
         date_dir = p.parent.name
         if date_dir.startswith("date="):
             dates.add(date_dir.split("=", 1)[1])
-    return sorted(dates)
+    result = sorted(dates)
+    _REPORT_CACHE.set(cache_key, result)
+    return list(result)
 
 
 STATUS_CODE_LABELS = {
@@ -166,11 +230,17 @@ def _wrap_with_parquet_cte(paths: List[str], sql: str) -> str:
 def run_query(paths: List[str], sql: str):
     if not paths:
         return [], []
+    cache_key = ("run_query", tuple(paths), sql)
+    cached = _REPORT_CACHE.get(cache_key)
+    if cached is not None:
+        cols, rows = cached
+        return list(cols), list(rows)
     cur = _get_db().cursor()
     try:
         res = cur.execute(_wrap_with_parquet_cte(paths, sql))
         cols = [d[0] for d in res.description]
         rows = res.fetchall()
+        _REPORT_CACHE.set(cache_key, (tuple(cols), tuple(rows)))
         return cols, rows
     finally:
         cur.close()
@@ -1316,12 +1386,66 @@ document.addEventListener("DOMContentLoaded", () => {
     (function() {
         var tabBtns = document.querySelectorAll('.tab-btn');
         if (!tabBtns.length) return;
+
+        function executeScripts(container) {
+            // innerHTML does NOT run <script> tags; replace each with a live script so
+            // Plotly's inline initializer (from plotly.to_html) executes after injection.
+            container.querySelectorAll('script').forEach(function(oldScript) {
+                var newScript = document.createElement('script');
+                for (var i = 0; i < oldScript.attributes.length; i++) {
+                    var attr = oldScript.attributes[i];
+                    newScript.setAttribute(attr.name, attr.value);
+                }
+                newScript.text = oldScript.text;
+                oldScript.parentNode.replaceChild(newScript, oldScript);
+            });
+        }
+
+        function fragmentEndpointFor(tabId) {
+            // Only /reports/bots uses lazy tab loading today. Other report pages
+            // embed all panels eagerly, so no placeholder and no fetch.
+            if (window.location.pathname === '/reports/bots') {
+                return '/reports/bots/_tab/' + tabId;
+            }
+            return null;
+        }
+
+        function loadLazyPanel(panel) {
+            var placeholder = panel.querySelector('[data-lazy-tab]');
+            if (!placeholder) return Promise.resolve();
+            var tabId = placeholder.getAttribute('data-lazy-tab');
+            var endpoint = fragmentEndpointFor(tabId);
+            if (!endpoint) return Promise.resolve();
+            // Preserve current filter querystring; drop any existing tab= param.
+            var params = new URLSearchParams(window.location.search);
+            params.delete('tab');
+            var qs = params.toString();
+            var url = endpoint + (qs ? ('?' + qs) : '');
+            placeholder.innerHTML = "<p>Loading…</p>";
+            return fetch(url, { credentials: 'same-origin' })
+                .then(function(r) { return r.text(); })
+                .then(function(html) {
+                    panel.innerHTML = html;
+                    panel.removeAttribute('data-lazy-loaded-from');
+                    panel.setAttribute('data-lazy-loaded', '1');
+                    executeScripts(panel);
+                    panel.querySelectorAll('table.sortable').forEach(attachSortable);
+                })
+                .catch(function(err) {
+                    panel.innerHTML = "<p style='color:#e74c3c;'>Failed to load: " + (err && err.message ? err.message : 'error') + "</p>";
+                });
+        }
+
         function activateTab(tabId) {
             document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.toggle('active', b.getAttribute('data-tab') === tabId); });
             document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.toggle('active', p.id === 'tab-' + tabId); });
             var url = new URL(window.location);
             url.searchParams.set('tab', tabId);
             window.history.replaceState(null, '', url.toString());
+            var panel = document.getElementById('tab-' + tabId);
+            if (panel && panel.querySelector('[data-lazy-tab]') && !panel.getAttribute('data-lazy-loaded')) {
+                loadLazyPanel(panel);
+            }
         }
         tabBtns.forEach(function(btn) {
             btn.addEventListener('click', function() { activateTab(btn.getAttribute('data-tab')); });
@@ -1642,6 +1766,14 @@ def executive_summary(
 @app.get("/")
 def index():
     return RedirectResponse(url="/logs", status_code=302)
+
+
+@app.post("/internal/cache/clear")
+def clear_report_cache():
+    """Invalidate the report query cache. Call this after the parser publishes
+    new aggregate partitions so users see fresh data without waiting for TTL."""
+    _REPORT_CACHE.clear()
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -2216,6 +2348,388 @@ def locales(
 
 # ── /reports/bots ─────────────────────────────────────────────────────────
 
+_BOTS_VALID_TABS = {"bot-families", "ai-crawlers", "crawl-waste", "resource-waste"}
+
+
+def _bots_tab_families(
+    date_from: Optional[str],
+    date_to: Optional[str],
+    bot: Optional[str],
+    include_assets: bool,
+    category: Optional[str],
+    limit: int,
+    avail: List[str],
+) -> str:
+    paths_summary = list_partitions("bot_daily", date_from, date_to)
+    if not paths_summary:
+        return no_data_notice()
+
+    bot_families_content = ""
+    cat_where = f"WHERE bot_category = '{sql_escape_string(category)}'" if category else ""
+    cat_and = f"AND bot_category = '{sql_escape_string(category)}'" if category else ""
+    sql_summary = f"""
+    SELECT bot_family, SUM(hits) AS hits, SUM(resource_hits) AS resource_hits,
+           AVG(resource_hits_pct) AS resource_hits_pct,
+           SUM(s4xx) AS s4xx, SUM(s5xx) AS s5xx
+    FROM t {cat_where} GROUP BY bot_family ORDER BY hits DESC;
+    """
+    cols_bf, rows_bf = run_query(paths_summary, sql_summary)
+
+    top_families = [r[0] for r in rows_bf[:10]]
+    if top_families:
+        families_in = ", ".join(f"'{sql_escape_string(f)}'" for f in top_families)
+        trend_sql = f"""
+        SELECT date, bot_family, SUM(hits) AS hits
+        FROM t WHERE bot_family IN ({families_in}) {cat_and}
+        GROUP BY date, bot_family ORDER BY date, bot_family;
+        """
+        cols_bt, rows_bt = run_query(paths_summary, trend_sql)
+        if rows_bt:
+            df_t = pd.DataFrame(rows_bt, columns=cols_bt)
+            df_pivot = df_t.pivot_table(index="date", columns="bot_family", values="hits", fill_value=0).reset_index()
+            pivot_cols = list(df_pivot.columns)
+            pivot_rows = [tuple(r) for r in df_pivot.itertuples(index=False, name=None)]
+            y_families = [c for c in pivot_cols if c != "date"]
+            bot_families_content += "<h3>Activity over time (top 10 families)</h3>"
+            bot_families_content += line_chart(pivot_rows, pivot_cols, x_col="date", y_cols=y_families,
+                                               title="Bot hits over time (top 10 families)")
+
+    curr_from_b, curr_to_b, prev_from_b, prev_to_b = _compute_periods(date_from, date_to, avail)
+    prev_paths_b = list_partitions("bot_daily", prev_from_b, prev_to_b)
+    if prev_paths_b:
+        prev_cols_b, prev_rows_b = run_query(prev_paths_b, sql_summary)
+        cols_bf, rows_bf = add_trend_columns(cols_bf, rows_bf, prev_cols_b, prev_rows_b,
+                                             key_col="bot_family", metric_cols=["hits", "s4xx", "s5xx"])
+
+    chart_cols_b = [c for c in cols_bf if not c.endswith("_chg")]
+    chart_rows_b = [tuple(v for c, v in zip(cols_bf, r) if not c.endswith("_chg")) for r in rows_bf]
+    bot_families_content += "<h3>Total hits by bot family</h3>"
+    bot_families_content += bar_chart(chart_rows_b, chart_cols_b, x_col="bot_family", y_col="hits",
+                                      title="Bot hits by family")
+
+    bot_idx = cols_bf.index("bot_family")
+    def _bot_link_qs(family):
+        parts = [f"bot={family}"]
+        if date_from: parts.append(f"from={date_from}")
+        if date_to:   parts.append(f"to={date_to}")
+        if category: parts.append(f"category={category}")
+        if include_assets: parts.append("include_assets=true")
+        parts.append(f"limit={int(limit)}")
+        return "&".join(parts)
+    linked_rows = [
+        tuple(
+            f"<a href='/reports/bots?{_bot_link_qs(v)}&tab=bot-families#urls'>{v}</a>" if i == bot_idx else v
+            for i, v in enumerate(r)
+        )
+        for r in rows_bf
+    ]
+    bot_families_content += export_link("bots", date_from, date_to)
+    bot_families_content += html_table(linked_rows, cols_bf)
+
+    bot_recs: List[Tuple[str, str, str]] = []
+    _ci = {c: i for i, c in enumerate(cols_bf)}
+    for r in rows_bf:
+        family = r[_ci["bot_family"]]
+        hits_val = int(r[_ci["hits"]] or 0)
+        resource_pct = float(r[_ci["resource_hits_pct"]] or 0)
+        s4xx_val = int(r[_ci["s4xx"]] or 0)
+        s5xx_val = int(r[_ci["s5xx"]] or 0)
+        if hits_val == 0:
+            continue
+        error_rate = (s4xx_val + s5xx_val) / hits_val
+        if error_rate > 0.5 and hits_val > 50:
+            bot_recs.append(("Block", f"{family} has {error_rate:.0%} error rate across {hits_val:,} requests",
+                             f"User-agent: {family}\nDisallow: /"))
+        elif resource_pct > 80 and hits_val > 100:
+            bot_recs.append(("Restrict", f"{family} spends {resource_pct:.0f}% of crawl on static assets ({hits_val:,} hits)",
+                             f"User-agent: {family}\nDisallow: /_nuxt/\nDisallow: /assets/"))
+    if bot_recs:
+        bot_families_content += recommendations_section(bot_recs[:5])
+
+    # Prefer skinnier bot_top_urls_daily (top-50 per family) for unfiltered previews.
+    # Falls back to the full bot_urls_daily when drilling into a specific bot or when
+    # the skinnier aggregate hasn't been built yet.
+    url_limit = int(limit) if bot else 20
+    use_top_urls = (not bot) and url_limit <= 50
+    paths_urls = None
+    if use_top_urls:
+        paths_urls = list_partitions("bot_top_urls_daily", date_from, date_to)
+    if not paths_urls:
+        paths_urls = list_partitions("bot_urls_daily", date_from, date_to)
+    url_title = f"URLs crawled by {bot}" if bot else "URLs crawled — preview (click a bot above for full breakdown)"
+    bot_families_content += f"<h2 id='urls'>{url_title}</h2>"
+    if not paths_urls:
+        bot_families_content += no_data_notice()
+    else:
+        url_clauses = []
+        if bot:
+            url_clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
+        if not include_assets:
+            url_clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+        url_where = ("WHERE " + " AND ".join(url_clauses)) if url_clauses else ""
+        sql_urls = f"""
+        SELECT bot_family, url_group, path, SUM(hits) AS hits
+        FROM t {url_where}
+        GROUP BY bot_family, url_group, path ORDER BY hits DESC LIMIT {url_limit};
+        """
+        cols_u, rows_u = run_query(paths_urls, sql_urls)
+        if bot:
+            bot_families_content += export_link("bot-urls", date_from, date_to,
+                                                extra=f"&include_assets={'true' if include_assets else 'false'}&bot={bot}&limit={int(limit)}")
+            bot_families_content += bar_chart(rows_u[:CHART_BAR_LIMIT], cols_u, x_col="path", y_col="hits",
+                                              title=f"Top {CHART_BAR_LIMIT} URLs crawled by {bot}")
+        else:
+            bot_families_content += "<p>Showing top 20 across all bots. Select a bot above for the full breakdown.</p>"
+        bot_families_content += html_table(rows_u, cols_u)
+
+    return bot_families_content
+
+
+def _bots_tab_ai_crawlers(
+    date_from: Optional[str],
+    date_to: Optional[str],
+) -> str:
+    paths_ai = list_partitions("ai_crawler_daily", date_from, date_to)
+    if not paths_ai:
+        return (
+            "<div class='empty-state'>"
+            "<h3>AI Crawlers</h3>"
+            "<p>No AI crawler data available for the selected date range.</p>"
+            "<p>Run ingestion and rebuild aggregates to populate this tab.</p>"
+            "</div>"
+        )
+
+    ai_crawlers_content = ""
+    ai_trend_sql = """
+    SELECT date, bot_family, SUM(total_hits) AS hits
+    FROM t GROUP BY date, bot_family ORDER BY date, bot_family;
+    """
+    cols_ait, rows_ait = run_query(paths_ai, ai_trend_sql)
+    if rows_ait:
+        df_ai_t = pd.DataFrame(rows_ait, columns=cols_ait)
+        df_ai_pivot = df_ai_t.pivot_table(index="date", columns="bot_family", values="hits", fill_value=0).reset_index()
+        ai_pivot_cols = list(df_ai_pivot.columns)
+        ai_pivot_rows = [tuple(r) for r in df_ai_pivot.itertuples(index=False, name=None)]
+        ai_y_families = [c for c in ai_pivot_cols if c != "date"]
+        ai_crawlers_content += "<h3>AI Crawler Volume Trends</h3>"
+        ai_crawlers_content += line_chart(ai_pivot_rows, ai_pivot_cols, x_col="date", y_cols=ai_y_families,
+                                          title="Daily hits per AI crawler")
+
+    ai_summary_sql = """
+    SELECT bot_family,
+           SUM(total_hits) AS total_hits,
+           SUM(unique_urls) AS unique_urls,
+           SUM(bytes_sent) AS bytes_sent,
+           AVG(overlap_with_googlebot) AS avg_overlap
+    FROM t GROUP BY bot_family ORDER BY total_hits DESC;
+    """
+    cols_ais, rows_ais = run_query(paths_ai, ai_summary_sql)
+    if rows_ais:
+        ai_crawlers_content += "<h3>Googlebot Overlap</h3>"
+        ai_crawlers_content += "<p>Percentage of URLs also crawled by Googlebot on the same day. "
+        ai_crawlers_content += "High overlap suggests the AI crawler follows similar signals; low overlap may indicate scraping behavior.</p>"
+        ai_crawlers_content += "<div style='display:flex;flex-wrap:wrap;gap:1rem;margin:1rem 0;'>"
+        ci = {c: i for i, c in enumerate(cols_ais)}
+        for r in rows_ais:
+            family = r[ci["bot_family"]]
+            overlap = float(r[ci["avg_overlap"]] or 0)
+            total = int(r[ci["total_hits"]] or 0)
+            urls = int(r[ci["unique_urls"]] or 0)
+            ai_crawlers_content += (
+                f"<div style='border:1px solid #ddd;border-radius:8px;padding:1rem;min-width:180px;'>"
+                f"<strong>{family}</strong><br>"
+                f"<span style='font-size:1.5em;color:{'#2ecc71' if overlap > 0.5 else '#e67e22' if overlap > 0.2 else '#e74c3c'};'>"
+                f"{overlap:.0%}</span> overlap<br>"
+                f"<small>{total:,} hits &middot; {urls:,} unique URLs</small>"
+                f"</div>"
+            )
+        ai_crawlers_content += "</div>"
+
+        ai_crawlers_content += "<h3>AI Crawler Summary</h3>"
+        ai_crawlers_content += export_link("ai-crawlers", date_from, date_to)
+        ai_crawlers_content += html_table(rows_ais, cols_ais)
+
+    # Prefer the skinnier bot_top_urls_daily here: this panel only shows the
+    # top 20 URLs per AI family, which fits in the top-50 pre-rank.
+    paths_bot_urls = list_partitions("bot_top_urls_daily", date_from, date_to)
+    if not paths_bot_urls:
+        paths_bot_urls = list_partitions("bot_urls_daily", date_from, date_to)
+    if paths_bot_urls:
+        ai_families_sql = "SELECT DISTINCT bot_family FROM t;"
+        _, ai_fam_rows = run_query(paths_ai, ai_families_sql)
+        ai_family_names = [r[0] for r in ai_fam_rows] if ai_fam_rows else []
+
+        if ai_family_names:
+            families_in = ", ".join(f"'{sql_escape_string(f)}'" for f in ai_family_names)
+            content_sql = f"""
+            SELECT bot_family, url_group, path, SUM(hits) AS hits
+            FROM t WHERE bot_family IN ({families_in})
+            GROUP BY bot_family, url_group, path
+            ORDER BY bot_family, hits DESC;
+            """
+            cols_ct, rows_ct = run_query(paths_bot_urls, content_sql)
+            if rows_ct:
+                ai_crawlers_content += "<h3>Content Targeting (top 20 URLs per crawler)</h3>"
+                from collections import defaultdict
+                by_family = defaultdict(list)
+                fi = {c: i for i, c in enumerate(cols_ct)}
+                for r in rows_ct:
+                    by_family[r[fi["bot_family"]]].append(r)
+                for fam in ai_family_names:
+                    fam_rows = by_family.get(fam, [])[:20]
+                    if fam_rows:
+                        ai_crawlers_content += f"<h4>{fam}</h4>"
+                        ai_crawlers_content += html_table(fam_rows, cols_ct)
+
+    return ai_crawlers_content
+
+
+def _bots_tab_crawl_waste(
+    date_from: Optional[str],
+    date_to: Optional[str],
+    bot: Optional[str],
+    include_assets: bool,
+    strict: bool,
+    url_group: Optional[str],
+    limit: int,
+) -> str:
+    paths_waste = list_partitions("wasted_crawl_daily", date_from, date_to)
+    if not paths_waste:
+        return no_data_notice()
+
+    crawl_waste_content = ""
+    score_col = "waste_score_strict" if strict else "waste_score"
+    w_clauses = []
+    if bot:
+        w_clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
+    if url_group:
+        w_clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+    if not include_assets:
+        w_clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
+    w_where = ("WHERE " + " AND ".join(w_clauses)) if w_clauses else ""
+
+    sql_waste = f"""
+    SELECT bot_family, url_group, path,
+           SUM(bot_hits) AS bot_hits,
+           SUM(parameterized_bot_hits) AS parameterized_bot_hits,
+           SUM(redirect_bot_hits) AS redirect_bot_hits,
+           SUM(error_bot_hits) AS error_bot_hits,
+           SUM(resource_bot_hits) AS resource_bot_hits,
+           SUM(resource_parameterized_bot_hits) AS resource_parameterized_bot_hits,
+           SUM(resource_error_bot_hits) AS resource_error_bot_hits,
+           SUM({score_col}) AS waste_score
+    FROM t {w_where}
+    GROUP BY bot_family, url_group, path
+    ORDER BY waste_score DESC, bot_hits DESC LIMIT {int(limit)};
+    """
+    cols_w, rows_w = run_query(paths_waste, sql_waste)
+
+    trend_w_sql = f"""
+    SELECT date, SUM({score_col}) AS waste_score, SUM(bot_hits) AS bot_hits
+    FROM t {w_where} GROUP BY date ORDER BY date;
+    """
+    cols_wt, rows_wt = run_query(paths_waste, trend_w_sql)
+
+    crawl_waste_content += (
+        f"<p><a href='/export?report=wasted-crawl&from={date_from or ''}&to={date_to or ''}"
+        f"&strict={'true' if strict else 'false'}"
+        f"&include_assets={'true' if include_assets else 'false'}"
+        f"{'&bot=' + bot if bot else ''}"
+        f"{'&url_group=' + url_group if url_group else ''}"
+        f"&limit={int(limit)}'>Export CSV</a></p>"
+    )
+    crawl_waste_content += "<h2>Waste score trend (daily)</h2>"
+    crawl_waste_content += line_chart(rows_wt, cols_wt, x_col="date",
+                                      y_cols=["waste_score", "bot_hits"],
+                                      title="Waste score over time")
+    crawl_waste_content += "<h2>Top wasted paths</h2>"
+    crawl_waste_content += bar_chart(rows_w, cols_w, x_col="path", y_col="waste_score",
+                                     title="Highest waste score (top paths)")
+    crawl_waste_content += html_table(rows_w, cols_w)
+
+    if rows_w:
+        recs_waste: List[Tuple[str, str, str]] = []
+        bot_waste: Dict[str, Tuple[int, int]] = {}
+        for r in rows_w:
+            family = r[0]
+            bot_hits = int(r[3] or 0)
+            error_hits = int(r[6] or 0)
+            waste = int(r[-1] or 0)
+            prev = bot_waste.get(family, (0, 0))
+            bot_waste[family] = (prev[0] + waste, prev[1] + bot_hits)
+        for family, (total_waste, total_hits) in sorted(bot_waste.items(), key=lambda x: -x[1][0])[:3]:
+            if total_waste > 50:
+                recs_waste.append(("Rate-limit", f"{family} generates {total_waste:,} waste score across {total_hits:,} requests",
+                                   f"User-agent: {family}\nCrawl-delay: 10"))
+        for r in rows_w[:5]:
+            path_val = r[2]
+            error_hits = int(r[6] or 0)
+            if error_hits > 100:
+                recs_waste.append(("Fix or remove", f"{path_val} causes {error_hits:,} bot errors",
+                                   "Fix the underlying error or return 410 Gone"))
+        if recs_waste:
+            crawl_waste_content += recommendations_section(recs_waste[:6])
+
+    return crawl_waste_content
+
+
+def _bots_tab_resource_waste(
+    date_from: Optional[str],
+    date_to: Optional[str],
+    limit: int,
+) -> str:
+    paths_rw = list_partitions("top_resource_waste_daily", date_from, date_to)
+    if not paths_rw:
+        return no_data_notice()
+
+    resource_waste_content = ""
+    sql_rw = f"""
+    SELECT path, SUM(bot_hits) AS bot_hits,
+           SUM(resource_error_bot_hits) AS resource_error_bot_hits,
+           SUM(status_404_bot_hits) AS status_404_bot_hits,
+           SUM(waste_score_strict) AS waste_score_strict
+    FROM t GROUP BY path
+    ORDER BY waste_score_strict DESC, bot_hits DESC LIMIT {int(limit)};
+    """
+    cols_rw, rows_rw = run_query(paths_rw, sql_rw)
+    resource_waste_content += export_link("top-resource-waste", date_from, date_to, extra=f"&limit={int(limit)}")
+    resource_waste_content += bar_chart(rows_rw, cols_rw, x_col="path", y_col="waste_score_strict",
+                                        title="Top resource waste (strict)")
+    resource_waste_content += html_table(rows_rw, cols_rw)
+    return resource_waste_content
+
+
+def _bots_render_tab(
+    tab_id: str,
+    date_from: Optional[str],
+    date_to: Optional[str],
+    bot: Optional[str],
+    include_assets: bool,
+    strict: bool,
+    url_group: Optional[str],
+    category: Optional[str],
+    limit: int,
+    avail: List[str],
+) -> str:
+    if tab_id == "bot-families":
+        return _bots_tab_families(date_from, date_to, bot, include_assets, category, limit, avail)
+    if tab_id == "ai-crawlers":
+        return _bots_tab_ai_crawlers(date_from, date_to)
+    if tab_id == "crawl-waste":
+        return _bots_tab_crawl_waste(date_from, date_to, bot, include_assets, strict, url_group, limit)
+    if tab_id == "resource-waste":
+        return _bots_tab_resource_waste(date_from, date_to, limit)
+    return no_data_notice()
+
+
+def _lazy_tab_placeholder(tab_id: str) -> str:
+    return (
+        f"<div class='lazy-tab-placeholder' data-lazy-tab='{tab_id}' "
+        "style='padding:2rem;text-align:center;color:#64748b;'>"
+        "<p>Loading…</p></div>"
+    )
+
+
 @app.get("/reports/bots", response_class=HTMLResponse)
 def bots_report(
     date_from: Optional[str] = Query(None, alias="from"),
@@ -2226,6 +2740,7 @@ def bots_report(
     url_group: Optional[str] = None,
     category: Optional[str] = None,
     limit: str = "500",
+    tab: Optional[str] = None,
 ):
     limit = _parse_int(limit, 500)
     avail = available_dates()
@@ -2252,329 +2767,41 @@ def bots_report(
     </form>
     """
 
-    # ── Bot Families tab ──
-    bot_families_content = ""
-    paths_summary = list_partitions("bot_daily", date_from, date_to)
-    if not paths_summary:
-        bot_families_content = no_data_notice()
-    else:
-        cat_where = f"WHERE bot_category = '{sql_escape_string(category)}'" if category else ""
-        cat_and = f"AND bot_category = '{sql_escape_string(category)}'" if category else ""
-        sql_summary = f"""
-        SELECT bot_family, SUM(hits) AS hits, SUM(resource_hits) AS resource_hits,
-               AVG(resource_hits_pct) AS resource_hits_pct,
-               SUM(s4xx) AS s4xx, SUM(s5xx) AS s5xx
-        FROM t {cat_where} GROUP BY bot_family ORDER BY hits DESC;
-        """
-        cols_bf, rows_bf = run_query(paths_summary, sql_summary)
+    active_tab = tab if tab in _BOTS_VALID_TABS else "bot-families"
 
-        # Trend: top-10 bots over time
-        top_families = [r[0] for r in rows_bf[:10]]
-        if top_families:
-            families_in = ", ".join(f"'{sql_escape_string(f)}'" for f in top_families)
-            trend_sql = f"""
-            SELECT date, bot_family, SUM(hits) AS hits
-            FROM t WHERE bot_family IN ({families_in}) {cat_and}
-            GROUP BY date, bot_family ORDER BY date, bot_family;
-            """
-            cols_bt, rows_bt = run_query(paths_summary, trend_sql)
-            if rows_bt:
-                df_t = pd.DataFrame(rows_bt, columns=cols_bt)
-                df_pivot = df_t.pivot_table(index="date", columns="bot_family", values="hits", fill_value=0).reset_index()
-                pivot_cols = list(df_pivot.columns)
-                pivot_rows = [tuple(r) for r in df_pivot.itertuples(index=False, name=None)]
-                y_families = [c for c in pivot_cols if c != "date"]
-                bot_families_content += "<h3>Activity over time (top 10 families)</h3>"
-                bot_families_content += line_chart(pivot_rows, pivot_cols, x_col="date", y_cols=y_families,
-                                                   title="Bot hits over time (top 10 families)")
-
-        # Trend columns
-        curr_from_b, curr_to_b, prev_from_b, prev_to_b = _compute_periods(date_from, date_to, avail)
-        prev_paths_b = list_partitions("bot_daily", prev_from_b, prev_to_b)
-        if prev_paths_b:
-            prev_cols_b, prev_rows_b = run_query(prev_paths_b, sql_summary)
-            cols_bf, rows_bf = add_trend_columns(cols_bf, rows_bf, prev_cols_b, prev_rows_b,
-                                                 key_col="bot_family", metric_cols=["hits", "s4xx", "s5xx"])
-
-        chart_cols_b = [c for c in cols_bf if not c.endswith("_chg")]
-        chart_rows_b = [tuple(v for c, v in zip(cols_bf, r) if not c.endswith("_chg")) for r in rows_bf]
-        bot_families_content += "<h3>Total hits by bot family</h3>"
-        bot_families_content += bar_chart(chart_rows_b, chart_cols_b, x_col="bot_family", y_col="hits",
-                                          title="Bot hits by family")
-
-        # Bot family links
-        bot_idx = cols_bf.index("bot_family")
-        def _bot_link_qs(family):
-            parts = [f"bot={family}"]
-            if date_from: parts.append(f"from={date_from}")
-            if date_to:   parts.append(f"to={date_to}")
-            if category: parts.append(f"category={category}")
-            if include_assets: parts.append("include_assets=true")
-            parts.append(f"limit={int(limit)}")
-            return "&".join(parts)
-        linked_rows = [
-            tuple(
-                f"<a href='/reports/bots?{_bot_link_qs(v)}&tab=bot-families#urls'>{v}</a>" if i == bot_idx else v
-                for i, v in enumerate(r)
-            )
-            for r in rows_bf
-        ]
-        bot_families_content += export_link("bots", date_from, date_to)
-        bot_families_content += html_table(linked_rows, cols_bf)
-
-        # Bot recommendations
-        bot_recs: List[Tuple[str, str, str]] = []
-        _ci = {c: i for i, c in enumerate(cols_bf)}
-        for r in rows_bf:
-            family = r[_ci["bot_family"]]
-            hits_val = int(r[_ci["hits"]] or 0)
-            resource_pct = float(r[_ci["resource_hits_pct"]] or 0)
-            s4xx_val = int(r[_ci["s4xx"]] or 0)
-            s5xx_val = int(r[_ci["s5xx"]] or 0)
-            if hits_val == 0:
-                continue
-            error_rate = (s4xx_val + s5xx_val) / hits_val
-            if error_rate > 0.5 and hits_val > 50:
-                bot_recs.append(("Block", f"{family} has {error_rate:.0%} error rate across {hits_val:,} requests",
-                                 f"User-agent: {family}\nDisallow: /"))
-            elif resource_pct > 80 and hits_val > 100:
-                bot_recs.append(("Restrict", f"{family} spends {resource_pct:.0f}% of crawl on static assets ({hits_val:,} hits)",
-                                 f"User-agent: {family}\nDisallow: /_nuxt/\nDisallow: /assets/"))
-        if bot_recs:
-            bot_families_content += recommendations_section(bot_recs[:5])
-
-        # Bot URL drill-down
-        paths_urls = list_partitions("bot_urls_daily", date_from, date_to)
-        url_title = f"URLs crawled by {bot}" if bot else "URLs crawled — preview (click a bot above for full breakdown)"
-        bot_families_content += f"<h2 id='urls'>{url_title}</h2>"
-        if not paths_urls:
-            bot_families_content += no_data_notice()
+    body += tab_bar([("bot-families", "Bot Families"), ("ai-crawlers", "AI Crawlers"),
+                     ("crawl-waste", "Crawl Waste"), ("resource-waste", "Resource Waste")])
+    # Only the active tab is rendered eagerly; the other three render a
+    # placeholder that the client fetches on demand from /reports/bots/_tab/*.
+    for tid in ("bot-families", "ai-crawlers", "crawl-waste", "resource-waste"):
+        if tid == active_tab:
+            content = _bots_render_tab(tid, date_from, date_to, bot, include_assets,
+                                       strict, url_group, category, limit, avail)
         else:
-            url_clauses = []
-            if bot:
-                url_clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
-            if not include_assets:
-                url_clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-            url_where = ("WHERE " + " AND ".join(url_clauses)) if url_clauses else ""
-            url_limit = int(limit) if bot else 20
-            sql_urls = f"""
-            SELECT bot_family, url_group, path, SUM(hits) AS hits
-            FROM t {url_where}
-            GROUP BY bot_family, url_group, path ORDER BY hits DESC LIMIT {url_limit};
-            """
-            cols_u, rows_u = run_query(paths_urls, sql_urls)
-            if bot:
-                bot_families_content += export_link("bot-urls", date_from, date_to,
-                                                    extra=f"&include_assets={'true' if include_assets else 'false'}&bot={bot}&limit={int(limit)}")
-                bot_families_content += bar_chart(rows_u[:CHART_BAR_LIMIT], cols_u, x_col="path", y_col="hits",
-                                                  title=f"Top {CHART_BAR_LIMIT} URLs crawled by {bot}")
-            else:
-                bot_families_content += "<p>Showing top 20 across all bots. Select a bot above for the full breakdown.</p>"
-            bot_families_content += html_table(rows_u, cols_u)
-
-    # ── AI Crawlers tab ──
-    ai_crawlers_content = ""
-    paths_ai = list_partitions("ai_crawler_daily", date_from, date_to)
-    if not paths_ai:
-        ai_crawlers_content = (
-            "<div class='empty-state'>"
-            "<h3>AI Crawlers</h3>"
-            "<p>No AI crawler data available for the selected date range.</p>"
-            "<p>Run ingestion and rebuild aggregates to populate this tab.</p>"
-            "</div>"
-        )
-    else:
-        # Volume trend chart: daily hits per AI crawler family
-        ai_trend_sql = """
-        SELECT date, bot_family, SUM(total_hits) AS hits
-        FROM t GROUP BY date, bot_family ORDER BY date, bot_family;
-        """
-        cols_ait, rows_ait = run_query(paths_ai, ai_trend_sql)
-        if rows_ait:
-            df_ai_t = pd.DataFrame(rows_ait, columns=cols_ait)
-            df_ai_pivot = df_ai_t.pivot_table(index="date", columns="bot_family", values="hits", fill_value=0).reset_index()
-            ai_pivot_cols = list(df_ai_pivot.columns)
-            ai_pivot_rows = [tuple(r) for r in df_ai_pivot.itertuples(index=False, name=None)]
-            ai_y_families = [c for c in ai_pivot_cols if c != "date"]
-            ai_crawlers_content += "<h3>AI Crawler Volume Trends</h3>"
-            ai_crawlers_content += line_chart(ai_pivot_rows, ai_pivot_cols, x_col="date", y_cols=ai_y_families,
-                                               title="Daily hits per AI crawler")
-
-        # Summary KPI cards: total hits, unique URLs, Googlebot overlap per crawler
-        ai_summary_sql = """
-        SELECT bot_family,
-               SUM(total_hits) AS total_hits,
-               SUM(unique_urls) AS unique_urls,
-               SUM(bytes_sent) AS bytes_sent,
-               AVG(overlap_with_googlebot) AS avg_overlap
-        FROM t GROUP BY bot_family ORDER BY total_hits DESC;
-        """
-        cols_ais, rows_ais = run_query(paths_ai, ai_summary_sql)
-        if rows_ais:
-            # Googlebot overlap KPI cards
-            ai_crawlers_content += "<h3>Googlebot Overlap</h3>"
-            ai_crawlers_content += "<p>Percentage of URLs also crawled by Googlebot on the same day. "
-            ai_crawlers_content += "High overlap suggests the AI crawler follows similar signals; low overlap may indicate scraping behavior.</p>"
-            ai_crawlers_content += "<div style='display:flex;flex-wrap:wrap;gap:1rem;margin:1rem 0;'>"
-            ci = {c: i for i, c in enumerate(cols_ais)}
-            for r in rows_ais:
-                family = r[ci["bot_family"]]
-                overlap = float(r[ci["avg_overlap"]] or 0)
-                total = int(r[ci["total_hits"]] or 0)
-                urls = int(r[ci["unique_urls"]] or 0)
-                ai_crawlers_content += (
-                    f"<div style='border:1px solid #ddd;border-radius:8px;padding:1rem;min-width:180px;'>"
-                    f"<strong>{family}</strong><br>"
-                    f"<span style='font-size:1.5em;color:{'#2ecc71' if overlap > 0.5 else '#e67e22' if overlap > 0.2 else '#e74c3c'};'>"
-                    f"{overlap:.0%}</span> overlap<br>"
-                    f"<small>{total:,} hits &middot; {urls:,} unique URLs</small>"
-                    f"</div>"
-                )
-            ai_crawlers_content += "</div>"
-
-            # Summary table
-            ai_crawlers_content += "<h3>AI Crawler Summary</h3>"
-            ai_crawlers_content += export_link("ai-crawlers", date_from, date_to)
-            ai_crawlers_content += html_table(rows_ais, cols_ais)
-
-        # Content targeting: per AI crawler, top 20 URLs hit
-        paths_bot_urls = list_partitions("bot_urls_daily", date_from, date_to)
-        if paths_bot_urls:
-            # Get list of AI crawler families from the ai_crawler_daily data
-            ai_families_sql = "SELECT DISTINCT bot_family FROM t;"
-            _, ai_fam_rows = run_query(paths_ai, ai_families_sql)
-            ai_family_names = [r[0] for r in ai_fam_rows] if ai_fam_rows else []
-
-            if ai_family_names:
-                families_in = ", ".join(f"'{sql_escape_string(f)}'" for f in ai_family_names)
-                content_sql = f"""
-                SELECT bot_family, url_group, path, SUM(hits) AS hits
-                FROM t WHERE bot_family IN ({families_in})
-                GROUP BY bot_family, url_group, path
-                ORDER BY bot_family, hits DESC;
-                """
-                cols_ct, rows_ct = run_query(paths_bot_urls, content_sql)
-                if rows_ct:
-                    ai_crawlers_content += "<h3>Content Targeting (top 20 URLs per crawler)</h3>"
-                    # Group by bot_family and show top 20
-                    from collections import defaultdict
-                    by_family = defaultdict(list)
-                    fi = {c: i for i, c in enumerate(cols_ct)}
-                    for r in rows_ct:
-                        by_family[r[fi["bot_family"]]].append(r)
-                    for fam in ai_family_names:
-                        fam_rows = by_family.get(fam, [])[:20]
-                        if fam_rows:
-                            ai_crawlers_content += f"<h4>{fam}</h4>"
-                            ai_crawlers_content += html_table(fam_rows, cols_ct)
-
-    # ── Crawl Waste tab ──
-    crawl_waste_content = ""
-    paths_waste = list_partitions("wasted_crawl_daily", date_from, date_to)
-    if not paths_waste:
-        crawl_waste_content = no_data_notice()
-    else:
-        score_col = "waste_score_strict" if strict else "waste_score"
-        w_clauses = []
-        if bot:
-            w_clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
-        if url_group:
-            w_clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
-        if not include_assets:
-            w_clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-        w_where = ("WHERE " + " AND ".join(w_clauses)) if w_clauses else ""
-
-        sql_waste = f"""
-        SELECT bot_family, url_group, path,
-               SUM(bot_hits) AS bot_hits,
-               SUM(parameterized_bot_hits) AS parameterized_bot_hits,
-               SUM(redirect_bot_hits) AS redirect_bot_hits,
-               SUM(error_bot_hits) AS error_bot_hits,
-               SUM(resource_bot_hits) AS resource_bot_hits,
-               SUM(resource_parameterized_bot_hits) AS resource_parameterized_bot_hits,
-               SUM(resource_error_bot_hits) AS resource_error_bot_hits,
-               SUM({score_col}) AS waste_score
-        FROM t {w_where}
-        GROUP BY bot_family, url_group, path
-        ORDER BY waste_score DESC, bot_hits DESC LIMIT {int(limit)};
-        """
-        cols_w, rows_w = run_query(paths_waste, sql_waste)
-
-        trend_w_sql = f"""
-        SELECT date, SUM({score_col}) AS waste_score, SUM(bot_hits) AS bot_hits
-        FROM t {w_where} GROUP BY date ORDER BY date;
-        """
-        cols_wt, rows_wt = run_query(paths_waste, trend_w_sql)
-
-        crawl_waste_content += (
-            f"<p><a href='/export?report=wasted-crawl&from={date_from or ''}&to={date_to or ''}"
-            f"&strict={'true' if strict else 'false'}"
-            f"&include_assets={'true' if include_assets else 'false'}"
-            f"{'&bot=' + bot if bot else ''}"
-            f"{'&url_group=' + url_group if url_group else ''}"
-            f"&limit={int(limit)}'>Export CSV</a></p>"
-        )
-        crawl_waste_content += "<h2>Waste score trend (daily)</h2>"
-        crawl_waste_content += line_chart(rows_wt, cols_wt, x_col="date",
-                                          y_cols=["waste_score", "bot_hits"],
-                                          title="Waste score over time")
-        crawl_waste_content += "<h2>Top wasted paths</h2>"
-        crawl_waste_content += bar_chart(rows_w, cols_w, x_col="path", y_col="waste_score",
-                                         title="Highest waste score (top paths)")
-        crawl_waste_content += html_table(rows_w, cols_w)
-
-        # Wasted crawl recommendations
-        if rows_w:
-            recs_waste: List[Tuple[str, str, str]] = []
-            bot_waste: Dict[str, Tuple[int, int]] = {}
-            for r in rows_w:
-                family = r[0]
-                bot_hits = int(r[3] or 0)
-                error_hits = int(r[6] or 0)
-                waste = int(r[-1] or 0)
-                prev = bot_waste.get(family, (0, 0))
-                bot_waste[family] = (prev[0] + waste, prev[1] + bot_hits)
-            for family, (total_waste, total_hits) in sorted(bot_waste.items(), key=lambda x: -x[1][0])[:3]:
-                if total_waste > 50:
-                    recs_waste.append(("Rate-limit", f"{family} generates {total_waste:,} waste score across {total_hits:,} requests",
-                                       f"User-agent: {family}\nCrawl-delay: 10"))
-            for r in rows_w[:5]:
-                path_val = r[2]
-                error_hits = int(r[6] or 0)
-                if error_hits > 100:
-                    recs_waste.append(("Fix or remove", f"{path_val} causes {error_hits:,} bot errors",
-                                       "Fix the underlying error or return 410 Gone"))
-            if recs_waste:
-                crawl_waste_content += recommendations_section(recs_waste[:6])
-
-    # ── Resource Waste tab ──
-    resource_waste_content = ""
-    paths_rw = list_partitions("top_resource_waste_daily", date_from, date_to)
-    if not paths_rw:
-        resource_waste_content = no_data_notice()
-    else:
-        sql_rw = f"""
-        SELECT path, SUM(bot_hits) AS bot_hits,
-               SUM(resource_error_bot_hits) AS resource_error_bot_hits,
-               SUM(status_404_bot_hits) AS status_404_bot_hits,
-               SUM(waste_score_strict) AS waste_score_strict
-        FROM t GROUP BY path
-        ORDER BY waste_score_strict DESC, bot_hits DESC LIMIT {int(limit)};
-        """
-        cols_rw, rows_rw = run_query(paths_rw, sql_rw)
-        resource_waste_content += export_link("top-resource-waste", date_from, date_to, extra=f"&limit={int(limit)}")
-        resource_waste_content += bar_chart(rows_rw, cols_rw, x_col="path", y_col="waste_score_strict",
-                                            title="Top resource waste (strict)")
-        resource_waste_content += html_table(rows_rw, cols_rw)
-
-    tabs = tab_bar([("bot-families", "Bot Families"), ("ai-crawlers", "AI Crawlers"),
-                    ("crawl-waste", "Crawl Waste"), ("resource-waste", "Resource Waste")])
-    body += tabs
-    body += tab_panel("bot-families", bot_families_content)
-    body += tab_panel("ai-crawlers", ai_crawlers_content)
-    body += tab_panel("crawl-waste", crawl_waste_content)
-    body += tab_panel("resource-waste", resource_waste_content)
+            content = _lazy_tab_placeholder(tid)
+        body += tab_panel(tid, content)
     return page("Bots", body)
+
+
+@app.get("/reports/bots/_tab/{tab_id}", response_class=HTMLResponse)
+def bots_tab_fragment(
+    tab_id: str,
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    bot: Optional[str] = None,
+    include_assets: bool = False,
+    strict: bool = False,
+    url_group: Optional[str] = None,
+    category: Optional[str] = None,
+    limit: str = "500",
+):
+    if tab_id not in _BOTS_VALID_TABS:
+        return HTMLResponse(no_data_notice(), status_code=404)
+    parsed_limit = _parse_int(limit, 500)
+    avail = available_dates()
+    html = _bots_render_tab(tab_id, date_from, date_to, bot, include_assets,
+                            strict, url_group, category, parsed_limit, avail)
+    return HTMLResponse(html)
 
 
 # ── /reports/referer-flow ─────────────────────────────────────────────────

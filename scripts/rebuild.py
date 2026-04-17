@@ -68,6 +68,7 @@ AGG_TABLES = [
     "wasted_crawl_daily",
     "top_resource_waste_daily",
     "bot_urls_daily",
+    "bot_top_urls_daily",
 
     # legacy
     "utm_chatgpt_daily",
