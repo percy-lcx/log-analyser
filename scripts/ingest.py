@@ -473,7 +473,7 @@ def _build_parsed_native(log_date: str, files: List[Path], native_bin: Path, sit
                     ts_local::TIMESTAMPTZ  AS ts_local,
                     ts_utc::TIMESTAMP      AS ts_utc,
                     edge_ip,
-                    country,
+                    CAST(country AS VARCHAR) AS country,
                     method,
                     path,
                     http_version,
