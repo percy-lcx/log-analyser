@@ -716,65 +716,71 @@ def _build_gsc_daily_aggregate(log_date: str, conn: duckdb.DuckDBPyConnection,
     if not gsc_path.exists():
         return
 
-    try:
-        # Read GSC page-level data (exclude query-level rows)
-        conn.execute(f"""
-            CREATE OR REPLACE VIEW gsc_raw AS
-            SELECT * FROM read_parquet('{gsc_path.as_posix()}')
-            WHERE query IS NULL
-        """)
-
-        # Check if there's any data
-        count = conn.execute("SELECT COUNT(*) FROM gsc_raw").fetchone()[0]
-        if count == 0:
-            return
-
-        # Aggregate log crawl data per normalized path
-        gsc_daily_sql = """
-        WITH gsc AS (
-            SELECT
-                date,
-                page,
-                SUM(clicks) AS clicks,
-                SUM(impressions) AS impressions,
-                AVG(ctr) AS ctr,
-                AVG(position) AS position
-            FROM gsc_raw
-            GROUP BY date, page
-        ),
-        log_crawl AS (
-            SELECT
-                date,
-                LOWER(RTRIM(path, '/')) AS norm_path,
-                COUNT(*) AS crawl_hits,
-                SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS bot_hits,
-                SUM(CASE WHEN NOT is_bot THEN 1 ELSE 0 END) AS human_hits
-            FROM parsed
-            GROUP BY date, LOWER(RTRIM(path, '/'))
-        )
+    # Read GSC page-level data (exclude query-level rows). Strip scheme+host
+    # from page so it matches log-side paths (GSC stores full URLs like
+    # 'https://host/path' while access logs store '/path' only).
+    conn.execute(f"""
+        CREATE OR REPLACE VIEW gsc_raw AS
         SELECT
-            COALESCE(g.date, l.date) AS date,
-            COALESCE(g.page, l.norm_path) AS page,
-            COALESCE(g.clicks, 0) AS clicks,
-            COALESCE(g.impressions, 0) AS impressions,
-            COALESCE(g.ctr, 0.0) AS ctr,
-            COALESCE(g.position, 0.0) AS position,
-            COALESCE(l.crawl_hits, 0) AS crawl_hits,
-            COALESCE(l.bot_hits, 0) AS bot_hits,
-            COALESCE(l.human_hits, 0) AS human_hits,
-            CASE WHEN l.crawl_hits > 0 THEN TRUE ELSE FALSE END AS has_crawl_activity,
-            CASE WHEN g.impressions > 0 THEN TRUE ELSE FALSE END AS has_impressions
-        FROM gsc g
-        FULL OUTER JOIN log_crawl l
-            ON LOWER(RTRIM(REGEXP_REPLACE(g.page, '\\?.*$', ''), '/')) = l.norm_path
-            AND g.date = l.date
-        """
-        out_path = out_fn("gsc_daily")
-        agg_write_one(conn, gsc_daily_sql, out_path)
-        print(f"[agg] gsc_daily written for {log_date}", flush=True)
-    except Exception as e:
-        print(f"[agg] gsc_daily error: {e}", flush=True)
-        import traceback; traceback.print_exc()
+            date,
+            REGEXP_REPLACE(page, '^https?://[^/]+', '') AS page,
+            query, clicks, impressions, ctr, position
+        FROM read_parquet('{gsc_path.as_posix()}')
+        WHERE query IS NULL
+    """)
+
+    count = conn.execute("SELECT COUNT(*) FROM gsc_raw").fetchone()[0]
+    if count == 0:
+        return
+
+    # DuckDB 1.5.2 hits an internal assertion ("Unsupported type for
+    # NumericValueUnionToValue") when this aggregation is expressed as an
+    # inline CTE consumed by a FULL OUTER JOIN further down. Materializing
+    # it into a table first sidesteps the bug.
+    conn.execute("""
+        CREATE OR REPLACE TABLE gsc_agg AS
+        SELECT
+            page,
+            date,
+            SUM(clicks) AS clicks,
+            SUM(impressions) AS impressions,
+            AVG(ctr) AS ctr,
+            AVG(position) AS position
+        FROM gsc_raw
+        GROUP BY page, date
+    """)
+
+    gsc_daily_sql = r"""
+    WITH log_crawl AS (
+        SELECT
+            date,
+            LOWER(RTRIM(path, '/')) AS norm_path,
+            COUNT(*) AS crawl_hits,
+            SUM(CASE WHEN is_bot THEN 1 ELSE 0 END) AS bot_hits,
+            SUM(CASE WHEN NOT is_bot THEN 1 ELSE 0 END) AS human_hits
+        FROM parsed
+        GROUP BY date, LOWER(RTRIM(path, '/'))
+    )
+    SELECT
+        COALESCE(g.date, l.date) AS date,
+        COALESCE(g.page, l.norm_path) AS page,
+        COALESCE(g.clicks, 0) AS clicks,
+        COALESCE(g.impressions, 0) AS impressions,
+        COALESCE(g.ctr, 0.0) AS ctr,
+        COALESCE(g.position, 0.0) AS position,
+        COALESCE(l.crawl_hits, 0) AS crawl_hits,
+        COALESCE(l.bot_hits, 0) AS bot_hits,
+        COALESCE(l.human_hits, 0) AS human_hits,
+        CASE WHEN l.crawl_hits > 0 THEN TRUE ELSE FALSE END AS has_crawl_activity,
+        CASE WHEN g.impressions > 0 THEN TRUE ELSE FALSE END AS has_impressions
+    FROM gsc_agg g
+    FULL OUTER JOIN log_crawl l
+        ON LOWER(RTRIM(REGEXP_REPLACE(g.page, '\?.*$', ''), '/')) = l.norm_path
+        AND g.date = l.date
+    """
+    out_path = out_fn("gsc_daily")
+    agg_write_one(conn, gsc_daily_sql, out_path)
+    print(f"[agg] gsc_daily written for {log_date}", flush=True)
 
 
 def build_aggregates_for_date(log_date: str) -> None:

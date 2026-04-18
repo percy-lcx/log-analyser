@@ -261,13 +261,15 @@ def run_auth_flow():
 
     flow = InstalledAppFlow.from_client_secrets_file(
         str(CREDENTIALS_PATH), scopes=SCOPES,
-        redirect_uri="urn:ietf:wg:oauth:2.0:oob"
+        redirect_uri="http://localhost"
     )
 
     auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
     print("\n=== Google Search Console Authorization ===")
     print(f"\n1. Open this URL in your browser:\n\n   {auth_url}\n")
-    print("2. Authorize access and copy the authorization code.")
+    print("2. After approving, your browser will redirect to http://localhost/?code=...")
+    print("   It will show a connection-refused page - that is expected.")
+    print("   Copy the 'code' value from the URL bar (between ?code= and &scope).")
 
     auth_code = input("\n3. Paste the authorization code here: ").strip()
     if not auth_code:

@@ -16,3 +16,10 @@ data/aggregates/
 parser/log-parser
 parser/log-parser.exe
 parser/log-analyser-parser
+
+# GSC integration (OAuth secrets and pulled data)
+state/gsc_credentials.json
+data/gsc/
+
+# Local tooling
+.claude/

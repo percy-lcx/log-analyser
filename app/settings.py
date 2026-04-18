@@ -33,6 +33,11 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 _tasks: Dict[str, Dict[str, Any]] = {}
 
+# PKCE verifiers generated during /api/settings/gsc/auth-url, keyed by OAuth
+# state so the follow-up /api/settings/gsc/auth request can attach the same
+# verifier to the token exchange.
+_gsc_pkce_verifiers: Dict[str, str] = {}
+
 
 def _new_task(kind: str) -> str:
     tid = uuid.uuid4().hex[:12]
@@ -1179,11 +1184,32 @@ async def api_gsc_auth(request: Request):
     if not auth_code:
         return JSONResponse({"error": "Authorization code required"}, status_code=400)
 
+    # Accept either the raw code, a URL-encoded code (e.g. 4%2F0AX...), or the
+    # full redirect URL pasted from the browser. Google's OAuth codes contain
+    # '/' which the browser URL-encodes as %2F; passing that encoded form to
+    # the token endpoint yields invalid_grant.
+    from urllib.parse import urlparse, parse_qs, unquote
+    pasted_state = ""
+    if "code=" in auth_code and ("://" in auth_code or auth_code.startswith("/?")):
+        qs = parse_qs(urlparse(auth_code).query)
+        auth_code = (qs.get("code") or [""])[0]
+        pasted_state = (qs.get("state") or [""])[0]
+    else:
+        auth_code = unquote(auth_code)
+        pasted_state = body.get("state", "")
+
     creds_path = STATE_DIR / "gsc_credentials.json"
     if not creds_path.exists():
         return JSONResponse({
             "error": f"OAuth credentials file not found at {creds_path}. "
                      "Download it from Google Cloud Console."
+        }, status_code=400)
+
+    verifier = _gsc_pkce_verifiers.pop(pasted_state, None) if pasted_state else None
+    if pasted_state and verifier is None:
+        return JSONResponse({
+            "error": "Auth session expired (verifier not found for this state). "
+                     "Click 'Get Authorization URL' again to restart the flow."
         }, status_code=400)
 
     try:
@@ -1192,8 +1218,10 @@ async def api_gsc_auth(request: Request):
         flow = InstalledAppFlow.from_client_secrets_file(
             str(creds_path),
             scopes=["https://www.googleapis.com/auth/webmasters.readonly"],
-            redirect_uri="urn:ietf:wg:oauth:2.0:oob"
+            redirect_uri="http://localhost"
         )
+        if verifier:
+            flow.code_verifier = verifier
         flow.fetch_token(code=auth_code)
         creds = flow.credentials
 
@@ -1221,6 +1249,8 @@ async def api_gsc_auth(request: Request):
             "client_secret": client_info.get("client_secret", ""),
         }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return JSONResponse({"error": str(e)}, status_code=400)
 
 
@@ -1323,11 +1353,15 @@ def api_gsc_auth_url():
         flow = InstalledAppFlow.from_client_secrets_file(
             str(creds_path),
             scopes=["https://www.googleapis.com/auth/webmasters.readonly"],
-            redirect_uri="urn:ietf:wg:oauth:2.0:oob"
+            redirect_uri="http://localhost"
         )
-        auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+        auth_url, state = flow.authorization_url(prompt="consent", access_type="offline")
+        if flow.code_verifier:
+            _gsc_pkce_verifiers[state] = flow.code_verifier
         return {"auth_url": auth_url}
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return JSONResponse({"error": str(e)}, status_code=400)
 
 
@@ -1363,9 +1397,9 @@ def settings_gsc():
             <div id='authUrlBox' style='display:none;margin-top:12px;'>
                 <p style='font-size:13px;margin-bottom:6px;'>Open this URL in your browser and authorize access:</p>
                 <input id='authUrl' readonly style='width:100%;padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px;background:#f8fafc;margin-bottom:10px;'>
-                <p style='font-size:13px;margin-bottom:6px;'>Paste the authorization code here:</p>
+                <p style='font-size:13px;margin-bottom:6px;line-height:1.5;'>After approving, your browser will redirect to <code style='background:#f1f5f9;padding:1px 4px;border-radius:3px;'>http://localhost/?code=...</code> and show a <em>can't reach this page</em> error &mdash; that's expected. Copy the <strong>entire URL</strong> from the browser address bar and paste it below.</p>
                 <div style='display:flex;gap:8px;'>
-                    <input id='authCode' placeholder='Authorization code' style='flex:1;padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;'>
+                    <input id='authCode' placeholder='Paste http://localhost/?code=... URL here' style='flex:1;padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;'>
                     <button class='btn-sm btn-blue' onclick='exchangeCode()'>Connect</button>
                 </div>
             </div>
