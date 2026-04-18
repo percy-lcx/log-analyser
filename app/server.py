@@ -21,13 +21,51 @@ from fastapi.responses import (
 import csv
 import functools
 import io
+import itertools
 from html import escape as html_escape
 
 import yaml
 
-import plotly.express as px
-import plotly.graph_objects as go
 import pandas as pd
+
+_chart_uid_counter = itertools.count(1)
+
+
+def _chart_uid() -> str:
+    return f"ec{next(_chart_uid_counter)}"
+
+
+def _echart_html(option: dict, height: int = 400, fns: Optional[Dict[str, str]] = None) -> str:
+    """Wrap an ECharts option dict in a div + init script, ready to embed.
+
+    fns: map of placeholder marker (e.g. "__FMT__") to a JS function literal.
+    Each occurrence of "<marker>" in the JSON is replaced with the literal,
+    letting callers inject formatter functions that JSON cannot represent.
+    """
+    uid = _chart_uid()
+    opt_json = json.dumps(option, default=str)
+    if fns:
+        for marker, js in fns.items():
+            opt_json = opt_json.replace(f'"{marker}"', js)
+    # Defer init until the browser has done layout — inline scripts run during
+    # parsing, when clientWidth can be 0 and ECharts would lock to that width.
+    # ResizeObserver also handles sidebar collapse / window resize after init.
+    return (
+        f"<div class='card'>"
+        f"<div id='{uid}' data-echart style='width:100%;height:{height}px'></div>"
+        f"<script>(function(){{"
+        f"var el=document.getElementById('{uid}');"
+        f"if(!el||!window.echarts)return;"
+        f"var opt={opt_json};"
+        f"function init(){{"
+        f"var c=echarts.getInstanceByDom(el)||echarts.init(el);"
+        f"c.setOption(opt);c.resize();"
+        f"if(window.ResizeObserver){{new ResizeObserver(function(){{c.resize();}}).observe(el);}}}}"
+        f"if(document.readyState==='loading'){{document.addEventListener('DOMContentLoaded',init);}}"
+        f"else{{requestAnimationFrame(init);}}"
+        f"}})();</script>"
+        f"</div>"
+    )
 
 ROOT = Path(__file__).resolve().parents[1]
 AGG = ROOT / "data" / "aggregates"
@@ -301,17 +339,22 @@ def _coerce_datetime(df: pd.DataFrame, col: str) -> None:
         df[col] = pd.to_datetime(df[col], errors="coerce")
 
 
+def _to_float_or_none(v):
+    if v is None or (isinstance(v, float) and pd.isna(v)) or pd.isna(v):
+        return None
+    try:
+        return float(v)
+    except Exception:
+        return None
+
+
 def line_chart(rows, columns, x_col, y_cols, title):
     if not rows:
         return "<p>No data.</p>"
 
     df = pd.DataFrame(rows, columns=columns)
-
-    # x: stringify dates/timestamps so JSON is simple and Plotly parses it reliably
     x_series = df[x_col] if x_col in df.columns else pd.Series([])
-    x = [None if pd.isna(v) else str(v) for v in x_series.tolist()]
-
-    fig = go.Figure()
+    x = ["" if pd.isna(v) else str(v) for v in x_series.tolist()]
 
     status_colors = {
         "s2xx": "#03e200",
@@ -320,28 +363,54 @@ def line_chart(rows, columns, x_col, y_cols, title):
         "s5xx": "#ff2a07",
     }
 
-
-    # y: force float conversion; invalid -> None (so Plotly will gap)
+    series = []
     for yc in y_cols:
         if yc not in df.columns:
             continue
-        y_raw = df[yc].tolist()
-        y = []
-        for v in y_raw:
-            if v is None or (isinstance(v, float) and pd.isna(v)) or pd.isna(v):
-                y.append(None)
-            else:
-                try:
-                    y.append(float(v))
-                except Exception:
-                    y.append(None)
-
+        y = [_to_float_or_none(v) for v in df[yc].tolist()]
         color = status_colors.get(yc)
-        fig.add_trace(go.Scatter(x=x, y=y, mode="lines", name=STATUS_CODE_LABELS.get(yc, yc), line=dict(color=color) if color else {}))
+        s = {
+            "name": STATUS_CODE_LABELS.get(yc, yc),
+            "type": "line",
+            "data": y,
+            "showSymbol": False,
+            "connectNulls": False,
+            "smooth": False,
+        }
+        if color:
+            s["itemStyle"] = {"color": color}
+            s["lineStyle"] = {"color": color}
+        series.append(s)
 
-    fig.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20), title=title)
-    chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
-    return f"<div class='card'>{chart_html}</div>"
+    option = {
+        "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14, "fontWeight": "normal"}},
+        "tooltip": {"trigger": "axis"},
+        "legend": {"top": 28, "type": "scroll"},
+        "grid": {"left": 10, "right": 20, "top": 70, "bottom": 30, "containLabel": True},
+        "xAxis": {"type": "category", "data": x, "boundaryGap": False},
+        "yAxis": {"type": "value"},
+        "series": series,
+    }
+    return _echart_html(option)
+
+
+# Tooltip formatter that reads the pre-formatted "fmt" string off each data point.
+# Works for both axis-trigger (params is array) and item-trigger (params is single).
+_BYTES_TOOLTIP_FN = (
+    "function(p){var a=Array.isArray(p)?p[0]:p;"
+    "var lbl=a.axisValueLabel||a.name||'';"
+    "var fmt=(a.data&&a.data.fmt)||a.value;"
+    "return lbl+'<br/>'+fmt;}"
+)
+
+
+def _bytes_data(values):
+    """Build ECharts data array with pre-formatted byte strings on each point."""
+    out = []
+    for v in values:
+        fv = _to_float_or_none(v)
+        out.append({"value": fv, "fmt": fmt_bytes(fv) if fv is not None else ""})
+    return out
 
 
 def bytes_line_chart(rows, columns, x_col, y_col, title):
@@ -349,20 +418,23 @@ def bytes_line_chart(rows, columns, x_col, y_col, title):
     if not rows:
         return "<p>No data.</p>"
     df = pd.DataFrame(rows, columns=columns)
-    x = [None if pd.isna(v) else str(v) for v in df[x_col].tolist()]
-    y, text = [], []
-    for v in df[y_col].tolist():
-        try:
-            fv = float(v) if v is not None and not (isinstance(v, float) and pd.isna(v)) else None
-        except Exception:
-            fv = None
-        y.append(fv)
-        text.append(fmt_bytes(fv) if fv is not None else "")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=x, y=y, mode="lines", name=y_col,
-                             text=text, hovertemplate="%{x}<br>%{text}<extra></extra>"))
-    fig.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20), title=title)
-    return f"<div class='card'>{fig.to_html(full_html=False, include_plotlyjs=False)}</div>"
+    x = ["" if pd.isna(v) else str(v) for v in df[x_col].tolist()]
+    data = _bytes_data(df[y_col].tolist())
+    option = {
+        "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14, "fontWeight": "normal"}},
+        "tooltip": {"trigger": "axis", "formatter": "__BYTES_FMT__"},
+        "grid": {"left": 10, "right": 20, "top": 50, "bottom": 30, "containLabel": True},
+        "xAxis": {"type": "category", "data": x, "boundaryGap": False},
+        "yAxis": {"type": "value"},
+        "series": [{
+            "name": y_col,
+            "type": "line",
+            "data": data,
+            "showSymbol": False,
+            "connectNulls": False,
+        }],
+    }
+    return _echart_html(option, fns={"__BYTES_FMT__": _BYTES_TOOLTIP_FN})
 
 
 def bytes_bar_chart(rows, columns, x_col, y_col, title):
@@ -371,19 +443,20 @@ def bytes_bar_chart(rows, columns, x_col, y_col, title):
         return "<p>No data.</p>"
     df = pd.DataFrame(rows, columns=columns)
     x = ["" if v is None or pd.isna(v) else str(v) for v in df[x_col].tolist()]
-    y, text = [], []
-    for v in df[y_col].tolist():
-        try:
-            fv = float(v) if v is not None and not (isinstance(v, float) and pd.isna(v)) else None
-        except Exception:
-            fv = None
-        y.append(fv)
-        text.append(fmt_bytes(fv) if fv is not None else "")
-    fig = go.Figure()
-    fig.add_trace(go.Bar(name=y_col, x=x, y=y,
-                         text=text, hovertemplate="%{x}<br>%{text}<extra></extra>"))
-    fig.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20), title=title)
-    return f"<div class='card'>{fig.to_html(full_html=False, include_plotlyjs=False)}</div>"
+    data = _bytes_data(df[y_col].tolist())
+    option = {
+        "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14, "fontWeight": "normal"}},
+        "tooltip": {"trigger": "axis", "formatter": "__BYTES_FMT__"},
+        "grid": {"left": 10, "right": 20, "top": 50, "bottom": 30, "containLabel": True},
+        "xAxis": {"type": "category", "data": x},
+        "yAxis": {"type": "value"},
+        "series": [{
+            "name": y_col,
+            "type": "bar",
+            "data": data,
+        }],
+    }
+    return _echart_html(option, fns={"__BYTES_FMT__": _BYTES_TOOLTIP_FN})
 
 
 def bar_chart(rows, columns, x_col, y_col=None, title="", y_cols=None, barmode="group"):
@@ -392,36 +465,36 @@ def bar_chart(rows, columns, x_col, y_col=None, title="", y_cols=None, barmode="
         return "<p>No data.</p>"
 
     df = pd.DataFrame(rows, columns=columns)
-
     x_series = df[x_col] if x_col in df.columns else pd.Series([])
     x = ["" if v is None or pd.isna(v) else str(v) for v in x_series.tolist()]
 
     series_cols = y_cols if y_cols else [y_col]
+    stack_key = "total" if barmode == "stack" else None
 
-    fig = go.Figure()
+    series = []
     for yc in series_cols:
         if yc not in df.columns:
             continue
-        y_raw = df[yc].tolist()
-        y = []
-        for v in y_raw:
-            if v is None or (isinstance(v, float) and pd.isna(v)) or pd.isna(v):
-                y.append(None)
-            else:
-                try:
-                    y.append(float(v))
-                except Exception:
-                    y.append(None)
-        fig.add_trace(go.Bar(name=STATUS_CODE_LABELS.get(yc, yc), x=x, y=y))
+        y = [_to_float_or_none(v) for v in df[yc].tolist()]
+        s = {
+            "name": STATUS_CODE_LABELS.get(yc, yc),
+            "type": "bar",
+            "data": y,
+        }
+        if stack_key:
+            s["stack"] = stack_key
+        series.append(s)
 
-    fig.update_layout(
-        height=400,
-        margin=dict(l=20, r=20, t=40, b=20),
-        title=title,
-        barmode=barmode,
-    )
-    chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
-    return f"<div class='card'>{chart_html}</div>"
+    option = {
+        "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14, "fontWeight": "normal"}},
+        "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
+        "legend": {"top": 28, "type": "scroll"},
+        "grid": {"left": 10, "right": 20, "top": 70, "bottom": 30, "containLabel": True},
+        "xAxis": {"type": "category", "data": x},
+        "yAxis": {"type": "value"},
+        "series": series,
+    }
+    return _echart_html(option)
 
 
 def heatmap_chart(rows, columns, x_col, y_col, z_col, title):
@@ -430,23 +503,43 @@ def heatmap_chart(rows, columns, x_col, y_col, z_col, title):
         return "<p>No data.</p>"
 
     df = pd.DataFrame(rows, columns=columns)
-
     pivot = df.pivot_table(index=y_col, columns=x_col, values=z_col, aggfunc="sum", fill_value=0)
-    z = [[0.0 if (v is None or (isinstance(v, float) and pd.isna(v))) else float(v) for v in row] for row in pivot.values]
     x_labels = [str(c) for c in pivot.columns]
     y_labels = [str(r) for r in pivot.index]
 
-    fig = go.Figure(data=go.Heatmap(
-        z=z, x=x_labels, y=y_labels,
-        colorscale="Blues", hoverongaps=False,
-    ))
-    fig.update_layout(
-        height=min(max(300, 30 * len(y_labels) + 80), 1800),
-        margin=dict(l=20, r=20, t=40, b=60),
-        title=title,
-    )
-    chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
-    return f"<div class='card'>{chart_html}</div>"
+    data = []
+    z_max = 0.0
+    for yi, row in enumerate(pivot.values):
+        for xi, v in enumerate(row):
+            fv = 0.0 if (v is None or (isinstance(v, float) and pd.isna(v))) else float(v)
+            data.append([xi, yi, fv])
+            if fv > z_max:
+                z_max = fv
+
+    height = min(max(300, 30 * len(y_labels) + 80), 1800)
+    option = {
+        "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14, "fontWeight": "normal"}},
+        "tooltip": {"position": "top"},
+        "grid": {"left": 10, "right": 20, "top": 50, "bottom": 60, "containLabel": True},
+        "xAxis": {"type": "category", "data": x_labels, "splitArea": {"show": True}, "axisLabel": {"rotate": 30}},
+        "yAxis": {"type": "category", "data": y_labels, "splitArea": {"show": True}},
+        "visualMap": {
+            "min": 0,
+            "max": z_max if z_max > 0 else 1,
+            "calculable": True,
+            "orient": "horizontal",
+            "left": "center",
+            "bottom": 0,
+            "inRange": {"color": ["#f7fbff", "#deebf7", "#9ecae1", "#4292c6", "#08519c", "#08306b"]},
+        },
+        "series": [{
+            "name": z_col,
+            "type": "heatmap",
+            "data": data,
+            "emphasis": {"itemStyle": {"shadowBlur": 10, "shadowColor": "rgba(0,0,0,0.3)"}},
+        }],
+    }
+    return _echart_html(option, height=height)
 
 
 def sql_escape_string(s: str) -> str:
@@ -932,7 +1025,7 @@ def tab_panel(tid: str, content: str) -> str:
 
 def page(title: str, body: str) -> HTMLResponse:
 
-    plotly_cdn = "<script src='https://cdn.plot.ly/plotly-latest.min.js'></script>"
+    charts_cdn = "<script src='https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js'></script>"
 
     nav_items = [
         ("Log Viewer", "/logs"),
@@ -1585,6 +1678,17 @@ function enhanceAllTables(root) {
     (root || document).querySelectorAll("table.sortable").forEach(enhanceTable);
 }
 
+// Resize every ECharts instance on the page when the window resizes.
+// ECharts charts are fixed-size at init and don't auto-respond to layout changes.
+function resizeAllECharts() {
+    if (!window.echarts) return;
+    document.querySelectorAll('[data-echart]').forEach(function(el) {
+        var inst = echarts.getInstanceByDom(el);
+        if (inst) inst.resize();
+    });
+}
+window.addEventListener('resize', resizeAllECharts);
+
 document.addEventListener("DOMContentLoaded", () => {
     enhanceAllTables();
 
@@ -1595,7 +1699,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
         function executeScripts(container) {
             // innerHTML does NOT run <script> tags; replace each with a live script so
-            // Plotly's inline initializer (from plotly.to_html) executes after injection.
+            // each chart's inline echarts.init(...) call runs after injection.
             container.querySelectorAll('script').forEach(function(oldScript) {
                 var newScript = document.createElement('script');
                 for (var i = 0; i < oldScript.attributes.length; i++) {
@@ -1791,7 +1895,7 @@ document.addEventListener("DOMContentLoaded", () => {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{title} — Log Dashboard</title>
-    {plotly_cdn}
+    {charts_cdn}
     {css}
 </head>
 <body>
@@ -3571,32 +3675,61 @@ def gsc_report(
     eff += "<h2>Crawl Frequency vs Position</h2>"
     eff += "<p style='font-size:13px;color:#64748b;margin-bottom:8px;'>Scatter plot showing relationship between crawl frequency and average search position per page.</p>"
     if rows_sc:
-        import plotly.graph_objects as _go
         df_sc = pd.DataFrame(rows_sc, columns=cols_sc)
-        fig = _go.Figure()
-        fig.add_trace(_go.Scatter(
-            x=[float(v) if v is not None else 0 for v in df_sc["crawl_hits"].tolist()],
-            y=[float(v) if v is not None else 0 for v in df_sc["avg_position"].tolist()],
-            mode="markers",
-            text=[str(v) for v in df_sc["page"].tolist()],
-            hovertemplate="%{text}<br>Crawl hits: %{x}<br>Avg position: %{y:.1f}<extra></extra>",
-            marker=dict(
-                size=[max(4, min(20, int(float(v or 0) / max(1, float(df_sc["impressions"].max() or 1)) * 20))) for v in df_sc["impressions"].tolist()],
-                color=[float(v) if v is not None else 0 for v in df_sc["clicks"].tolist()],
-                colorscale="Blues",
-                showscale=True,
-                colorbar=dict(title="Clicks"),
-            ),
-        ))
-        fig.update_layout(
-            height=500,
-            margin=dict(l=20, r=20, t=40, b=20),
-            title="Crawl Hits vs Avg Position (bubble size = impressions, color = clicks)",
-            xaxis_title="Crawl Hits",
-            yaxis_title="Avg Position (lower is better)",
-            yaxis=dict(autorange="reversed"),
+        impressions = [float(v or 0) for v in df_sc["impressions"].tolist()]
+        max_imp = max(impressions) if impressions else 1.0
+        clicks = [float(v) if v is not None else 0.0 for v in df_sc["clicks"].tolist()]
+        max_clicks = max(clicks) if clicks else 1.0
+        scatter_data = []
+        for page_v, x_v, y_v, imp_v, click_v in zip(
+            df_sc["page"].tolist(),
+            df_sc["crawl_hits"].tolist(),
+            df_sc["avg_position"].tolist(),
+            impressions,
+            clicks,
+        ):
+            xf = float(x_v) if x_v is not None else 0.0
+            yf = float(y_v) if y_v is not None else 0.0
+            size = max(4, min(20, int(imp_v / max(1.0, max_imp) * 20)))
+            scatter_data.append({
+                "value": [xf, yf, click_v],
+                "page": str(page_v),
+                "imp": imp_v,
+                "symbolSize": size,
+            })
+        scatter_fn = (
+            "function(p){var d=p.data;"
+            "return d.page+'<br/>Crawl hits: '+d.value[0]+"
+            "'<br/>Avg position: '+d.value[1].toFixed(1)+"
+            "'<br/>Impressions: '+d.imp+'<br/>Clicks: '+d.value[2];}"
         )
-        eff += f"<div class='card'>{fig.to_html(full_html=False, include_plotlyjs=False)}</div>"
+        scatter_option = {
+            "title": {
+                "text": "Crawl Hits vs Avg Position (bubble size = impressions, color = clicks)",
+                "left": "center",
+                "textStyle": {"fontSize": 14, "fontWeight": "normal"},
+            },
+            "tooltip": {"trigger": "item", "formatter": "__SCATTER_FMT__"},
+            "grid": {"left": 50, "right": 60, "top": 60, "bottom": 50, "containLabel": True},
+            "xAxis": {"type": "value", "name": "Crawl Hits", "nameLocation": "middle", "nameGap": 30},
+            "yAxis": {"type": "value", "name": "Avg Position (lower is better)", "nameLocation": "middle", "nameGap": 40, "inverse": True},
+            "visualMap": {
+                "min": 0,
+                "max": max_clicks if max_clicks > 0 else 1,
+                "dimension": 2,
+                "calculable": True,
+                "orient": "vertical",
+                "right": 10,
+                "top": "middle",
+                "text": ["Clicks", ""],
+                "inRange": {"color": ["#f7fbff", "#deebf7", "#9ecae1", "#4292c6", "#08519c", "#08306b"]},
+            },
+            "series": [{
+                "type": "scatter",
+                "data": scatter_data,
+            }],
+        }
+        eff += _echart_html(scatter_option, height=500, fns={"__SCATTER_FMT__": scatter_fn})
     else:
         eff += "<p style='color:#94a3b8;'>Not enough data for scatter plot (need pages with both crawl and impressions).</p>"
 
