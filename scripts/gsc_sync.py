@@ -23,6 +23,8 @@ STATE_DIR = ROOT / "state"
 MANIFEST_DB = STATE_DIR / "manifest.sqlite"
 CREDENTIALS_PATH = STATE_DIR / "gsc_credentials.json"
 DATA_GSC = ROOT / "data" / "gsc"
+DATA_PARSED = ROOT / "data" / "parsed"
+DATA_AGG = ROOT / "data" / "aggregates"
 
 # GSC API limits
 MAX_ROWS_PER_REQUEST = 25000
@@ -424,6 +426,41 @@ def save_gsc_parquet(df: pd.DataFrame, date_str: str):
     return out_path
 
 
+def rebuild_gsc_daily_for(date_str: str) -> bool:
+    # The gsc_daily aggregate joins fresh GSC data against parsed logs. If the
+    # parsed partition isn't there yet (logs ingested later), skip silently —
+    # the next rebuild.py run will pick it up.
+    parsed = DATA_PARSED / f"date={date_str}" / "access.parquet"
+    if not parsed.exists():
+        return False
+
+    import importlib.util
+    import duckdb
+
+    spec = importlib.util.spec_from_file_location(
+        "ingest", (ROOT / "scripts" / "ingest.py").as_posix()
+    )
+    ingest = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(ingest)
+
+    conn = duckdb.connect(database=":memory:")
+    try:
+        conn.execute("PRAGMA threads=4;")
+        conn.execute(
+            f"CREATE OR REPLACE VIEW parsed AS "
+            f"SELECT * FROM read_parquet('{parsed.as_posix()}');"
+        )
+
+        def out(name: str) -> Path:
+            return DATA_AGG / name / f"date={date_str}" / "part.parquet"
+
+        ingest._build_gsc_daily_aggregate(date_str, conn, out)
+    finally:
+        conn.close()
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Sync logic
 # ---------------------------------------------------------------------------
@@ -453,6 +490,10 @@ def sync_dates(date_list: list[str], force: bool = False):
             n = len(df)
             if n > 0:
                 save_gsc_parquet(df, date_str)
+                try:
+                    rebuild_gsc_daily_for(date_str)
+                except Exception as agg_err:
+                    print(f" (gsc_daily rebuild failed: {agg_err})", end="")
             update_sync_state(date_str, "done", n)
             log_sync(date_str, "success", n, started_at=started_at,
                      completed_at=datetime.now(tz=timezone.utc).isoformat())
