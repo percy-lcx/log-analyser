@@ -3537,8 +3537,13 @@ def gsc_report(
             )
         else:
             body += (
-                "<p>GSC data exists but no <code>gsc_daily</code> aggregates found for this date range. "
-                "Run a rebuild to generate aggregates, or adjust the date filter.</p>"
+                "<div class='empty-state'>"
+                "<h3>No aggregates for this date range</h3>"
+                "<p>Raw GSC data exists for other dates, but the <code>gsc_daily</code> "
+                "aggregate has not been built for the range you selected.</p>"
+                "<p>Run <code>python scripts/backfill_gsc_daily.py</code> to fill gaps, "
+                "or adjust the date filter above to a range that already has aggregates.</p>"
+                "</div>"
             )
         return page("Search Console", body)
 
