@@ -894,11 +894,23 @@ def multi_select_html(name: str, options: List[str], selected: List[str], label:
     for opt in options:
         chk = "checked" if opt in sel_set else ""
         cbs += f"<label><input type='checkbox' value='{opt}' {chk}> {opt}</label>"
+    header = (
+        "<div class='ms-header'>"
+        "<input type='text' class='ms-search' placeholder='Type to filter...' autocomplete='off'>"
+        "<div class='ms-meta'>"
+        "<span class='ms-count'></span>"
+        "<div class='ms-actions'>"
+        "<button type='button' class='ms-select-visible'>Select visible</button>"
+        "<button type='button' class='ms-clear-all'>Clear all</button>"
+        "</div>"
+        "</div>"
+        "</div>"
+    )
     return (
         f"<div class='ms-wrap'>"
         f"<span class='ms-label'>{label}</span>"
         f"<button type='button' class='ms-toggle'>{btn_text} &#9662;</button>"
-        f"<div class='ms-dropdown'>{cbs}</div>"
+        f"<div class='ms-dropdown'>{header}<div class='ms-list'>{cbs}</div></div>"
         f"<input type='hidden' name='{name}' value='{hidden_val}'>"
         f"</div>"
     )
@@ -1102,16 +1114,28 @@ body {
 }
 .content form.filter-bar input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: #3b82f6; }
 .content form.filter-bar button[type=submit] { height: 34px; padding: 0 18px; }
+.content form.filter-bar .clear-filters-btn { height: 34px; padding: 0 14px; display: inline-flex; align-items: center; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; color: #64748b; text-decoration: none; font-size: 13px; font-weight: 500; cursor: pointer; transition: border-color 0.12s, color 0.12s; }
+.content form.filter-bar .clear-filters-btn:hover { border-color: #94a3b8; color: #334155; }
 
 /* ── Multi-select checkbox dropdown ── */
 .ms-wrap { position: relative; display: flex; flex-direction: column; gap: 4px; }
 .ms-label { font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.4px; }
 .ms-toggle { text-align: left; cursor: pointer; }
 .ms-toggle:hover { border-color: #94a3b8; }
-.ms-dropdown { display: none; position: absolute; top: 100%; left: 0; z-index: 50; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 240px; overflow-y: auto; min-width: 160px; padding: 6px 0; margin-top: 2px; }
-.ms-dropdown.open { display: block; }
-.ms-dropdown label { display: flex; align-items: center; gap: 6px; padding: 4px 12px; font-size: 13px; cursor: pointer; text-transform: none; font-weight: 400; color: #334155; letter-spacing: 0; }
-.ms-dropdown label:hover { background: #f1f5f9; }
+.ms-dropdown { display: none; position: absolute; top: 100%; left: 0; z-index: 50; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); min-width: 220px; margin-top: 2px; flex-direction: column; }
+.ms-dropdown.open { display: flex; }
+.ms-dropdown .ms-header { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; display: flex; flex-direction: column; gap: 6px; background: #f8fafc; border-radius: 6px 6px 0 0; }
+.content form.filter-bar .ms-dropdown input.ms-search { box-sizing: border-box; width: 100%; height: 28px; padding: 0 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; color: #334155; background: #fff; outline: none; }
+.content form.filter-bar .ms-dropdown input.ms-search:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.15); }
+.ms-dropdown .ms-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ms-dropdown .ms-count { font-size: 11px; color: #64748b; font-weight: 500; }
+.ms-dropdown .ms-actions { display: flex; gap: 6px; }
+.content form.filter-bar .ms-dropdown .ms-actions button { background: none; border: none; padding: 2px 4px; height: auto; font-size: 11px; color: #3b82f6; cursor: pointer; text-transform: none; letter-spacing: 0; }
+.content form.filter-bar .ms-dropdown .ms-actions button:hover { text-decoration: underline; background: none; }
+.ms-dropdown .ms-list { max-height: 220px; overflow-y: auto; padding: 6px 0; }
+.content form.filter-bar .ms-dropdown label { display: flex; flex-direction: row; align-items: center; gap: 6px; padding: 4px 12px; font-size: 13px; cursor: pointer; text-transform: none; font-weight: 400; color: #334155; letter-spacing: 0; }
+.content form.filter-bar .ms-dropdown label:hover { background: #f1f5f9; }
+.content form.filter-bar .ms-dropdown label.ms-hidden { display: none !important; }
 
 /* ── Buttons ── */
 button[type=submit] {
@@ -1648,6 +1672,33 @@ document.addEventListener("DOMContentLoaded", () => {
             var dropdown = wrap.querySelector('.ms-dropdown');
             var hidden = wrap.querySelector('input[type=hidden]');
             if (!toggle || !dropdown || !hidden) return;
+            var search = dropdown.querySelector('.ms-search');
+            var countEl = dropdown.querySelector('.ms-count');
+            var selectVisibleBtn = dropdown.querySelector('.ms-select-visible');
+            var clearAllBtn = dropdown.querySelector('.ms-clear-all');
+            var list = dropdown.querySelector('.ms-list');
+            var labels = list ? Array.from(list.querySelectorAll('label')) : [];
+            var total = labels.length;
+
+            function applyFilter(query) {
+                var q = (query || '').trim().toLowerCase();
+                var shown = 0;
+                labels.forEach(function(lbl) {
+                    var txt = lbl.textContent.trim().toLowerCase();
+                    var match = !q || txt.indexOf(q) !== -1;
+                    lbl.classList.toggle('ms-hidden', !match);
+                    if (match) shown++;
+                });
+                if (countEl) countEl.textContent = q ? (shown + ' of ' + total) : String(total);
+            }
+
+            var filterTimer = null;
+            function scheduleFilter() {
+                if (filterTimer) clearTimeout(filterTimer);
+                filterTimer = setTimeout(function() {
+                    applyFilter(search ? search.value : '');
+                }, 150);
+            }
 
             toggle.addEventListener('click', function(e) {
                 e.preventDefault();
@@ -1655,7 +1706,13 @@ document.addEventListener("DOMContentLoaded", () => {
                 document.querySelectorAll('.ms-dropdown.open').forEach(function(d) {
                     if (d !== dropdown) d.classList.remove('open');
                 });
+                var willOpen = !dropdown.classList.contains('open');
                 dropdown.classList.toggle('open');
+                if (willOpen && search) {
+                    search.value = '';
+                    applyFilter('');
+                    search.focus();
+                }
             });
 
             function updateState() {
@@ -1670,6 +1727,36 @@ document.addEventListener("DOMContentLoaded", () => {
             dropdown.querySelectorAll('input[type=checkbox]').forEach(function(cb) {
                 cb.addEventListener('change', updateState);
             });
+
+            if (search) {
+                search.addEventListener('input', scheduleFilter);
+                search.addEventListener('click', function(e) { e.stopPropagation(); });
+            }
+            if (selectVisibleBtn) {
+                selectVisibleBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    labels.forEach(function(lbl) {
+                        if (lbl.classList.contains('ms-hidden')) return;
+                        var cb = lbl.querySelector('input[type=checkbox]');
+                        if (cb && !cb.checked) cb.checked = true;
+                    });
+                    updateState();
+                });
+            }
+            if (clearAllBtn) {
+                clearAllBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    labels.forEach(function(lbl) {
+                        var cb = lbl.querySelector('input[type=checkbox]');
+                        if (cb && cb.checked) cb.checked = false;
+                    });
+                    updateState();
+                });
+            }
+
+            applyFilter('');
         });
 
         // Close dropdowns when clicking outside
@@ -1679,6 +1766,19 @@ document.addEventListener("DOMContentLoaded", () => {
                     d.classList.remove('open');
                 });
             }
+        });
+    })();
+
+    // Append "Clear filters" button to every filter bar — navigates to the
+    // current page with no query string so every filter on the active report resets.
+    (function() {
+        document.querySelectorAll('form.filter-bar').forEach(function(form) {
+            if (form.querySelector('.clear-filters-btn')) return;
+            var a = document.createElement('a');
+            a.className = 'clear-filters-btn';
+            a.textContent = 'Clear filters';
+            a.href = window.location.pathname;
+            form.appendChild(a);
         });
     })();
 });
