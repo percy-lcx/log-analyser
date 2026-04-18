@@ -327,6 +327,24 @@ def _parse_csv_param(value: Optional[str]) -> List[str]:
     return [v.strip() for v in value.split(",") if v.strip()]
 
 
+def _in_clause(column: str, values: List[str]) -> Optional[str]:
+    """Return `col IN ('v1','v2',...)` SQL, or None when values is empty."""
+    if not values:
+        return None
+    escaped = ",".join(f"'{sql_escape_string(v)}'" for v in values)
+    return f"{column} IN ({escaped})"
+
+
+def _fmt_filter_display(values: List[str]) -> str:
+    """Render a selected-values list for titles (e.g. 'a, b')."""
+    return ", ".join(values)
+
+
+def _fmt_filter_param(values: List[str]) -> str:
+    """Render a selected-values list back into a CSV query-param value."""
+    return ",".join(values)
+
+
 def _coerce_numeric(df: pd.DataFrame, cols: List[str]) -> None:
     for c in cols:
         if c in df.columns:
@@ -2253,6 +2271,7 @@ def status_codes_report(
     limit: str = "500",
 ):
     limit = _parse_int(limit, 500)
+    url_groups = _parse_csv_param(url_group)
     avail = available_dates()
     body = date_filters_html(date_from, date_to, avail)
 
@@ -2265,18 +2284,22 @@ def status_codes_report(
     body += "<form method='get' class='filter-bar'>"
     body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
     body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
-    body += select_html("url_group", all_groups, url_group, "URL group")
+    body += multi_select_html("url_group", all_groups, url_groups, "URL group")
     body += f" <label><input type='checkbox' name='include_assets' value='true' {checked}> Include assets</label>"
     body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
     body += " <button type='submit'>Apply</button></form>"
+
+    url_group_param = _fmt_filter_param(url_groups)
+    url_group_display = _fmt_filter_display(url_groups)
 
     # Shared WHERE clause for asset/group filters
     def _where():
         clauses = []
         if not include_assets:
             clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-        if url_group:
-            clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+        group_clause = _in_clause("url_group", url_groups)
+        if group_clause:
+            clauses.append(group_clause)
         return ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
     where = _where()
@@ -2309,8 +2332,8 @@ def status_codes_report(
         cols_s, rows_s = run_query(paths_trend, sql_status)
         trends += export_link("daily-status", date_from, date_to)
         title_trend = "Status Codes Over Time"
-        if url_group:
-            title_trend += f" — url_group={url_group}"
+        if url_groups:
+            title_trend += f" — url_group={url_group_display}"
         trends += line_chart(rows_s, cols_s, x_col="date",
                              y_cols=["s2xx", "s3xx", "s4xx", "s5xx"],
                              title=title_trend)
@@ -2344,7 +2367,7 @@ def status_codes_report(
 
         redirects += export_link("top-3xx", date_from, date_to,
                                  extra=f"&include_assets={'true' if include_assets else 'false'}"
-                                       + (f"&url_group={url_group}" if url_group else "")
+                                       + (f"&url_group={url_group_param}" if url_groups else "")
                                        + f"&limit={int(limit)}")
         redirects += "<h2>Redirect trend (daily)</h2>"
         redirects += line_chart(rows_d3, cols_d3, x_col="date",
@@ -2390,7 +2413,7 @@ def status_codes_report(
 
         client_errors += export_link("top-4xx", date_from, date_to,
                                      extra=f"&include_assets={'true' if include_assets else 'false'}"
-                                           + (f"&url_group={url_group}" if url_group else "")
+                                           + (f"&url_group={url_group_param}" if url_groups else "")
                                            + f"&limit={int(limit)}")
         client_errors += "<h2>4xx trend (daily)</h2>"
         client_errors += line_chart(rows_d4, cols_d4, x_col="date",
@@ -2449,7 +2472,7 @@ def status_codes_report(
 
         server_errors += export_link("top-5xx", date_from, date_to,
                                      extra=f"&include_assets={'true' if include_assets else 'false'}"
-                                           + (f"&url_group={url_group}" if url_group else "")
+                                           + (f"&url_group={url_group_param}" if url_groups else "")
                                            + f"&limit={int(limit)}")
         server_errors += "<h2>5xx trend (daily)</h2>"
         server_errors += line_chart(rows_d5, cols_d5, x_col="date",
@@ -2501,6 +2524,7 @@ def content_report(
     limit: str = "500",
 ):
     limit = _parse_int(limit, 500)
+    url_groups = _parse_csv_param(url_group)
     avail = available_dates()
     body = date_filters_html(date_from, date_to, avail)
 
@@ -2510,16 +2534,20 @@ def content_report(
     body += "<form method='get' class='filter-bar'>"
     body += f"<input type='hidden' name='from' value='{date_from or ''}'>"
     body += f"<input type='hidden' name='to' value='{date_to or ''}'>"
-    body += select_html("url_group", groups, url_group, "URL group")
+    body += multi_select_html("url_group", groups, url_groups, "URL group")
     body += f" <label><input type='checkbox' name='include_assets' value='true' {checked}> Include assets</label>"
     body += f" <label>Limit: <input name='limit' value='{int(limit)}' size='6'></label>"
     body += " <button type='submit'>Apply</button></form>"
 
+    url_group_param = _fmt_filter_param(url_groups)
+    url_group_display = _fmt_filter_display(url_groups)
+
     clauses = []
     if not include_assets:
         clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-    if url_group:
-        clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+    group_clause = _in_clause("url_group", url_groups)
+    if group_clause:
+        clauses.append(group_clause)
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
     # ── Top URLs tab ──
@@ -2539,7 +2567,7 @@ def content_report(
         cols_t, rows_t = run_query(paths_urls, sql_top)
         top_urls_content += export_link("top-urls", date_from, date_to,
                                         extra=f"&include_assets={'true' if include_assets else 'false'}"
-                                              + (f"&url_group={url_group}" if url_group else "")
+                                              + (f"&url_group={url_group_param}" if url_groups else "")
                                               + f"&limit={int(limit)}")
         if rows_t:
             top_urls_content += bar_chart(rows_t[:CHART_BAR_LIMIT], cols_t, x_col="path",
@@ -2582,7 +2610,7 @@ def content_report(
         cols_b, rows_b = run_query(paths_urls, sql_bytes)
         page_size_content += export_link("url-bytes", date_from, date_to,
                                          extra=f"&include_assets={'true' if include_assets else 'false'}"
-                                               + (f"&url_group={url_group}" if url_group else "")
+                                               + (f"&url_group={url_group_param}" if url_groups else "")
                                                + f"&limit={int(limit)}")
         if rows_b:
             page_size_content += bytes_bar_chart(rows_b[:CHART_BAR_LIMIT], cols_b,
@@ -2608,8 +2636,9 @@ def content_report(
         human_clauses = []
         if not include_assets:
             human_clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-        if url_group:
-            human_clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+        human_group_clause = _in_clause("url_group", url_groups)
+        if human_group_clause:
+            human_clauses.append(human_group_clause)
         human_where = ("WHERE " + " AND ".join(human_clauses)) if human_clauses else ""
         sql_human = f"""
         SELECT url_group, path, SUM(hits) AS hits
@@ -2619,9 +2648,9 @@ def content_report(
         cols_h, rows_h = run_query(paths_human, sql_human)
         human_content += export_link("human-urls", date_from, date_to,
                                      extra=f"&include_assets={'true' if include_assets else 'false'}"
-                                           + (f"&url_group={url_group}" if url_group else "")
+                                           + (f"&url_group={url_group_param}" if url_groups else "")
                                            + f"&limit={int(limit)}")
-        chart_title = f"Top {CHART_BAR_LIMIT} human URLs" + (f" — {url_group}" if url_group else "")
+        chart_title = f"Top {CHART_BAR_LIMIT} human URLs" + (f" — {url_group_display}" if url_groups else "")
         human_content += bar_chart(rows_h[:CHART_BAR_LIMIT], cols_h, x_col="path", y_col="hits",
                                    title=chart_title)
         human_content += html_table(rows_h, cols_h)
@@ -2648,6 +2677,12 @@ def locales(
     limit: str = "999",
 ):
     limit = _parse_int(limit, 999)
+    locales_sel = _parse_csv_param(locale)
+    url_groups = _parse_csv_param(url_group)
+    locale_param = _fmt_filter_param(locales_sel)
+    url_group_param = _fmt_filter_param(url_groups)
+    locale_display = _fmt_filter_display(locales_sel)
+    url_group_display = _fmt_filter_display(url_groups)
     avail = available_dates()
     body = date_filters_html(date_from, date_to, avail)
 
@@ -2707,10 +2742,12 @@ def locales(
         heatmap_content = no_data_notice()
     else:
         lg_clauses = []
-        if locale:
-            lg_clauses.append(f"locale = '{sql_escape_string(locale)}'")
-        if url_group:
-            lg_clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+        for clause in (
+            _in_clause("locale", locales_sel),
+            _in_clause("url_group", url_groups),
+        ):
+            if clause:
+                lg_clauses.append(clause)
         lg_where = ("WHERE " + " AND ".join(lg_clauses)) if lg_clauses else ""
 
         sql_lg = f"""
@@ -2728,27 +2765,27 @@ def locales(
         <input type="hidden" name="from" value="{date_from or ''}">
         <input type="hidden" name="to" value="{date_to or ''}">
         <input type="hidden" name="tab" value="heatmap">
-        {select_html("locale", locale_options, locale, "Locale")}
-        {select_html("url_group", group_options, url_group, "URL group")}
+        {multi_select_html("locale", locale_options, locales_sel, "Locale")}
+        {multi_select_html("url_group", group_options, url_groups, "URL group")}
         <label>Limit: <input name="limit" value="{limit}" size="6"></label>
         <label style="margin-left:1em"><input type="checkbox" name="content_only" value="true"{"checked" if content_only else ""}> Content only (heatmap)</label>
         <button type="submit">Apply</button>
         </form>
         """
         heatmap_content += export_link("locale-groups", date_from, date_to,
-                                       extra=f"&locale={locale or ''}&url_group={url_group or ''}&limit={limit}")
+                                       extra=f"&locale={locale_param}&url_group={url_group_param}&limit={limit}")
 
         url_group_idx = cols_lg.index("url_group") if "url_group" in cols_lg else None
         heatmap_rows = rows_lg
         if content_only and url_group_idx is not None:
             heatmap_rows = [r for r in rows_lg if r[url_group_idx] not in NON_CONTENT_GROUPS]
         title_suffix = ""
-        if locale and url_group:
-            title_suffix = f" — locale={locale}, url_group={url_group}"
-        elif locale:
-            title_suffix = f" — locale={locale}"
-        elif url_group:
-            title_suffix = f" — url_group={url_group}"
+        if locales_sel and url_groups:
+            title_suffix = f" — locale={locale_display}, url_group={url_group_display}"
+        elif locales_sel:
+            title_suffix = f" — locale={locale_display}"
+        elif url_groups:
+            title_suffix = f" — url_group={url_group_display}"
         title_hm = "Hits heatmap — locale × URL group" + title_suffix + (" (content only)" if content_only else "")
         heatmap_content += heatmap_chart(heatmap_rows, cols_lg, x_col="url_group", y_col="locale",
                                          z_col="hits", title=title_hm)
@@ -2770,9 +2807,9 @@ _BOTS_VALID_TABS = {"bot-families", "ai-crawlers", "crawl-waste", "resource-wast
 def _bots_tab_families(
     date_from: Optional[str],
     date_to: Optional[str],
-    bot: Optional[str],
+    bots: List[str],
     include_assets: bool,
-    category: Optional[str],
+    categories: List[str],
     limit: int,
     avail: List[str],
 ) -> str:
@@ -2781,8 +2818,9 @@ def _bots_tab_families(
         return no_data_notice()
 
     bot_families_content = ""
-    cat_where = f"WHERE bot_category = '{sql_escape_string(category)}'" if category else ""
-    cat_and = f"AND bot_category = '{sql_escape_string(category)}'" if category else ""
+    cat_clause = _in_clause("bot_category", categories)
+    cat_where = f"WHERE {cat_clause}" if cat_clause else ""
+    cat_and = f"AND {cat_clause}" if cat_clause else ""
     sql_summary = f"""
     SELECT bot_family, SUM(hits) AS hits, SUM(resource_hits) AS resource_hits,
            AVG(resource_hits_pct) AS resource_hits_pct,
@@ -2791,14 +2829,16 @@ def _bots_tab_families(
     """
     cols_bf, rows_bf = run_query(paths_summary, sql_summary)
 
-    if bot:
+    bot_display = _fmt_filter_display(bots)
+    if bots:
+        bot_in = _in_clause("bot_family", bots)
         trend_sql = f"""
         SELECT date, bot_family, SUM(hits) AS hits
-        FROM t WHERE bot_family = '{sql_escape_string(bot)}' {cat_and}
+        FROM t WHERE {bot_in} {cat_and}
         GROUP BY date, bot_family ORDER BY date, bot_family;
         """
-        trend_heading = f"Activity over time — {bot}"
-        trend_title = f"Bot hits over time — {bot}"
+        trend_heading = f"Activity over time — {bot_display}"
+        trend_title = f"Bot hits over time — {bot_display}"
     else:
         top_families = [r[0] for r in rows_bf[:10]]
         trend_sql = None
@@ -2838,11 +2878,12 @@ def _bots_tab_families(
                                       title="Bot hits by family")
 
     bot_idx = cols_bf.index("bot_family")
+    category_param = _fmt_filter_param(categories)
     def _bot_link_qs(family):
         parts = [f"bot={family}"]
         if date_from: parts.append(f"from={date_from}")
         if date_to:   parts.append(f"to={date_to}")
-        if category: parts.append(f"category={category}")
+        if categories: parts.append(f"category={category_param}")
         if include_assets: parts.append("include_assets=true")
         parts.append(f"limit={int(limit)}")
         return "&".join(parts)
@@ -2879,21 +2920,22 @@ def _bots_tab_families(
     # Prefer skinnier bot_top_urls_daily (top-50 per family) for unfiltered previews.
     # Falls back to the full bot_urls_daily when drilling into a specific bot or when
     # the skinnier aggregate hasn't been built yet.
-    url_limit = int(limit) if bot else 20
-    use_top_urls = (not bot) and url_limit <= 50
+    url_limit = int(limit) if bots else 20
+    use_top_urls = (not bots) and url_limit <= 50
     paths_urls = None
     if use_top_urls:
         paths_urls = list_partitions("bot_top_urls_daily", date_from, date_to)
     if not paths_urls:
         paths_urls = list_partitions("bot_urls_daily", date_from, date_to)
-    url_title = f"URLs crawled by {bot}" if bot else "URLs crawled — preview (click a bot above for full breakdown)"
+    url_title = f"URLs crawled by {bot_display}" if bots else "URLs crawled — preview (click a bot above for full breakdown)"
     bot_families_content += f"<h2 id='urls'>{url_title}</h2>"
     if not paths_urls:
         bot_families_content += no_data_notice()
     else:
         url_clauses = []
-        if bot:
-            url_clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
+        bot_clause = _in_clause("bot_family", bots)
+        if bot_clause:
+            url_clauses.append(bot_clause)
         if not include_assets:
             url_clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
         url_where = ("WHERE " + " AND ".join(url_clauses)) if url_clauses else ""
@@ -2903,11 +2945,11 @@ def _bots_tab_families(
         GROUP BY bot_family, url_group, path ORDER BY hits DESC LIMIT {url_limit};
         """
         cols_u, rows_u = run_query(paths_urls, sql_urls)
-        if bot:
+        if bots:
             bot_families_content += export_link("bot-urls", date_from, date_to,
-                                                extra=f"&include_assets={'true' if include_assets else 'false'}&bot={bot}&limit={int(limit)}")
+                                                extra=f"&include_assets={'true' if include_assets else 'false'}&bot={_fmt_filter_param(bots)}&limit={int(limit)}")
             bot_families_content += bar_chart(rows_u[:CHART_BAR_LIMIT], cols_u, x_col="path", y_col="hits",
-                                              title=f"Top {CHART_BAR_LIMIT} URLs crawled by {bot}")
+                                              title=f"Top {CHART_BAR_LIMIT} URLs crawled by {bot_display}")
         else:
             bot_families_content += "<p>Showing top 20 across all bots. Select a bot above for the full breakdown.</p>"
         bot_families_content += html_table(rows_u, cols_u)
@@ -3017,10 +3059,10 @@ def _bots_tab_ai_crawlers(
 def _bots_tab_crawl_waste(
     date_from: Optional[str],
     date_to: Optional[str],
-    bot: Optional[str],
+    bots: List[str],
     include_assets: bool,
     strict: bool,
-    url_group: Optional[str],
+    url_groups: List[str],
     limit: int,
 ) -> str:
     paths_waste = list_partitions("wasted_crawl_daily", date_from, date_to)
@@ -3030,10 +3072,12 @@ def _bots_tab_crawl_waste(
     crawl_waste_content = ""
     score_col = "waste_score_strict" if strict else "waste_score"
     w_clauses = []
-    if bot:
-        w_clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
-    if url_group:
-        w_clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+    for clause in (
+        _in_clause("bot_family", bots),
+        _in_clause("url_group", url_groups),
+    ):
+        if clause:
+            w_clauses.append(clause)
     if not include_assets:
         w_clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
     w_where = ("WHERE " + " AND ".join(w_clauses)) if w_clauses else ""
@@ -3064,8 +3108,8 @@ def _bots_tab_crawl_waste(
         f"<p><a href='/export?report=wasted-crawl&from={date_from or ''}&to={date_to or ''}"
         f"&strict={'true' if strict else 'false'}"
         f"&include_assets={'true' if include_assets else 'false'}"
-        f"{'&bot=' + bot if bot else ''}"
-        f"{'&url_group=' + url_group if url_group else ''}"
+        f"{'&bot=' + _fmt_filter_param(bots) if bots else ''}"
+        f"{'&url_group=' + _fmt_filter_param(url_groups) if url_groups else ''}"
         f"&limit={int(limit)}'>Export CSV</a></p>"
     )
     crawl_waste_content += "<h2>Waste score trend (daily)</h2>"
@@ -3133,20 +3177,20 @@ def _bots_render_tab(
     tab_id: str,
     date_from: Optional[str],
     date_to: Optional[str],
-    bot: Optional[str],
+    bots: List[str],
     include_assets: bool,
     strict: bool,
-    url_group: Optional[str],
-    category: Optional[str],
+    url_groups: List[str],
+    categories: List[str],
     limit: int,
     avail: List[str],
 ) -> str:
     if tab_id == "bot-families":
-        return _bots_tab_families(date_from, date_to, bot, include_assets, category, limit, avail)
+        return _bots_tab_families(date_from, date_to, bots, include_assets, categories, limit, avail)
     if tab_id == "ai-crawlers":
         return _bots_tab_ai_crawlers(date_from, date_to)
     if tab_id == "crawl-waste":
-        return _bots_tab_crawl_waste(date_from, date_to, bot, include_assets, strict, url_group, limit)
+        return _bots_tab_crawl_waste(date_from, date_to, bots, include_assets, strict, url_groups, limit)
     if tab_id == "resource-waste":
         return _bots_tab_resource_waste(date_from, date_to, limit)
     return no_data_notice()
@@ -3173,6 +3217,9 @@ def bots_report(
     tab: Optional[str] = None,
 ):
     limit = _parse_int(limit, 500)
+    bots_sel = _parse_csv_param(bot)
+    url_groups = _parse_csv_param(url_group)
+    categories = _parse_csv_param(category)
     avail = available_dates()
     body = date_filters_html(date_from, date_to, avail)
 
@@ -3187,9 +3234,9 @@ def bots_report(
     <form method="get" class="filter-bar">
     <input type="hidden" name="from" value="{date_from or ''}">
     <input type="hidden" name="to" value="{date_to or ''}">
-    {select_html("bot", sorted(set(bots_list + waste_bots)), bot, "Bot family")}
-    {select_html("category", sorted(bot_categories), category, "Bot category")}
-    {select_html("url_group", waste_groups, url_group, "URL group")}
+    {multi_select_html("bot", sorted(set(bots_list + waste_bots)), bots_sel, "Bot family")}
+    {multi_select_html("category", sorted(bot_categories), categories, "Bot category")}
+    {multi_select_html("url_group", waste_groups, url_groups, "URL group")}
     <label><input type="checkbox" name="include_assets" value="true" {checked_assets}> Include assets</label>
     <label><input type="checkbox" name="strict" value="true" {checked_strict}> Strict scoring</label>
     <label>Limit: <input name="limit" value="{int(limit)}" size="6"></label>
@@ -3205,8 +3252,8 @@ def bots_report(
     # placeholder that the client fetches on demand from /reports/bots/_tab/*.
     for tid in ("bot-families", "ai-crawlers", "crawl-waste", "resource-waste"):
         if tid == active_tab:
-            content = _bots_render_tab(tid, date_from, date_to, bot, include_assets,
-                                       strict, url_group, category, limit, avail)
+            content = _bots_render_tab(tid, date_from, date_to, bots_sel, include_assets,
+                                       strict, url_groups, categories, limit, avail)
         else:
             content = _lazy_tab_placeholder(tid)
         body += tab_panel(tid, content)
@@ -3228,9 +3275,12 @@ def bots_tab_fragment(
     if tab_id not in _BOTS_VALID_TABS:
         return HTMLResponse(no_data_notice(), status_code=404)
     parsed_limit = _parse_int(limit, 500)
+    bots_sel = _parse_csv_param(bot)
+    url_groups = _parse_csv_param(url_group)
+    categories = _parse_csv_param(category)
     avail = available_dates()
-    html = _bots_render_tab(tab_id, date_from, date_to, bot, include_assets,
-                            strict, url_group, category, parsed_limit, avail)
+    html = _bots_render_tab(tab_id, date_from, date_to, bots_sel, include_assets,
+                            strict, url_groups, categories, parsed_limit, avail)
     return HTMLResponse(html)
 
 
@@ -3343,6 +3393,9 @@ def utm_report(
     limit: str = "200",
 ):
     limit = _parse_int(limit, 200)
+    utm_sources = _parse_csv_param(utm_source)
+    utm_source_param = _fmt_filter_param(utm_sources)
+    utm_source_display = _fmt_filter_display(utm_sources)
     sources_table = "utm_sources_daily"
     urls_table = "utm_source_urls_daily"
     sources_paths = list_partitions(sources_table, date_from, date_to)
@@ -3369,7 +3422,7 @@ def utm_report(
     <form method="get" class="filter-bar">
       <input type="hidden" name="from" value="{date_from or ''}">
       <input type="hidden" name="to" value="{date_to or ''}">
-      {select_html("utm_source", utm_options, utm_source, "UTM source")}
+      {multi_select_html("utm_source", utm_options, utm_sources, "UTM source")}
       <label>Group by:
         <select name="group_by">
           <option value="url_group" {"selected" if group_by == "url_group" else ""}>url_group</option>
@@ -3407,43 +3460,43 @@ def utm_report(
                             title=f"Top UTM sources ({traffic})")
     source_vol += html_table(rowsS, colsS, max_rows=min(int(limit), 500))
 
-    if utm_source:
-        src_esc = sql_escape_string(utm_source)
+    if utm_sources:
+        src_in = _in_clause("utm_source", utm_sources)
         sql_daily = f"""
         SELECT date, SUM({metric}) AS hits
-        FROM t WHERE utm_source = '{src_esc}'
+        FROM t WHERE {src_in}
         GROUP BY date ORDER BY date;
         """
         cols_ud, rows_ud = run_query(sources_paths, sql_daily)
-        source_vol += f"<h2>Daily hits — {utm_source}</h2>"
+        source_vol += f"<h2>Daily hits — {utm_source_display}</h2>"
         source_vol += (
-            f"<p><a href='/export?report=utm&from={date_from or ''}&to={date_to or ''}&utm_source={utm_source or ''}&traffic={traffic}'>Export daily CSV</a></p>"
+            f"<p><a href='/export?report=utm&from={date_from or ''}&to={date_to or ''}&utm_source={utm_source_param}&traffic={traffic}'>Export daily CSV</a></p>"
         )
         source_vol += line_chart(rows_ud, cols_ud, x_col="date", y_cols=["hits"],
-                                 title=f"UTM {utm_source} — Daily hits ({traffic})")
+                                 title=f"UTM {utm_source_display} — Daily hits ({traffic})")
         source_vol += html_table(rows_ud, cols_ud)
 
     # ── Landing Pages tab ──
     landing = ""
-    if not utm_source:
+    if not utm_sources:
         landing = "<p>Select a UTM source from the filter above to see landing pages.</p>"
     elif not urls_paths:
         landing = "<p><em>No URL distribution data (missing utm_source_urls_daily partitions).</em></p>"
     else:
-        src_esc = sql_escape_string(utm_source)
+        src_in = _in_clause("utm_source", utm_sources)
         dim = "url_group" if group_by == "url_group" else "path"
         sql_urls = f"""
         SELECT {dim} AS dimension, SUM({metric}) AS hits
-        FROM t WHERE utm_source = '{src_esc}' AND {dim} IS NOT NULL
+        FROM t WHERE {src_in} AND {dim} IS NOT NULL
         GROUP BY {dim} ORDER BY hits DESC LIMIT {int(limit)};
         """
         cols_ul, rows_ul = run_query(urls_paths, sql_urls)
         landing += (
-            f"<p><a href='/export?report=utm-urls&from={date_from or ''}&to={date_to or ''}&utm_source={utm_source or ''}&group_by={group_by}&traffic={traffic}&limit={int(limit)}'>Export URLs CSV</a></p>"
+            f"<p><a href='/export?report=utm-urls&from={date_from or ''}&to={date_to or ''}&utm_source={utm_source_param}&group_by={group_by}&traffic={traffic}&limit={int(limit)}'>Export URLs CSV</a></p>"
         )
-        landing += f"<h2>Top landing {dim} — {utm_source}</h2>"
+        landing += f"<h2>Top landing {dim} — {utm_source_display}</h2>"
         landing += bar_chart(rows_ul, cols_ul, x_col="dimension", y_col="hits",
-                             title=f"Top landing {dim} — {utm_source} ({traffic})")
+                             title=f"Top landing {dim} — {utm_source_display} ({traffic})")
         landing += html_table(rows_ul, cols_ul, max_rows=min(int(limit), 500))
 
     tabs = tab_bar([("source-volume", "Source Volume"), ("landing-pages", "Landing Pages")])
@@ -3854,6 +3907,10 @@ def export(
     limit: int = 100000,
 ):
     report = report.strip().lower()
+    bots_sel = _parse_csv_param(bot)
+    url_groups = _parse_csv_param(url_group)
+    locales_sel = _parse_csv_param(locale)
+    utm_sources = _parse_csv_param(utm_source)
 
     def stream_csv(sql: str, paths: List[str], filename: str):
         if not paths:
@@ -3909,8 +3966,9 @@ def export(
         clauses = []
         if not include_assets:
             clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-        if url_group:
-            clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+        group_clause = _in_clause("url_group", url_groups)
+        if group_clause:
+            clauses.append(group_clause)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"""
         SELECT path, url_group,
@@ -3933,8 +3991,9 @@ def export(
         clauses = []
         if not include_assets:
             clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-        if url_group:
-            clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+        group_clause = _in_clause("url_group", url_groups)
+        if group_clause:
+            clauses.append(group_clause)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"""
         SELECT path, url_group,
@@ -3961,8 +4020,9 @@ def export(
         clauses = []
         if not include_assets:
             clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-        if url_group:
-            clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+        group_clause = _in_clause("url_group", url_groups)
+        if group_clause:
+            clauses.append(group_clause)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"""
         SELECT path, url_group,
@@ -3985,8 +4045,9 @@ def export(
         clauses = []
         if not include_assets:
             clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-        if url_group:
-            clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+        group_clause = _in_clause("url_group", url_groups)
+        if group_clause:
+            clauses.append(group_clause)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"""
         SELECT path, url_group,
@@ -4009,8 +4070,9 @@ def export(
         clauses = []
         if not include_assets:
             clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-        if url_group:
-            clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+        group_clause = _in_clause("url_group", url_groups)
+        if group_clause:
+            clauses.append(group_clause)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"""
         SELECT path, url_group,
@@ -4061,12 +4123,14 @@ def export(
         paths = list_partitions("wasted_crawl_daily", date_from, date_to)
         score_col = "waste_score_strict" if strict else "waste_score"
         clauses = []
-        if bot:
-            clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
+        bot_clause = _in_clause("bot_family", bots_sel)
+        if bot_clause:
+            clauses.append(bot_clause)
         if not include_assets:
             clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
-        if url_group:
-            clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+        group_clause = _in_clause("url_group", url_groups)
+        if group_clause:
+            clauses.append(group_clause)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         score_col = "waste_score_strict" if strict else "waste_score"
 
@@ -4125,10 +4189,12 @@ def export(
     if report == "locale-groups":
         paths = list_partitions("locale_group_daily", date_from, date_to)
         clauses = []
-        if locale:
-            clauses.append(f"locale = '{sql_escape_string(locale)}'")
-        if url_group:
-            clauses.append(f"url_group = '{sql_escape_string(url_group)}'")
+        for clause in (
+            _in_clause("locale", locales_sel),
+            _in_clause("url_group", url_groups),
+        ):
+            if clause:
+                clauses.append(clause)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = f"""
         SELECT locale,
@@ -4165,8 +4231,9 @@ def export(
         paths = list_partitions("bot_urls_daily", date_from, date_to)
 
         clauses = []
-        if bot:
-            clauses.append(f"bot_family = '{sql_escape_string(bot)}'")
+        bot_clause = _in_clause("bot_family", bots_sel)
+        if bot_clause:
+            clauses.append(bot_clause)
         if not include_assets:
             clauses.append("url_group NOT IN ('Nuxt Assets','Static Assets')")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -4197,21 +4264,22 @@ def export(
 
     if report == "utm":
         paths = list_partitions("utm_sources_daily", date_from, date_to)
-        if not utm_source:
+        if not utm_sources:
             return PlainTextResponse("Missing utm_source parameter.", status_code=400)
-        src_esc = sql_escape_string(utm_source)
+        src_in = _in_clause("utm_source", utm_sources)
         sql = f"""
         SELECT date, SUM({metric}) AS hits
         FROM t
-        WHERE utm_source = '{src_esc}'
+        WHERE {src_in}
         GROUP BY date
         ORDER BY date;
         """
-        return stream_csv(sql, paths, f"utm_{utm_source}_daily.csv")
+        filename_slug = "_".join(utm_sources) if len(utm_sources) <= 3 else f"{len(utm_sources)}sources"
+        return stream_csv(sql, paths, f"utm_{filename_slug}_daily.csv")
 
     if report == "utm-urls":
         paths = list_partitions("utm_source_urls_daily", date_from, date_to)
-        if not utm_source:
+        if not utm_sources:
             return PlainTextResponse("Missing utm_source parameter.", status_code=400)
 
         gb = (group_by or "url_group").strip().lower()
@@ -4219,17 +4287,18 @@ def export(
             gb = "url_group"
         dim = "url_group" if gb == "url_group" else "path"
 
-        src_esc = sql_escape_string(utm_source)
+        src_in = _in_clause("utm_source", utm_sources)
         sql = f"""
         SELECT {dim} AS dimension, SUM({metric}) AS hits
         FROM t
-        WHERE utm_source = '{src_esc}'
+        WHERE {src_in}
           AND {dim} IS NOT NULL
         GROUP BY {dim}
         ORDER BY hits DESC
         LIMIT {int(limit)};
         """
-        return stream_csv(sql, paths, f"utm_{utm_source}_{dim}.csv")
+        filename_slug = "_".join(utm_sources) if len(utm_sources) <= 3 else f"{len(utm_sources)}sources"
+        return stream_csv(sql, paths, f"utm_{filename_slug}_{dim}.csv")
 
     if report == "hourly":
         paths = list_partitions("hourly", date_from, date_to)
@@ -4477,25 +4546,22 @@ def log_viewer(
             clauses.append(f"status = {status_codes[0]}")
         else:
             clauses.append(f"status IN ({','.join(str(c) for c in status_codes)})")
-    if methods:
-        escaped = ",".join(f"'{sql_escape_string(m)}'" for m in methods)
-        clauses.append(f"method IN ({escaped})")
+    for clause in (
+        _in_clause("method", methods),
+        _in_clause("bot_family", bot_families),
+        _in_clause("url_group", url_groups),
+        _in_clause("locale", locales),
+    ):
+        if clause:
+            clauses.append(clause)
     if is_bot == "true":
         clauses.append("is_bot = true")
     elif is_bot == "false":
         clauses.append("is_bot = false")
-    if bot_families:
-        escaped = ",".join(f"'{sql_escape_string(b)}'" for b in bot_families)
-        clauses.append(f"bot_family IN ({escaped})")
-    if url_groups:
-        escaped = ",".join(f"'{sql_escape_string(u)}'" for u in url_groups)
-        clauses.append(f"url_group IN ({escaped})")
-    if locales:
-        escaped = ",".join(f"'{sql_escape_string(l)}'" for l in locales)
-        clauses.append(f"locale IN ({escaped})")
-    if countries and has_country_col:
-        escaped = ",".join(f"'{sql_escape_string(c)}'" for c in countries)
-        clauses.append(f"CAST(country AS VARCHAR) IN ({escaped})")
+    if has_country_col:
+        country_clause = _in_clause("CAST(country AS VARCHAR)", countries)
+        if country_clause:
+            clauses.append(country_clause)
     if search:
         esc = sql_escape_string(search)
         search_cols = ["path", "edge_ip", "user_agent", "referer"]
