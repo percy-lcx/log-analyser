@@ -97,6 +97,14 @@ def rebuild_date(args_tuple):
     referer_rules = ingest.load_referer_rules()
     url_cfg = ingest.load_url_grouping()
 
+    # Site domain comes from the active profile. Without it, classify_referer
+    # never flags same-domain referers as Internal and referer_flow_daily ends
+    # up empty (scripts/ingest.py:1195 filters on referer_type='Internal').
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from profile_loader import get_active_profile_raw
+    profile_raw = get_active_profile_raw()
+    site_domain = (profile_raw.get("domain") or "") if profile_raw else ""
+
     day_files = [Path(f) for f in day_file_strs]
 
     parsed_dir = DATA_PARSED / f"date={d}"
@@ -109,8 +117,8 @@ def rebuild_date(args_tuple):
         agg_dir.mkdir(parents=True, exist_ok=True)
 
     t0 = time.monotonic()
-    print(f"\n[DATE {d}] Rebuilding parsed partition from {len(day_files)} file(s)", flush=True)
-    n_rows = ingest.build_parsed_for_date(d, day_files, bot_rules, url_cfg, referer_rules)
+    print(f"\n[DATE {d}] Rebuilding parsed partition from {len(day_files)} file(s) (site_domain={site_domain!r})", flush=True)
+    n_rows = ingest.build_parsed_for_date(d, day_files, bot_rules, url_cfg, referer_rules, site_domain=site_domain)
     t_parsed = time.monotonic()
     print(f"[DATE {d}] Parsed rows: {n_rows} ({t_parsed - t0:.1f}s)", flush=True)
 
