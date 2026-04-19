@@ -366,7 +366,7 @@ def _to_float_or_none(v):
         return None
 
 
-def line_chart(rows, columns, x_col, y_cols, title):
+def line_chart(rows, columns, x_col, y_cols, title, dual_axis=False):
     if not rows:
         return "<p>No data.</p>"
 
@@ -380,13 +380,17 @@ def line_chart(rows, columns, x_col, y_cols, title):
         "s4xx": "#ffb03d",
         "s5xx": "#ff2a07",
     }
+    dual_axis_colors = ["#1f77b4", "#ff7f0e"]
+
+    present_y_cols = [yc for yc in y_cols if yc in df.columns]
+    use_dual = dual_axis and len(present_y_cols) == 2
 
     series = []
-    for yc in y_cols:
-        if yc not in df.columns:
-            continue
+    for idx, yc in enumerate(present_y_cols):
         y = [_to_float_or_none(v) for v in df[yc].tolist()]
         color = status_colors.get(yc)
+        if not color and use_dual:
+            color = dual_axis_colors[idx]
         s = {
             "name": STATUS_CODE_LABELS.get(yc, yc),
             "type": "line",
@@ -398,15 +402,27 @@ def line_chart(rows, columns, x_col, y_cols, title):
         if color:
             s["itemStyle"] = {"color": color}
             s["lineStyle"] = {"color": color}
+        if use_dual and idx == 1:
+            s["yAxisIndex"] = 1
         series.append(s)
+
+    if use_dual:
+        y_axis = [
+            {"type": "value"},
+            {"type": "value", "position": "right", "splitLine": {"show": False}},
+        ]
+        grid_right = 40
+    else:
+        y_axis = {"type": "value"}
+        grid_right = 20
 
     option = {
         "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14, "fontWeight": "normal"}},
         "tooltip": {"trigger": "axis"},
         "legend": {"top": 28, "type": "scroll"},
-        "grid": {"left": 10, "right": 20, "top": 70, "bottom": 30, "containLabel": True},
+        "grid": {"left": 10, "right": grid_right, "top": 70, "bottom": 30, "containLabel": True},
         "xAxis": {"type": "category", "data": x, "boundaryGap": False},
-        "yAxis": {"type": "value"},
+        "yAxis": y_axis,
         "series": series,
     }
     return _echart_html(option)
@@ -1521,7 +1537,7 @@ document.querySelectorAll('.nav-link').forEach(function(a) {
 
 const BYTE_UNITS = { B: 1, KB: 1024, MB: 1048576, GB: 1073741824, TB: 1099511627776 };
 function parseNumber(s) {
-    const cleaned = s.replace(/[,\s]/g, "");
+    const cleaned = s.replace(/[,\s]/g, "").replace(/%$/, "");
     if (!cleaned) return null;
     const byteMatch = cleaned.match(/^([\d.]+)(B|KB|MB|GB|TB)$/i);
     if (byteMatch) {
@@ -3582,6 +3598,31 @@ def gsc_report(
         except (TypeError, ValueError):
             return "0.0"
 
+    def fmt_pct2(v):
+        try:
+            return f"{float(v)*100:.2f}%"
+        except (TypeError, ValueError):
+            return "0.00%"
+
+    _gsc_col_formatters = {
+        "avg_ctr": fmt_pct2,
+        "avg_position": fmt_pos,
+    }
+
+    def _format_gsc_rows(rows, cols):
+        idx = {c: i for i, c in enumerate(cols)}
+        fmts = [(idx[c], fn) for c, fn in _gsc_col_formatters.items() if c in idx]
+        if not fmts:
+            return rows
+        out = []
+        for r in rows:
+            r = list(r)
+            for i, fn in fmts:
+                if r[i] is not None:
+                    r[i] = fn(r[i])
+            out.append(r)
+        return out
+
     perf += "<div class='kpi-row'>"
     perf += kpi_card("Total Clicks", c[0], p[0])
     perf += kpi_card("Total Impressions", c[1], p[1])
@@ -3602,7 +3643,7 @@ def gsc_report(
     ORDER BY date
     """
     cols_t, rows_t = run_query(gsc_paths, trend_sql)
-    perf += line_chart(rows_t, cols_t, "date", ["clicks", "impressions"], "Clicks & Impressions Over Time")
+    perf += line_chart(rows_t, cols_t, "date", ["clicks", "impressions"], "Clicks & Impressions Over Time", dual_axis=True)
     perf += line_chart(rows_t, cols_t, "date", ["avg_position"], "Average Position Over Time")
 
     # Top pages by clicks
@@ -3626,7 +3667,7 @@ def gsc_report(
         f"&limit={int(limit)}'>Export CSV</a></p>"
     )
     perf += "<h2>Top Pages by Clicks</h2>"
-    perf += html_table(rows_tc, cols_tc, max_rows=min(int(limit), 500))
+    perf += html_table(_format_gsc_rows(rows_tc, cols_tc), cols_tc, max_rows=min(int(limit), 500))
 
     # Top queries by impressions (from raw GSC data, not the joined aggregate)
     gsc_data_dir = ROOT / "data" / "gsc"
@@ -3657,7 +3698,7 @@ def gsc_report(
         """
         cols_q, rows_q = run_query(gsc_raw_paths, query_sql)
         perf += "<h2>Top Queries by Impressions</h2>"
-        perf += html_table(rows_q, cols_q, max_rows=min(int(limit), 500))
+        perf += html_table(_format_gsc_rows(rows_q, cols_q), cols_q, max_rows=min(int(limit), 500))
 
     # ── Tab: Crawl-to-Index Efficiency ─────────────────────────────────
     eff = ""
@@ -3711,7 +3752,7 @@ def gsc_report(
         f"&limit={int(limit)}'>Export CSV</a></p>"
     )
     if rows_nc:
-        eff += html_table(rows_nc, cols_nc, max_rows=min(int(limit), 500))
+        eff += html_table(_format_gsc_rows(rows_nc, cols_nc), cols_nc, max_rows=min(int(limit), 500))
     else:
         eff += "<p style='color:#94a3b8;'>No pages found with impressions but zero crawl activity.</p>"
 
@@ -3780,11 +3821,12 @@ def gsc_report(
                 "right": 10,
                 "top": "middle",
                 "text": ["Clicks", ""],
-                "inRange": {"color": ["#f7fbff", "#deebf7", "#9ecae1", "#4292c6", "#08519c", "#08306b"]},
+                "inRange": {"color": ["#deebf7", "#9ecae1", "#4292c6", "#08519c", "#08306b"]},
             },
             "series": [{
                 "type": "scatter",
                 "data": scatter_data,
+                "itemStyle": {"borderColor": "#475569", "borderWidth": 0.5},
             }],
         }
         eff += _echart_html(scatter_option, height=500, fns={"__SCATTER_FMT__": scatter_fn})
