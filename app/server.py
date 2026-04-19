@@ -1320,6 +1320,24 @@ body {
 .content form.filter-bar .date-preset-btn { height: 34px; padding: 0 12px; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; color: #475569; font-size: 13px; font-weight: 500; cursor: pointer; transition: border-color 0.12s, color 0.12s, background 0.12s; }
 .content form.filter-bar .date-preset-btn:hover { border-color: #3b82f6; color: #1d4ed8; background: #eff6ff; }
 
+/* ── Insights strip (preset chips above filter bar) ── */
+.content .insights-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 12px; margin: 0 0 10px 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+.content .insights-strip .insights-lead { font-size: 11px; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 4px; }
+.content .insights-strip .insights-cat { font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.4px; margin-right: 2px; }
+.content .insights-strip .insights-sep { width: 1px; height: 18px; background: #cbd5e1; margin: 0 4px; display: inline-block; }
+.content .insights-strip .insights-chip { display: inline-flex; align-items: center; padding: 3px 10px; background: #fff; border: 1px solid #cbd5e1; border-radius: 999px; color: #334155; font-size: 12px; font-weight: 500; text-decoration: none; transition: border-color 0.12s, color 0.12s, background 0.12s; }
+.content .insights-strip .insights-chip:hover { border-color: #3b82f6; color: #1d4ed8; background: #eff6ff; }
+
+/* ── Filter-group wrappers inside .filter-bar ── */
+.content form.filter-bar { flex-direction: column; align-items: stretch; gap: 0; padding: 4px 18px; }
+.content form.filter-bar .filter-group { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px dashed #e2e8f0; }
+.content form.filter-bar .filter-group:first-of-type { border-top: none; }
+.content form.filter-bar .filter-group-label { font-size: 10px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.6px; }
+.content form.filter-bar .filter-group-fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.content form.filter-bar .filter-group-view .filter-group-fields { align-items: center; }
+.content form.filter-bar .filter-group-view .filter-group-actions { margin-left: auto; display: inline-flex; gap: 8px; align-items: center; }
+.content form.filter-bar > .clear-filters-btn { display: none; }
+
 /* ── Multi-select checkbox dropdown ── */
 .ms-wrap { position: relative; display: flex; flex-direction: column; gap: 4px; }
 .ms-label { font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.4px; }
@@ -3632,6 +3650,36 @@ LOG_PRESETS: Dict[str, Dict[str, str]] = {
 }
 
 
+# Chip groups for the Insights strip above the Log Viewer filter bar.
+# Each entry is (preset_key, short_label). Keys must exist in LOG_PRESETS.
+LOG_PRESET_CHIP_GROUPS: List[Tuple[str, List[Tuple[str, str]]]] = [
+    ("Traffic", [
+        ("traffic", "Daily traffic"),
+        ("status-over-time", "Status over time"),
+    ]),
+    ("Errors", [
+        ("top-4xx", "Top 4xx"),
+        ("top-5xx", "Top 5xx"),
+        ("top-404", "Top 404"),
+        ("top-3xx", "Top 3xx"),
+    ]),
+    ("URLs", [
+        ("top-urls", "Top content URLs"),
+        ("url-groups", "URL groups"),
+    ]),
+    ("Bots", [
+        ("bot-families", "Bot families"),
+        ("bot-categories", "Bot categories"),
+        ("crawl-waste", "Crawl waste"),
+    ]),
+    ("Acquisition", [
+        ("utm-sources", "UTM sources"),
+        ("referer-types", "Referer types"),
+        ("internal-nav", "Internal nav"),
+    ]),
+]
+
+
 def _resolve_log_preset(
     name: str,
     *,
@@ -3654,6 +3702,33 @@ def _resolve_log_preset(
         params["url_group"] = extra_url_group
     qs = "&".join(f"{k}={v}" for k, v in params.items())
     return RedirectResponse(url=f"/logs?{qs}", status_code=302)
+
+
+def _render_insights_strip(date_from: Optional[str], date_to: Optional[str]) -> str:
+    """Chip strip above the filter bar: one-click shortcuts to preset views.
+
+    Each chip redirects via /logs?preset=... which _resolve_log_preset expands
+    into canonical filter params, preserving the user's current From/To dates.
+    """
+    date_qs = ""
+    if date_from:
+        date_qs += f"&from={html_escape(date_from)}"
+    if date_to:
+        date_qs += f"&to={html_escape(date_to)}"
+
+    parts: List[str] = ["<div class='insights-strip'>"]
+    parts.append("<span class='insights-lead'>Insights</span>")
+    for cat_idx, (category, chips) in enumerate(LOG_PRESET_CHIP_GROUPS):
+        if cat_idx > 0:
+            parts.append("<span class='insights-sep' aria-hidden='true'></span>")
+        parts.append(f"<span class='insights-cat'>{html_escape(category)}</span>")
+        for preset_key, label in chips:
+            href = f"/logs?preset={html_escape(preset_key)}{date_qs}"
+            parts.append(
+                f"<a class='insights-chip' href='{href}'>{html_escape(label)}</a>"
+            )
+    parts.append("</div>")
+    return "".join(parts)
 
 
 @app.get("/logs", response_class=HTMLResponse)
@@ -3761,14 +3836,25 @@ def log_viewer(
         "f.submit();});});</script>"
     )
 
-    # Date filters
+    # Insights strip — chip shortcuts to preset views (drawn from LOG_PRESETS).
+    body += _render_insights_strip(date_from, date_to)
+
     min_date = avail[0] if avail else ""
     max_date = avail[-1] if avail else ""
+    presets_disabled = "" if max_date else " disabled"
+    method_opts = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]
+    assets_checked = "checked" if include_assets else ""
+    content_checked = "checked" if content_only else ""
+
     body += "<form method='get' class='filter-bar'>"
     body += f"<input type='hidden' name='mode' value='{mode}'>"
+
+    # Group 1: When & what — dates, quick ranges, search
+    body += "<div class='filter-group'>"
+    body += "<div class='filter-group-label'>When &amp; what</div>"
+    body += "<div class='filter-group-fields'>"
     body += f"<label>From<input type='date' name='from' value='{date_from or ''}' min='{min_date}' max='{max_date}'></label>"
     body += f"<label>To<input type='date' name='to' value='{date_to or ''}' min='{min_date}' max='{max_date}'></label>"
-    presets_disabled = "" if max_date else " disabled"
     body += (
         f"<div class='date-presets' data-min='{min_date}' data-max='{max_date}'>"
         f"<button type='button' class='date-preset-btn' onclick='applyDatePreset(this.form, 3)'{presets_disabled}>Last 3 days</button>"
@@ -3777,50 +3863,73 @@ def log_viewer(
         f"<button type='button' class='date-preset-btn' onclick='applyDatePreset(this.form, 30)'{presets_disabled}>Last 30 days</button>"
         f"</div>"
     )
-    # Search with mode selector
     body += f"<label>Search<input type='text' name='search' value='{search or ''}' placeholder='path, IP, UA, referer'></label>"
     body += "<label>Match<select name='search_mode'>"
     for val, lbl in [("contains", "contains"), ("not_contains", "does not contain"), ("regex", "regex")]:
         sel = "selected" if search_mode == val else ""
         body += f"<option value='{val}' {sel}>{lbl}</option>"
     body += "</select></label>"
+    body += "</div></div>"
 
-    # Multi-select filters
-    method_opts = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]
+    # Group 2: Request — status + method
+    body += "<div class='filter-group'>"
+    body += "<div class='filter-group-label'>Request</div>"
+    body += "<div class='filter-group-fields'>"
     body += multi_select_html("status", status_opts, [str(c) for c in status_codes], "Status")
     body += multi_select_html("method", method_opts, methods, "Method")
+    body += "</div></div>"
 
-    # Bot filter
+    # Group 3: Traffic — bot/human binary + bot family + bot category
+    body += "<div class='filter-group'>"
+    body += "<div class='filter-group-label'>Traffic</div>"
+    body += "<div class='filter-group-fields'>"
     body += "<label>Bot<select name='is_bot'><option value=''>All</option>"
     for val, lbl in [("true", "Bots only"), ("false", "Humans only")]:
         sel = "selected" if is_bot == val else ""
         body += f"<option value='{val}' {sel}>{lbl}</option>"
     body += "</select></label>"
-
-    # Column filters (multi-select)
     body += multi_select_html("bot_family", bot_family_opts, bot_families, "Bot family")
     body += multi_select_html("bot_category", bot_category_opts, bot_categories, "Bot category")
+    body += "</div></div>"
+
+    # Group 4: Content — URL group, asset/content scope toggles
+    body += "<div class='filter-group'>"
+    body += "<div class='filter-group-label'>Content</div>"
+    body += "<div class='filter-group-fields'>"
     body += multi_select_html("url_group", url_group_opts, url_groups, "URL group")
+    body += f"<label><input type='checkbox' name='include_assets' value='true' {assets_checked}> Include assets</label>"
+    body += f"<label><input type='checkbox' name='content_only' value='true' {content_checked}> Content only</label>"
+    body += "</div></div>"
+
+    # Group 5: Geo & language
+    body += "<div class='filter-group'>"
+    body += "<div class='filter-group-label'>Geo &amp; language</div>"
+    body += "<div class='filter-group-fields'>"
     body += multi_select_html("locale", locale_opts, locales, "Locale")
     if has_country_col:
         body += multi_select_html("country", country_opts, countries, "Country")
+    body += "</div></div>"
+
+    # Group 6: Acquisition — referer + UTM
+    body += "<div class='filter-group'>"
+    body += "<div class='filter-group-label'>Acquisition</div>"
+    body += "<div class='filter-group-fields'>"
     body += multi_select_html("referer_type", referer_type_opts, referer_types, "Referer type")
     body += multi_select_html("utm_source", utm_source_opts, utm_sources, "UTM source")
+    body += "</div></div>"
 
-    # Asset / content toggles
-    assets_checked = "checked" if include_assets else ""
-    body += f" <label><input type='checkbox' name='include_assets' value='true' {assets_checked}> Include assets</label>"
-    content_checked = "checked" if content_only else ""
-    body += f" <label><input type='checkbox' name='content_only' value='true' {content_checked}> Content only</label>"
-
+    # Group 7: This view — mode-specific controls + Apply
+    body += "<div class='filter-group filter-group-view'>"
+    body += "<div class='filter-group-label'>This view</div>"
+    body += "<div class='filter-group-fields'>"
     if mode == "rows":
-        body += f"<label>Per page<select name='per_page'>"
+        body += "<label>Per page<select name='per_page'>"
         for pp in [25, 50, 100, 200]:
             sel = "selected" if per_page == pp else ""
             body += f"<option value='{pp}' {sel}>{pp}</option>"
         body += "</select></label>"
         chart_checked = "checked" if show_chart else ""
-        body += f" <label><input type='checkbox' name='chart' value='1' {chart_checked}> Show chart</label>"
+        body += f"<label><input type='checkbox' name='chart' value='1' {chart_checked}> Show chart</label>"
     elif mode == "group":
         body += "<label>Group by<select name='group_by'>"
         body += "<option value=''>(pick one)</option>"
@@ -3855,8 +3964,13 @@ def log_viewer(
             sel = "selected" if stack_by == sv else ""
             body += f"<option value='{sv}' {sel}>{sl}</option>"
         body += "</select></label>"
+    body += "<span class='filter-group-actions'>"
+    body += "<button type='submit'>Apply</button>"
+    body += "<a class='clear-filters-btn' href='/logs'>Clear filters</a>"
+    body += "</span>"
+    body += "</div></div>"
 
-    body += " <button type='submit'>Apply</button></form>"
+    body += "</form>"
 
     if not paths:
         return page("Log Viewer", body + no_data_notice())
