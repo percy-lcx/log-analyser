@@ -628,6 +628,22 @@ def export_link(report: str, date_from, date_to, extra: str = "") -> str:
 # Shared helpers for actionable insights
 # ---------------------------------------------------------------------------
 
+def _default_last_7(
+    date_from: Optional[str],
+    date_to: Optional[str],
+    avail: List[str],
+) -> Tuple[Optional[str], Optional[str]]:
+    """If no range is supplied, default to the last 7 days of available data."""
+    if date_from or date_to or not avail:
+        return date_from, date_to
+    end = datetime.strptime(avail[-1], "%Y-%m-%d")
+    start = end - timedelta(days=6)
+    earliest = datetime.strptime(avail[0], "%Y-%m-%d")
+    if start < earliest:
+        start = earliest
+    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+
 def _compute_periods(
     date_from: Optional[str],
     date_to: Optional[str],
@@ -1990,6 +2006,7 @@ def executive_summary(
     date_to: Optional[str] = Query(None, alias="to"),
 ):
     avail = available_dates()
+    date_from, date_to = _default_last_7(date_from, date_to, avail)
     body = date_filters_html(date_from, date_to, avail)
 
     if not avail:
@@ -2209,6 +2226,7 @@ def traffic_report(
     date_to: Optional[str] = Query(None, alias="to"),
 ):
     avail = available_dates()
+    date_from, date_to = _default_last_7(date_from, date_to, avail)
     body = date_filters_html(date_from, date_to, avail)
 
     # ── Overview tab ──
@@ -2289,6 +2307,7 @@ def status_codes_report(
     limit = _parse_int(limit, 500)
     url_groups = _parse_csv_param(url_group)
     avail = available_dates()
+    date_from, date_to = _default_last_7(date_from, date_to, avail)
     body = date_filters_html(date_from, date_to, avail)
 
     # Shared filter form
@@ -2542,6 +2561,7 @@ def content_report(
     limit = _parse_int(limit, 500)
     url_groups = _parse_csv_param(url_group)
     avail = available_dates()
+    date_from, date_to = _default_last_7(date_from, date_to, avail)
     body = date_filters_html(date_from, date_to, avail)
 
     # Shared filter form
@@ -2700,6 +2720,7 @@ def locales(
     locale_display = _fmt_filter_display(locales_sel)
     url_group_display = _fmt_filter_display(url_groups)
     avail = available_dates()
+    date_from, date_to = _default_last_7(date_from, date_to, avail)
     body = date_filters_html(date_from, date_to, avail)
 
     # ── Locale Breakdown tab ──
@@ -3237,6 +3258,7 @@ def bots_report(
     url_groups = _parse_csv_param(url_group)
     categories = _parse_csv_param(category)
     avail = available_dates()
+    date_from, date_to = _default_last_7(date_from, date_to, avail)
     body = date_filters_html(date_from, date_to, avail)
 
     # Shared filter form
@@ -3295,6 +3317,7 @@ def bots_tab_fragment(
     url_groups = _parse_csv_param(url_group)
     categories = _parse_csv_param(category)
     avail = available_dates()
+    date_from, date_to = _default_last_7(date_from, date_to, avail)
     html = _bots_render_tab(tab_id, date_from, date_to, bots_sel, include_assets,
                             strict, url_groups, categories, parsed_limit, avail)
     return HTMLResponse(html)
@@ -3309,6 +3332,7 @@ def referer_flow_report(
     limit: int = 500,
 ):
     avail = available_dates()
+    date_from, date_to = _default_last_7(date_from, date_to, avail)
     body = date_filters_html(date_from, date_to, avail)
 
     paths_rf = list_partitions("referer_flow_daily", date_from, date_to)
@@ -3417,6 +3441,7 @@ def utm_report(
     sources_paths = list_partitions(sources_table, date_from, date_to)
     urls_paths = list_partitions(urls_table, date_from, date_to)
     avail = available_dates()
+    date_from, date_to = _default_last_7(date_from, date_to, avail)
     body = date_filters_html(date_from, date_to, avail)
 
     if not sources_paths:
@@ -3533,6 +3558,7 @@ def gsc_report(
 ):
     gsc_paths = list_partitions("gsc_daily", date_from, date_to)
     avail = available_dates()
+    date_from, date_to = _default_last_7(date_from, date_to, avail)
     body = date_filters_html(date_from, date_to, avail)
 
     # Check if GSC is connected by looking for gsc_daily data
