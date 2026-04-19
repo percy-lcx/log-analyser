@@ -1144,7 +1144,6 @@ def page(title: str, body: str) -> HTMLResponse:
         ("Log Viewer", "/logs"),
         ("Executive Summary", "/reports/summary"),
         ("Locales", "/reports/locales"),
-        ("Referer Flow", "/reports/referer-flow"),
         ("Search Console", "/reports/gsc"),
         ("Settings", "/settings"),
     ]
@@ -2534,93 +2533,6 @@ def bots_report(
 
 
 
-# ── /reports/referer-flow ─────────────────────────────────────────────────
-
-@app.get("/reports/referer-flow", response_class=HTMLResponse)
-def referer_flow_report(
-    date_from: Optional[str] = Query(None, alias="from"),
-    date_to: Optional[str] = Query(None, alias="to"),
-    limit: int = 500,
-):
-    avail = available_dates()
-    date_from, date_to = _default_last_7(date_from, date_to, avail)
-    body = date_filters_html(date_from, date_to, avail)
-
-    paths_rf = list_partitions("referer_flow_daily", date_from, date_to)
-
-    # Check if 'referer_path' column exists in the parquet files
-    has_referer_path = False
-    if paths_rf:
-        try:
-            _, _r = run_query(paths_rf, "SELECT column_name FROM (DESCRIBE t) WHERE column_name = 'from_path'")
-            has_referer_path = bool(_r)
-        except Exception:
-            pass
-
-    # ── Internal Navigation tab ──
-    internal_nav = ""
-    if not paths_rf or not has_referer_path:
-        internal_nav = no_data_notice()
-    else:
-        sql_nav = f"""
-        SELECT from_path, to_path, SUM(hit_count) AS hits
-        FROM t
-        WHERE referer_type = 'Internal' AND from_path IS NOT NULL
-        GROUP BY from_path, to_path
-        ORDER BY hits DESC LIMIT {int(limit)};
-        """
-        cols_n, rows_n = run_query(paths_rf, sql_nav)
-        internal_nav += export_link("referer-flow-internal", date_from, date_to, extra=f"&limit={int(limit)}")
-        if rows_n:
-            internal_nav += "<h2>Top internal navigation paths (from → to)</h2>"
-            internal_nav += html_table(rows_n, cols_n, max_rows=min(int(limit), 500))
-        else:
-            internal_nav += no_data_notice()
-
-    # ── Entry Points tab ──
-    entry_points = ""
-    if not paths_rf:
-        entry_points = no_data_notice()
-    else:
-        sql_entry = f"""
-        SELECT referer_type, to_path AS landing_page, SUM(hit_count) AS hits
-        FROM t
-        GROUP BY referer_type, to_path
-        ORDER BY hits DESC LIMIT {int(limit)};
-        """
-        cols_e, rows_e = run_query(paths_rf, sql_entry)
-        entry_points += export_link("referer-flow-entry", date_from, date_to, extra=f"&limit={int(limit)}")
-        if rows_e:
-            entry_points += "<h2>Top landing pages by referer type</h2>"
-            entry_points += html_table(rows_e, cols_e, max_rows=min(int(limit), 500))
-        else:
-            entry_points += no_data_notice()
-
-    # ── Referer Types tab ──
-    referer_types = ""
-    if not paths_rf:
-        referer_types = no_data_notice()
-    else:
-        sql_types = """
-        SELECT referer_type, SUM(hit_count) AS hits
-        FROM t GROUP BY referer_type ORDER BY hits DESC;
-        """
-        cols_rt, rows_rt = run_query(paths_rf, sql_types)
-        referer_types += export_link("referer-flow-types", date_from, date_to)
-        if rows_rt:
-            referer_types += bar_chart(rows_rt, cols_rt, x_col="referer_type", y_col="hits",
-                                       title="Traffic by Referer Type")
-            referer_types += html_table(rows_rt, cols_rt)
-        else:
-            referer_types += no_data_notice()
-
-    tabs = tab_bar([("internal-nav", "Internal Navigation"), ("entry-points", "Entry Points"),
-                    ("referer-types", "Referer Types")])
-    body += tabs
-    body += tab_panel("internal-nav", internal_nav)
-    body += tab_panel("entry-points", entry_points)
-    body += tab_panel("referer-types", referer_types)
-    return page("Referer Flow", body)
 
 
 # ── /reports/utm ──────────────────────────────────────────────────────────
@@ -3031,6 +2943,10 @@ def _redirect_utm_chatgpt(date_from: Optional[str] = Query(None, alias="from"), 
     if date_to: parts.append(f"to={date_to}")
     return RedirectResponse(url=f"/logs?{'&'.join(parts)}", status_code=302)
 
+@app.get("/reports/referer-flow")
+def _redirect_referer_flow(date_from: Optional[str] = Query(None, alias="from"), date_to: Optional[str] = Query(None, alias="to")):
+    return _preset_redirect("internal-nav", date_from, date_to)
+
 # ----------------------------
 # Legacy redirect: Guided Insights → Log Viewer
 # ----------------------------
@@ -3150,41 +3066,6 @@ def export(
         """
         return stream_csv(sql, paths, "locale_groups.csv")
 
-    if report == "referer-flow-internal":
-        paths = list_partitions("referer_flow_daily", date_from, date_to)
-        has_rp = False
-        if paths:
-            try:
-                _, _r = run_query(paths, "SELECT column_name FROM (DESCRIBE t) WHERE column_name = 'referer_path'")
-                has_rp = bool(_r)
-            except Exception:
-                pass
-        if not has_rp:
-            return PlainTextResponse("Internal navigation data not available for this date range.", status_code=404)
-        sql = f"""
-        SELECT referer_path AS from_path, path AS to_path, SUM(hits) AS hits
-        FROM t WHERE referer_type = 'Internal' AND referer_path IS NOT NULL
-        GROUP BY referer_path, path ORDER BY hits DESC LIMIT {int(limit)};
-        """
-        return stream_csv(sql, paths, "referer_flow_internal.csv")
-
-    if report == "referer-flow-entry":
-        paths = list_partitions("referer_flow_daily", date_from, date_to)
-        sql = f"""
-        SELECT referer_type, path AS landing_page, SUM(hits) AS hits
-        FROM t GROUP BY referer_type, path ORDER BY hits DESC LIMIT {int(limit)};
-        """
-        return stream_csv(sql, paths, "referer_flow_entry.csv")
-
-    if report == "referer-flow-types":
-        paths = list_partitions("referer_flow_daily", date_from, date_to)
-        sql = """
-        SELECT referer_type, SUM(hits) AS hits
-        FROM t GROUP BY referer_type ORDER BY hits DESC;
-        """
-        return stream_csv(sql, paths, "referer_flow_types.csv")
-
-    # GSC exports
     if report == "gsc-top-clicks":
         paths = list_partitions("gsc_daily", date_from, date_to)
         sql = f"""
@@ -3219,8 +3100,7 @@ def export(
         return stream_csv(sql, paths, "gsc_impressions_no_crawl.csv", col_formatters=_GSC_COL_FORMATTERS)
 
     return PlainTextResponse(
-        "Unknown report. Try report=locales, locale-groups, referer-flow-internal, "
-        "referer-flow-entry, referer-flow-types, gsc-top-clicks, "
+        "Unknown report. Try report=locales, locale-groups, gsc-top-clicks, "
         "gsc-high-crawl-no-impressions, gsc-impressions-no-crawl. "
         "For log-viewer exports (rows/group/timeseries), use /export/logs with the same filter params.",
         status_code=400,
@@ -3445,6 +3325,7 @@ LOG_GROUP_BY_COLUMNS = [
     ("locale", "Locale"),
     ("country", "Country"),
     ("referer_type", "Referer type"),
+    ("referer_path", "Referer path (internal)"),
     ("utm_source_norm", "UTM source"),
     ("method", "HTTP method"),
     ("is_bot", "Bot vs human"),
@@ -3745,6 +3626,9 @@ LOG_PRESETS: Dict[str, Dict[str, str]] = {
     "crawl-waste": {"mode": "group", "group_by": "path", "is_bot": "true",
                     "sort_by": "waste_score"},
     "utm-sources": {"mode": "group", "group_by": "utm_source_norm"},
+    "internal-nav": {"mode": "group", "group_by": "referer_path",
+                     "group_by_2": "path", "referer_type": "Internal"},
+    "referer-types": {"mode": "group", "group_by": "referer_type"},
 }
 
 
