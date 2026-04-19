@@ -7,7 +7,7 @@ from collections import OrderedDict
 from pathlib import Path
 import json
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
 from fastapi import FastAPI, Query
@@ -701,6 +701,52 @@ def _fmt_number(n) -> str:
         return f"{int(n):,}"
     except (TypeError, ValueError):
         return str(n)
+
+
+def _fmt_pct_ratio0(v):
+    """Format a 0-1 ratio as a percentage with no decimals (e.g. 0.79 -> '79%')."""
+    try:
+        return f"{float(v) * 100:.0f}%"
+    except (TypeError, ValueError):
+        return v if v is not None else ""
+
+
+def _fmt_pct_ratio2(v):
+    """Format a 0-1 ratio as a percentage with 2 decimals (e.g. 0.0345 -> '3.45%')."""
+    try:
+        return f"{float(v) * 100:.2f}%"
+    except (TypeError, ValueError):
+        return v if v is not None else ""
+
+
+def _fmt_1dp(v):
+    """Format a number with 1 decimal place (e.g. 12.345 -> '12.3')."""
+    try:
+        return f"{float(v):.1f}"
+    except (TypeError, ValueError):
+        return v if v is not None else ""
+
+
+_GSC_COL_FORMATTERS = {
+    "avg_ctr": _fmt_pct_ratio2,
+    "avg_position": _fmt_1dp,
+}
+
+
+def _apply_col_formatters(rows, cols, formatters):
+    """Return rows with per-column formatters applied. None values pass through."""
+    idx = {c: i for i, c in enumerate(cols)}
+    fmts = [(idx[c], fn) for c, fn in formatters.items() if c in idx]
+    if not fmts:
+        return rows
+    out = []
+    for r in rows:
+        r = list(r)
+        for i, fn in fmts:
+            if r[i] is not None:
+                r[i] = fn(r[i])
+        out.append(tuple(r))
+    return out
 
 
 def kpi_card(label: str, current, previous, fmt_fn=None, lower_is_better: bool = False) -> str:
@@ -2932,7 +2978,10 @@ def _bots_tab_families(
         for r in rows_bf
     ]
     bot_families_content += export_link("bots", date_from, date_to)
-    bot_families_content += html_table(linked_rows, cols_bf)
+    bot_families_content += html_table(
+        _apply_col_formatters(linked_rows, cols_bf, {"resource_hits_pct": _fmt_pct_ratio0}),
+        cols_bf,
+    )
 
     bot_recs: List[Tuple[str, str, str]] = []
     _ci = {c: i for i, c in enumerate(cols_bf)}
@@ -3056,7 +3105,10 @@ def _bots_tab_ai_crawlers(
 
         ai_crawlers_content += "<h3>AI Crawler Summary</h3>"
         ai_crawlers_content += export_link("ai-crawlers", date_from, date_to)
-        ai_crawlers_content += html_table(rows_ais, cols_ais)
+        ai_crawlers_content += html_table(
+            _apply_col_formatters(rows_ais, cols_ais, {"avg_overlap": _fmt_pct_ratio0}),
+            cols_ais,
+        )
 
     # Prefer the skinnier bot_top_urls_daily here: this panel only shows the
     # top 20 URLs per AI family, which fits in the top-50 pre-rank.
@@ -3618,42 +3670,14 @@ def gsc_report(
         except (TypeError, ValueError):
             return "0.0%"
 
-    def fmt_pos(v):
-        try:
-            return f"{float(v):.1f}"
-        except (TypeError, ValueError):
-            return "0.0"
-
-    def fmt_pct2(v):
-        try:
-            return f"{float(v)*100:.2f}%"
-        except (TypeError, ValueError):
-            return "0.00%"
-
-    _gsc_col_formatters = {
-        "avg_ctr": fmt_pct2,
-        "avg_position": fmt_pos,
-    }
-
     def _format_gsc_rows(rows, cols):
-        idx = {c: i for i, c in enumerate(cols)}
-        fmts = [(idx[c], fn) for c, fn in _gsc_col_formatters.items() if c in idx]
-        if not fmts:
-            return rows
-        out = []
-        for r in rows:
-            r = list(r)
-            for i, fn in fmts:
-                if r[i] is not None:
-                    r[i] = fn(r[i])
-            out.append(r)
-        return out
+        return _apply_col_formatters(rows, cols, _GSC_COL_FORMATTERS)
 
     perf += "<div class='kpi-row'>"
     perf += kpi_card("Total Clicks", c[0], p[0])
     perf += kpi_card("Total Impressions", c[1], p[1])
     perf += kpi_card("Avg CTR", c[2], p[2], fmt_fn=fmt_pct)
-    perf += kpi_card("Avg Position", c[3], p[3], fmt_fn=fmt_pos, lower_is_better=True)
+    perf += kpi_card("Avg Position", c[3], p[3], fmt_fn=_fmt_1dp, lower_is_better=True)
     perf += "</div>"
 
     # Clicks & impressions over time
@@ -3985,7 +4009,7 @@ def export(
     locales_sel = _parse_csv_param(locale)
     utm_sources = _parse_csv_param(utm_source)
 
-    def stream_csv(sql: str, paths: List[str], filename: str):
+    def stream_csv(sql: str, paths: List[str], filename: str, col_formatters: Optional[Dict[str, Any]] = None):
         if not paths:
             return PlainTextResponse("No data found for the selected date range.", status_code=404)
 
@@ -3996,6 +4020,11 @@ def export(
             try:
                 res = cur.execute(wrapped_sql)
                 cols = [d[0] for d in res.description]
+
+                fmts: List[Tuple[int, Any]] = []
+                if col_formatters:
+                    idx = {c: i for i, c in enumerate(cols)}
+                    fmts = [(idx[c], fn) for c, fn in col_formatters.items() if c in idx]
 
                 s = io.StringIO()
                 w = csv.writer(s)
@@ -4009,6 +4038,11 @@ def export(
                     if not batch:
                         break
                     for row in batch:
+                        if fmts:
+                            row = list(row)
+                            for i, fn in fmts:
+                                if row[i] is not None:
+                                    row[i] = fn(row[i])
                         w.writerow(row)
                     yield s.getvalue().encode("utf-8")
                     s.seek(0)
@@ -4175,7 +4209,7 @@ def export(
         ORDER BY hits DESC
         LIMIT {int(limit)};
         """
-        return stream_csv(sql, paths, "bots.csv")
+        return stream_csv(sql, paths, "bots.csv", col_formatters={"avg_resource_pct": _fmt_pct_ratio0})
 
     if report == "ai-crawlers":
         paths = list_partitions("ai_crawler_daily", date_from, date_to)
@@ -4190,7 +4224,7 @@ def export(
         ORDER BY total_hits DESC
         LIMIT {int(limit)};
         """
-        return stream_csv(sql, paths, "ai_crawlers.csv")
+        return stream_csv(sql, paths, "ai_crawlers.csv", col_formatters={"avg_overlap": _fmt_pct_ratio0})
 
     if report == "wasted-crawl":
         paths = list_partitions("wasted_crawl_daily", date_from, date_to)
@@ -4438,7 +4472,7 @@ def export(
         FROM t WHERE has_impressions
         GROUP BY page ORDER BY clicks DESC LIMIT {int(limit)};
         """
-        return stream_csv(sql, paths, "gsc_top_clicks.csv")
+        return stream_csv(sql, paths, "gsc_top_clicks.csv", col_formatters=_GSC_COL_FORMATTERS)
 
     if report == "gsc-high-crawl-no-impressions":
         paths = list_partitions("gsc_daily", date_from, date_to)
@@ -4460,7 +4494,7 @@ def export(
         GROUP BY page HAVING SUM(crawl_hits) = 0
         ORDER BY impressions DESC LIMIT {int(limit)};
         """
-        return stream_csv(sql, paths, "gsc_impressions_no_crawl.csv")
+        return stream_csv(sql, paths, "gsc_impressions_no_crawl.csv", col_formatters=_GSC_COL_FORMATTERS)
 
     return PlainTextResponse(
         "Unknown report. Try report=daily, daily-status, hourly, locales, url-groups, locale-groups, "
