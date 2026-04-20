@@ -4618,17 +4618,14 @@ def _lv2_filter_bar(
         "</div>"
     )
 
-    # Chart toggle
-    chart_qs_on = _lv2_build_qs(params, chart="1", page=None)
-    chart_qs_off = _lv2_build_qs(params, chart=None, page=None)
-    chart_href = f"/logs?{chart_qs_off if show_chart else chart_qs_on}"
+    # Chart toggle — JS-driven (reads current URL at click time). The server
+    # can't encode a correct hx-get here because the filter bar lives outside
+    # #results and doesn't re-render on partial swaps; a baked URL goes stale
+    # after the first click. logviewer.js handles data-chart-toggle clicks and
+    # keeps the checkbox glyph in sync via htmx:afterSettle.
     chart_checked = "checked" if show_chart else ""
-    # Anchor handles the toggle via htmx; the checkbox is a non-interactive
-    # visual indicator. This avoids htmx-on-checkbox edge cases and makes the
-    # whole chip clickable.
     chart_toggle = (
-        f"<a class='filter-chip-btn solid chart-toggle' href='{chart_href}' "
-        f"hx-get='{chart_href}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML' "
+        "<a class='filter-chip-btn solid chart-toggle' href='#' data-chart-toggle "
         "style='margin-left:auto;text-decoration:none;'>"
         f"<input type='checkbox' {chart_checked} tabindex='-1' aria-hidden='true' "
         "style='pointer-events:none;margin:0;'> Chart</a>"

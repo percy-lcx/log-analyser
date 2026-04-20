@@ -99,6 +99,29 @@
     }
   });
 
+  // ── Chart toggle: flip `chart` in the URL at click time ─────────────
+  // (The anchor can't carry a baked hx-get URL because the filter bar lives
+  // outside #results and doesn't re-render on partial swaps.)
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest('[data-chart-toggle]');
+    if (!a) return;
+    e.preventDefault();
+    var url = new URL(window.location.href);
+    if (url.searchParams.get('chart') === '1') url.searchParams.delete('chart');
+    else                                        url.searchParams.set('chart', '1');
+    url.searchParams.delete('page');
+    navigate(url.pathname + url.search);
+  });
+
+  // Keep the checkbox glyph in sync with the URL after every partial swap.
+  document.body.addEventListener('htmx:afterSettle', function () {
+    var on = new URL(window.location.href).searchParams.get('chart') === '1';
+    var toggle = document.querySelector('[data-chart-toggle]');
+    if (!toggle) return;
+    var cb = toggle.querySelector('input[type="checkbox"]');
+    if (cb) cb.checked = on;
+  });
+
   // ── Columns popover checkbox sync ─────────────────────────────────────
   document.addEventListener('change', function (e) {
     var cb = e.target.closest('[data-col-checkbox]');
