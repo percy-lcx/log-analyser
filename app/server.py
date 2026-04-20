@@ -1337,6 +1337,7 @@ body {
 .content form.filter-bar .filter-group-view .filter-group-fields { align-items: center; }
 .content form.filter-bar .filter-group-view .filter-group-actions { margin-left: auto; display: inline-flex; gap: 8px; align-items: center; }
 .content form.filter-bar > .clear-filters-btn { display: none; }
+.content form.filter-bar .search-hint { flex-basis: 100%; font-size: 11px; color: #64748b; margin-top: 2px; }
 
 /* ── Multi-select checkbox dropdown ── */
 .ms-wrap { position: relative; display: flex; flex-direction: column; gap: 4px; }
@@ -3131,6 +3132,7 @@ def export_logs(
     date_to: Optional[str] = Query(None, alias="to"),
     search: Optional[str] = Query(None),
     search_mode: Optional[str] = Query(None),
+    search_field: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     status_class: Optional[str] = Query(None),
     method: Optional[str] = Query(None),
@@ -3163,8 +3165,10 @@ def export_logs(
     countries = _parse_csv_param(country)
     referer_types = _parse_csv_param(referer_type)
     utm_sources = _parse_csv_param(utm_source)
-    if search_mode not in ("contains", "not_contains", "regex"):
+    if search_mode not in LOG_SEARCH_MODE_VALUES:
         search_mode = "contains"
+    if search_field not in LOG_SEARCH_FIELD_COLS:
+        search_field = "any"
     if mode not in {m for m, _ in LOG_MODE_OPTIONS}:
         mode = "rows"
 
@@ -3188,7 +3192,8 @@ def export_logs(
         url_groups=url_groups, locales=locales_sel, countries=countries,
         referer_types=referer_types, utm_sources=utm_sources,
         is_bot=is_bot, include_assets=include_assets, content_only=content_only,
-        search=search, search_mode=search_mode, has_country_col=has_country_col,
+        search=search, search_mode=search_mode, search_field=search_field,
+        has_country_col=has_country_col,
     )
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
@@ -3367,6 +3372,41 @@ LOG_SORT_BY_OPTIONS = [
 
 LOG_MODE_OPTIONS = [("rows", "Rows"), ("group", "Group"), ("timeseries", "Timeseries")]
 
+# ── Search field + match-mode registries ──
+# Each entry maps search_field → (human label, list of SQL column expressions).
+# "any" fans out across four columns (OR-combined, or AND-combined for not_contains);
+# scoped values target a single expression. referer_host is derived on the fly.
+LOG_SEARCH_FIELDS: List[Tuple[str, str, List[str]]] = [
+    ("any", "Any (path, IP, UA, referer)", ["path", "edge_ip", "user_agent", "referer"]),
+    ("path", "Path", ["path"]),
+    ("ip", "IP", ["edge_ip"]),
+    ("user_agent", "User agent", ["user_agent"]),
+    ("user_agent_family", "User-agent family", ["COALESCE(bot_family, '')"]),
+    ("referer", "Referer", ["referer"]),
+    ("referer_host", "Referer host",
+     ["COALESCE(regexp_extract(referer, '^https?://([^/]+)', 1), '')"]),
+]
+LOG_SEARCH_FIELD_COLS: Dict[str, List[str]] = {k: cols for k, _, cols in LOG_SEARCH_FIELDS}
+
+# Search modes + human labels. Values persisted in the URL — do not rename.
+LOG_SEARCH_MODES: List[Tuple[str, str]] = [
+    ("contains", "contains"),
+    ("not_contains", "does not contain"),
+    ("equals", "equals"),
+    ("starts_with", "starts with"),
+    ("ends_with", "ends with"),
+    ("regex", "regex"),
+]
+LOG_SEARCH_MODE_VALUES = {v for v, _ in LOG_SEARCH_MODES}
+
+# Default columns shown in /logs Rows mode when the user hasn't pinned a set via
+# ?columns=. Every other schema column is available via the Columns picker.
+LOG_DEFAULT_COLUMNS: List[str] = [
+    "ts_utc", "method", "path", "status", "bytes_sent", "edge_ip",
+    "country", "locale", "is_bot", "bot_family", "user_agent",
+    "url_group", "referer", "referer_type", "utm_source_norm",
+]
+
 LOG_STACK_LIMIT = 8
 
 # Waste score formula, ported verbatim from scripts/ingest.py wasted_crawl_daily.
@@ -3397,6 +3437,7 @@ def _build_log_where_clauses(
     content_only: bool,
     search: Optional[str],
     search_mode: str,
+    search_field: str,
     has_country_col: bool,
 ) -> List[str]:
     clauses: List[str] = []
@@ -3437,15 +3478,43 @@ def _build_log_where_clauses(
         non_content = ",".join(f"'{sql_escape_string(g)}'" for g in sorted(NON_CONTENT_GROUPS))
         clauses.append(f"url_group NOT IN ({non_content})")
     if search:
-        esc = sql_escape_string(search)
-        search_cols = ["path", "edge_ip", "user_agent", "referer"]
-        if search_mode == "not_contains":
-            clauses.append(" AND ".join(f"{col} NOT ILIKE '%{esc}%'" for col in search_cols))
-        elif search_mode == "regex":
-            clauses.append("(" + " OR ".join(f"regexp_matches({col}, '{esc}')" for col in search_cols) + ")")
-        else:
-            clauses.append("(" + " OR ".join(f"{col} ILIKE '%{esc}%'" for col in search_cols) + ")")
+        search_cols = LOG_SEARCH_FIELD_COLS.get(search_field, LOG_SEARCH_FIELD_COLS["any"])
+        clause = _build_search_clause(search, search_mode, search_cols)
+        if clause:
+            clauses.append(clause)
     return clauses
+
+
+def _build_search_clause(value: str, mode: str, cols: List[str]) -> str:
+    """Build a SQL predicate for the Log Viewer Search field.
+
+    Per-column predicate depends on `mode`. Multiple cols are OR-combined for
+    matching modes (contains, equals, starts_with, ends_with, regex) and
+    AND-combined for `not_contains` (so the value is absent from every col).
+    Regex defaults to case-insensitive via a leading (?i); users override with
+    an inline (?-i) or any other leading (? group — those are preserved as-is.
+    """
+    esc = sql_escape_string(value)
+    if mode == "regex":
+        pat = value if value.startswith("(?") else f"(?i){value}"
+        pat_esc = sql_escape_string(pat)
+        parts = [f"regexp_matches({col}, '{pat_esc}')" for col in cols]
+        return "(" + " OR ".join(parts) + ")"
+    if mode == "not_contains":
+        parts = [f"{col} NOT ILIKE '%{esc}%'" for col in cols]
+        return "(" + " AND ".join(parts) + ")"
+    if mode == "equals":
+        parts = [f"LOWER({col}) = LOWER('{esc}')" for col in cols]
+        return "(" + " OR ".join(parts) + ")"
+    if mode == "starts_with":
+        parts = [f"{col} ILIKE '{esc}%'" for col in cols]
+        return "(" + " OR ".join(parts) + ")"
+    if mode == "ends_with":
+        parts = [f"{col} ILIKE '%{esc}'" for col in cols]
+        return "(" + " OR ".join(parts) + ")"
+    # contains (default)
+    parts = [f"{col} ILIKE '%{esc}%'" for col in cols]
+    return "(" + " OR ".join(parts) + ")"
 
 
 def _group_col_expr(col: str, has_country_col: bool) -> str:
@@ -3704,6 +3773,41 @@ def _resolve_log_preset(
     return RedirectResponse(url=f"/logs?{qs}", status_code=302)
 
 
+def _search_hint_text(field: str, mode: str) -> str:
+    """Plain-English caption of what the current Field + Match selection matches."""
+    field_phrases = {
+        "any": "path, IP, UA, or referer",
+        "path": "Path",
+        "ip": "IP",
+        "user_agent": "User agent",
+        "user_agent_family": "User-agent family",
+        "referer": "Referer",
+        "referer_host": "Referer host",
+    }
+    phrase = field_phrases.get(field, field_phrases["any"])
+    is_any = field == "any"
+
+    if mode == "regex":
+        tail = " — case-insensitive by default; prepend (?-i) for case-sensitive."
+        if is_any:
+            return f"Matches if any of {phrase} matches the pattern{tail}"
+        return f"{phrase} matches the pattern{tail}"
+
+    verb_map = {
+        "contains": "contains",
+        "not_contains": "does not contain",
+        "equals": "equals",
+        "starts_with": "starts with",
+        "ends_with": "ends with",
+    }
+    verb = verb_map.get(mode, "contains")
+    tail = " — case-insensitive."
+    if is_any:
+        quantifier = "none of" if mode == "not_contains" else "any of"
+        return f"Matches if {quantifier} {phrase} {verb} the text{tail}"
+    return f"{phrase} {verb} the text{tail}"
+
+
 def _render_insights_strip(date_from: Optional[str], date_to: Optional[str]) -> str:
     """Chip strip above the filter bar: one-click shortcuts to preset views.
 
@@ -3739,6 +3843,7 @@ def log_viewer(
     per_page: int = Query(100, alias="per_page"),
     search: Optional[str] = Query(None),
     search_mode: Optional[str] = Query(None),
+    search_field: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     status_class: Optional[str] = Query(None),
     method: Optional[str] = Query(None),
@@ -3763,6 +3868,7 @@ def log_viewer(
     stack_by: str = Query(""),
     limit: int = Query(500),
     preset: Optional[str] = Query(None),
+    columns: Optional[str] = Query(None),
 ):
     if preset:
         return _resolve_log_preset(
@@ -3781,8 +3887,10 @@ def log_viewer(
     referer_types = _parse_csv_param(referer_type)
     utm_sources = _parse_csv_param(utm_source)
     show_chart = chart == "1"
-    if search_mode not in ("contains", "not_contains", "regex"):
+    if search_mode not in LOG_SEARCH_MODE_VALUES:
         search_mode = "contains"
+    if search_field not in LOG_SEARCH_FIELD_COLS:
+        search_field = "any"
     if mode not in {m for m, _ in LOG_MODE_OPTIONS}:
         mode = "rows"
 
@@ -3803,6 +3911,24 @@ def log_viewer(
             has_country_col = bool(_)
         except Exception:
             has_country_col = False
+
+    # Probe the unioned parquet schema so the Rows-mode picker knows every available column.
+    schema_cols: List[str] = []
+    if paths:
+        try:
+            schema_cols, _ = run_query(paths, "SELECT * FROM t LIMIT 0")
+        except Exception:
+            schema_cols = []
+
+    # Resolve the set of visible columns for Rows mode.
+    # `columns` param is a comma-separated list; empty/missing → defaults.
+    requested_cols = [c.strip() for c in (columns or "").split(",") if c.strip()]
+    if requested_cols:
+        visible_cols = [c for c in requested_cols if c in schema_cols]
+    else:
+        visible_cols = [c for c in LOG_DEFAULT_COLUMNS if c in schema_cols]
+    if not visible_cols and schema_cols:
+        visible_cols = list(schema_cols)
 
     # ── Populate filter dropdown options ──
     status_opts = distinct_parsed_values("status", date_from, date_to) if paths else []
@@ -3835,6 +3961,32 @@ def log_viewer(
         "var m=f.querySelector(\"[name='mode']\");if(m){m.value=a.dataset.mode;}"
         "f.submit();});});</script>"
     )
+    # Live-update the Search hint line when Field or Match changes.
+    body += (
+        "<script>(function(){"
+        "var FP={any:'path, IP, UA, or referer',path:'Path',ip:'IP',"
+        "user_agent:'User agent',user_agent_family:'User-agent family',"
+        "referer:'Referer',referer_host:'Referer host'};"
+        "var VB={contains:'contains',not_contains:'does not contain',"
+        "equals:'equals',starts_with:'starts with',ends_with:'ends with'};"
+        "function hint(field,mode){"
+        "var p=FP[field]||FP.any;var any=field==='any';"
+        "if(mode==='regex'){"
+        "var t=' \\u2014 case-insensitive by default; prepend (?-i) for case-sensitive.';"
+        "return any?('Matches if any of '+p+' matches the pattern'+t)"
+        ":(p+' matches the pattern'+t);}"
+        "var v=VB[mode]||VB.contains;var t2=' \\u2014 case-insensitive.';"
+        "if(any){var q=mode==='not_contains'?'none of':'any of';"
+        "return 'Matches if '+q+' '+p+' '+v+' the text'+t2;}"
+        "return p+' '+v+' the text'+t2;}"
+        "var el=document.querySelector('[data-search-hint]');"
+        "var ff=document.querySelector(\"[name='search_field']\");"
+        "var mm=document.querySelector(\"[name='search_mode']\");"
+        "function upd(){if(!el||!ff||!mm)return;el.textContent=hint(ff.value,mm.value);}"
+        "if(ff)ff.addEventListener('change',upd);"
+        "if(mm)mm.addEventListener('change',upd);"
+        "})();</script>"
+    )
 
     # Insights strip — chip shortcuts to preset views (drawn from LOG_PRESETS).
     body += _render_insights_strip(date_from, date_to)
@@ -3863,12 +4015,22 @@ def log_viewer(
         f"<button type='button' class='date-preset-btn' onclick='applyDatePreset(this.form, 30)'{presets_disabled}>Last 30 days</button>"
         f"</div>"
     )
-    body += f"<label>Search<input type='text' name='search' value='{search or ''}' placeholder='path, IP, UA, referer'></label>"
-    body += "<label>Match<select name='search_mode'>"
-    for val, lbl in [("contains", "contains"), ("not_contains", "does not contain"), ("regex", "regex")]:
-        sel = "selected" if search_mode == val else ""
-        body += f"<option value='{val}' {sel}>{lbl}</option>"
+    body += f"<label>Search<input type='text' name='search' value='{html_escape(search or '')}' placeholder='search text'></label>"
+    body += "<label>In<select name='search_field'>"
+    for fval, flbl, _cols in LOG_SEARCH_FIELDS:
+        sel = "selected" if search_field == fval else ""
+        body += f"<option value='{fval}' {sel}>{html_escape(flbl)}</option>"
     body += "</select></label>"
+    body += "<label>Match<select name='search_mode'>"
+    for mval, mlbl in LOG_SEARCH_MODES:
+        sel = "selected" if search_mode == mval else ""
+        body += f"<option value='{mval}' {sel}>{html_escape(mlbl)}</option>"
+    body += "</select></label>"
+    body += (
+        f"<div class='search-hint' data-search-hint>"
+        f"{html_escape(_search_hint_text(search_field, search_mode))}"
+        f"</div>"
+    )
     body += "</div></div>"
 
     # Group 2: Request — status + method
@@ -3930,6 +4092,8 @@ def log_viewer(
         body += "</select></label>"
         chart_checked = "checked" if show_chart else ""
         body += f"<label><input type='checkbox' name='chart' value='1' {chart_checked}> Show chart</label>"
+        if schema_cols:
+            body += multi_select_html("columns", schema_cols, visible_cols, "Columns")
     elif mode == "group":
         body += "<label>Group by<select name='group_by'>"
         body += "<option value=''>(pick one)</option>"
@@ -3995,6 +4159,7 @@ def log_viewer(
         content_only=content_only,
         search=search,
         search_mode=search_mode,
+        search_field=search_field,
         has_country_col=has_country_col,
     )
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -4050,11 +4215,8 @@ def log_viewer(
             title=f"Requests over time ({granularity_label})",
         )
 
-    # Validate sort column
-    allowed_sort = {"ts_utc", "edge_ip", "method", "path", "status", "bytes_sent", "is_bot", "bot_family", "user_agent", "url_group", "locale"}
-    if has_country_col:
-        allowed_sort.add("country")
-    sort_col = sort if sort in allowed_sort else "ts_utc"
+    # Validate sort column against the live schema.
+    sort_col = sort if sort in schema_cols else "ts_utc"
     sort_dir = "ASC" if order.lower() == "asc" else "DESC"
 
     per_page = min(max(per_page, 25), 200)
@@ -4065,10 +4227,19 @@ def log_viewer(
     _, count_rows = run_query(paths, count_sql)
     total = count_rows[0][0] if count_rows else 0
 
-    country_col = "CAST(country AS VARCHAR) AS country" if has_country_col else "NULL AS country"
+    # Build the SELECT from the chosen visible columns. `ts_local` is TIMESTAMPTZ,
+    # which DuckDB needs pytz to materialise into Python — cast it to VARCHAR so
+    # the viewer works without optional deps. Country is already cast to VARCHAR
+    # historically for the same reason.
+    def _col_select(name: str) -> str:
+        if name == "ts_local":
+            return "CAST(ts_local AS VARCHAR) AS ts_local"
+        if name == "country":
+            return "CAST(country AS VARCHAR) AS country"
+        return name
+    select_list = ", ".join(_col_select(c) for c in visible_cols)
     data_sql = f"""
-    SELECT ts_utc, edge_ip, method, path, status, bytes_sent,
-           is_bot, bot_family, user_agent, url_group, locale, {country_col}
+    SELECT {select_list}
     FROM t
     {where}
     ORDER BY {sort_col} {sort_dir}
@@ -4076,15 +4247,26 @@ def log_viewer(
     """
     cols, rows = run_query(paths, data_sql)
 
+    TIME_COLS = {"ts_utc", "ts_local", "date"}
+    LONG_TEXT_COLS = {"user_agent", "referer", "referer_path", "path",
+                      "request_target", "query_string", "utm_term", "utm_content"}
+
     display_rows = []
     for r in rows:
-        row = list(r)
-        if row[0] is not None:
-            row[0] = str(row[0])[:19]
-        row[5] = fmt_bytes(row[5])
-        row[6] = "Bot" if row[6] else "Human"
-        if row[8] and len(str(row[8])) > 80:
-            row[8] = str(row[8])[:80] + "\u2026"
+        row = []
+        for name, v in zip(cols, r):
+            if v is None:
+                row.append("")
+            elif name in TIME_COLS:
+                row.append(str(v)[:19])
+            elif name == "bytes_sent":
+                row.append(fmt_bytes(v))
+            elif name == "is_bot":
+                row.append("Bot" if v else "Human")
+            elif name in LONG_TEXT_COLS and isinstance(v, str) and len(v) > 80:
+                row.append(v[:80] + "\u2026")
+            else:
+                row.append(v)
         display_rows.append(row)
 
     total_pages = max(1, (total + per_page - 1) // per_page)
@@ -4099,6 +4281,8 @@ def log_viewer(
         params["search"] = search
     if search_mode and search_mode != "contains":
         params["search_mode"] = search_mode
+    if search_field and search_field != "any":
+        params["search_field"] = search_field
     if status_codes:
         params["status"] = ",".join(str(c) for c in status_codes)
     if status_classes:
@@ -4133,6 +4317,10 @@ def log_viewer(
         params["order"] = order
     if show_chart:
         params["chart"] = "1"
+    # Include columns in the URL only when the user has pinned a non-default set.
+    default_col_set = {c for c in LOG_DEFAULT_COLUMNS if c in schema_cols}
+    if visible_cols and set(visible_cols) != default_col_set:
+        params["columns"] = ",".join(visible_cols)
 
     def page_link(p: int, label: str) -> str:
         qs = "&".join(f"{k}={v}" for k, v in params.items())
