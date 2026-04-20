@@ -11,13 +11,15 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import duckdb
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import (
     HTMLResponse,
     StreamingResponse,
     PlainTextResponse,
     RedirectResponse,
+    JSONResponse,
 )
+from fastapi.staticfiles import StaticFiles
 
 import csv
 import functools
@@ -89,6 +91,10 @@ def fmt_bytes(n) -> str:
     return f"{n:.1f} TB"
 
 app = FastAPI(title="Local Log Dashboard")
+
+_STATIC_DIR = ROOT / "app" / "static"
+if _STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 from app.settings import router as settings_router
 app.include_router(settings_router)
@@ -2360,10 +2366,14 @@ def executive_summary(
 ):
     avail = available_dates()
     date_from, date_to = _default_last_7(date_from, date_to, avail)
-    body = date_filters_html(date_from, date_to, avail)
+    body = ""
 
     if not avail:
-        return page("Executive Summary", body + no_data_notice())
+        return _lv2_report_shell(
+            title="Executive Summary", nav_key="summary",
+            date_from=date_from, date_to=date_to, avail=avail,
+            body=no_data_notice(),
+        )
 
     curr_from, curr_to, prev_from, prev_to = _compute_periods(date_from, date_to, avail)
 
@@ -2550,7 +2560,11 @@ def executive_summary(
         body += f"<a href='{url}' class='report-card'>{name}<small>{desc}</small></a>"
     body += "</div></div>"
 
-    return page("Executive Summary", body)
+    return _lv2_report_shell(
+        title="Executive Summary", nav_key="summary",
+        date_from=date_from, date_to=date_to, avail=avail,
+        body=body,
+    )
 
 
 @app.get("/")
@@ -2631,7 +2645,7 @@ def locales(
     url_group_display = _fmt_filter_display(url_groups)
     avail = available_dates()
     date_from, date_to = _default_last_7(date_from, date_to, avail)
-    body = date_filters_html(date_from, date_to, avail)
+    body = ""
 
     # ── Locale Breakdown tab ──
     breakdown = ""
@@ -2742,7 +2756,11 @@ def locales(
     body += tabs
     body += tab_panel("breakdown", breakdown)
     body += tab_panel("heatmap", heatmap_content)
-    return page("Locales", body)
+    return _lv2_report_shell(
+        title="Locales", nav_key="reports",
+        date_from=date_from, date_to=date_to, avail=avail,
+        body=body,
+    )
 
 
 
@@ -2825,7 +2843,7 @@ def gsc_report(
     gsc_paths = list_partitions("gsc_daily", date_from, date_to)
     avail = available_dates()
     date_from, date_to = _default_last_7(date_from, date_to, avail)
-    body = date_filters_html(date_from, date_to, avail)
+    body = ""
 
     # Check if GSC is connected by looking for gsc_daily data
     if not gsc_paths:
@@ -2853,7 +2871,11 @@ def gsc_report(
                 "or adjust the date filter above to a range that already has aggregates.</p>"
                 "</div>"
             )
-        return page("Search Console", body)
+        return _lv2_report_shell(
+            title="Search Console", nav_key="reports",
+            date_from=date_from, date_to=date_to, avail=avail,
+            body=body,
+        )
 
     # ── Tab: Performance Overview ──────────────────────────────────────
     perf = ""
@@ -3104,7 +3126,11 @@ def gsc_report(
     body += tabs
     body += tab_panel("performance", perf)
     body += tab_panel("efficiency", eff)
-    return page("Search Console", body)
+    return _lv2_report_shell(
+        title="Search Console", nav_key="reports",
+        date_from=date_from, date_to=date_to, avail=avail,
+        body=body,
+    )
 
 
 # ── Legacy route redirects ────────────────────────────────────────────────
@@ -3654,6 +3680,81 @@ _WASTE_SCORE_SQL = (
 )
 
 
+# ── Search-operator parser (used by logviewer-v2) ──────────────────────────
+# Tokens understood by the unified search input. Keys that are URL-safe are
+# passed through to _build_log_where_clauses via the *_include / *_exclude sets
+# so operator filters and popover-set filters share one predicate path.
+_SEARCH_OP_KEYS = {
+    "status":        "status",
+    "status_class":  "status_class",
+    "method":        "method",
+    "is":            "is_bot",          # is:bot / is:human
+    "path":          "path",
+    "bot_family":    "bot_family",
+    "bot_category":  "bot_category",
+    "country":       "country",
+    "locale":        "locale",
+    "referer_type":  "referer_type",
+    "utm_source":    "utm_source",
+    "utm":           "utm_source",
+    "url_group":     "url_group",
+}
+
+
+def _parse_search_operators(q: Optional[str]) -> Tuple[str, Dict[str, List[str]], Dict[str, List[str]], Optional[str]]:
+    """Split a raw search input into (free_text, includes, excludes, forced_mode).
+
+    Operator syntax: `key:value`, `-key:value` negates. `status:4xx` shorthand
+    maps to status_class. `is:bot|human` maps to is_bot. A lone `/regex/`
+    token sets forced_mode="regex" on the free-text search.
+
+    Values remain strings; the caller dedupes and types them via the existing
+    filter-parsing helpers. Unknown operators fall through to free text.
+    """
+    includes: Dict[str, List[str]] = {}
+    excludes: Dict[str, List[str]] = {}
+    free_tokens: List[str] = []
+    forced_mode: Optional[str] = None
+
+    if not q:
+        return "", includes, excludes, forced_mode
+
+    for tok in q.split():
+        if not tok:
+            continue
+        neg = False
+        t = tok
+        if t.startswith("-") and ":" in t:
+            neg = True
+            t = t[1:]
+        if ":" in t:
+            key, _, val = t.partition(":")
+            key_lower = key.lower()
+            target = _SEARCH_OP_KEYS.get(key_lower)
+            if target and val:
+                bucket = excludes if neg else includes
+                if target == "status" and len(val) >= 3 and val[-2:].lower() == "xx" and val[:-2].isdigit():
+                    bucket.setdefault("status_class", []).append(val[:-2])
+                    continue
+                if target == "is_bot":
+                    vl = val.lower()
+                    if vl in ("bot", "true", "1"):
+                        bucket.setdefault("is_bot", []).append("true")
+                    elif vl in ("human", "false", "0"):
+                        bucket.setdefault("is_bot", []).append("false")
+                    continue
+                bucket.setdefault(target, []).append(val)
+                continue
+        # bare /regex/ token → force regex mode for the free-text search
+        if len(tok) >= 2 and tok.startswith("/") and tok.endswith("/"):
+            forced_mode = "regex"
+            free_tokens.append(tok[1:-1])
+            continue
+        free_tokens.append(tok)
+
+    return " ".join(free_tokens), includes, excludes, forced_mode
+
+
 def _build_log_where_clauses(
     *,
     status_codes: List[int],
@@ -3673,6 +3774,10 @@ def _build_log_where_clauses(
     search_mode: str,
     search_field: str,
     has_country_col: bool,
+    # ── Phase 2 extensions: explicit excludes + path prefix filters ──
+    excludes: Optional[Dict[str, List[str]]] = None,
+    paths_include: Optional[List[str]] = None,
+    paths_exclude: Optional[List[str]] = None,
 ) -> List[str]:
     clauses: List[str] = []
     if status_codes:
@@ -3716,6 +3821,46 @@ def _build_log_where_clauses(
         clause = _build_search_clause(search, search_mode, search_cols)
         if clause:
             clauses.append(clause)
+
+    # ── Path prefix filters (from search operator `path:/foo`) ──
+    for p in (paths_include or []):
+        esc = sql_escape_string(p)
+        clauses.append(f"path LIKE '{esc}%'")
+    for p in (paths_exclude or []):
+        esc = sql_escape_string(p)
+        clauses.append(f"path NOT LIKE '{esc}%'")
+
+    # ── Negation (exclude_*) clauses from search operators / popover ──
+    if excludes:
+        ex_status = [int(v) for v in excludes.get("status", []) if str(v).isdigit()]
+        if ex_status:
+            clauses.append(f"(status IS NULL OR status NOT IN ({','.join(str(c) for c in ex_status)}))")
+        ex_status_class = [int(v) for v in excludes.get("status_class", []) if str(v).isdigit() and int(v) in (1, 2, 3, 4, 5)]
+        if ex_status_class:
+            clauses.append(f"(status_class IS NULL OR status_class NOT IN ({','.join(str(c) for c in ex_status_class)}))")
+        for ex_key, col in (
+            ("method", "method"),
+            ("bot_family", "bot_family"),
+            ("bot_category", "bot_category"),
+            ("url_group", "url_group"),
+            ("locale", "locale"),
+            ("referer_type", "referer_type"),
+            ("utm_source", "utm_source_norm"),
+        ):
+            vals = excludes.get(ex_key, [])
+            if vals:
+                escaped = ",".join(f"'{sql_escape_string(v)}'" for v in vals)
+                clauses.append(f"({col} IS NULL OR {col} NOT IN ({escaped}))")
+        ex_country = excludes.get("country", [])
+        if ex_country and has_country_col:
+            escaped = ",".join(f"'{sql_escape_string(v)}'" for v in ex_country)
+            clauses.append(f"(country IS NULL OR CAST(country AS VARCHAR) NOT IN ({escaped}))")
+        ex_is_bot = excludes.get("is_bot", [])
+        if "true" in ex_is_bot:
+            clauses.append("(is_bot IS NULL OR is_bot = false)")
+        if "false" in ex_is_bot:
+            clauses.append("is_bot = true")
+
     return clauses
 
 
@@ -4069,8 +4214,1109 @@ def _render_insights_strip(date_from: Optional[str], date_to: Optional[str]) -> 
     return "".join(parts)
 
 
+# ── Log viewer v2 (htmx redesign) ───────────────────────────────────────────
+# SAVED_VIEWS are hardcoded predefined views — user CRUD is Phase 5. Each view
+# is a canonical set of filter params; when `view=<id>` is present, the handler
+# merges these defaults with any explicit overrides in the URL.
+LV2_SAVED_VIEWS: List[Dict[str, Any]] = [
+    {"id": "all",      "label": "All traffic",  "icon": "▦", "filters": {}},
+    {"id": "errors",   "label": "Errors only",  "icon": "!", "filters": {"status_class": "4,5"}},
+    {"id": "top-404",  "label": "404s",         "icon": "✕", "filters": {"status": "404"}},
+    {"id": "ai-bots",  "label": "AI crawlers",  "icon": "✦", "filters": {"bot_category": "AI", "is_bot": "true"}},
+    {"id": "humans",   "label": "Humans only",  "icon": "☺", "filters": {"is_bot": "false"}},
+    {"id": "paid",     "label": "Paid traffic", "icon": "$", "filters": {"utm_source": "google_ads,newsletter,chatgpt"}},
+]
+
+LV2_COLUMN_LABELS: Dict[str, str] = {
+    "ts_utc": "Timestamp", "ts_local": "Time (local)", "method": "Method",
+    "path": "Path", "status": "Status", "status_class": "Status class",
+    "bytes_sent": "Bytes", "edge_ip": "IP", "country": "Country",
+    "locale": "Locale", "is_bot": "Is bot", "bot_family": "Bot family",
+    "bot_category": "Bot category", "user_agent": "User agent",
+    "url_group": "URL group", "referer": "Referer", "referer_host": "Referer host",
+    "referer_path": "Referer path", "referer_type": "Referer type",
+    "utm_source_norm": "UTM source", "utm_medium": "UTM medium",
+    "utm_campaign": "UTM campaign", "utm_term": "UTM term", "utm_content": "UTM content",
+    "is_parameterized": "Parameterized?", "is_resource": "Resource?",
+    "query_string": "Query", "request_target": "Request",
+}
+
+
+def _lv2_icon(name: str, cls: str = "") -> str:
+    extra = f" class='{cls}'" if cls else ""
+    return f"<svg{extra} width='14' height='14' aria-hidden='true'><use href='/static/icons.svg#{name}'/></svg>"
+
+
+def _lv2_build_qs(params: Dict[str, Any], **overrides: Any) -> str:
+    """Build a query string from params dict, applying overrides (None drops)."""
+    merged = dict(params)
+    for k, v in overrides.items():
+        if v is None:
+            merged.pop(k, None)
+        else:
+            merged[k] = v
+    parts = []
+    for k, v in merged.items():
+        if v is None or v == "":
+            continue
+        parts.append(f"{k}={html_escape(str(v), quote=True)}")
+    return "&".join(parts)
+
+
+def _lv2_apply_view(view_id: Optional[str], current: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]:
+    """Merge a saved view's defaults onto the current filter dict (URL overrides win)."""
+    if not view_id:
+        return current
+    match = next((v for v in LV2_SAVED_VIEWS if v["id"] == view_id), None)
+    if not match:
+        return current
+    merged = dict(current)
+    for k, v in match["filters"].items():
+        if not merged.get(k):
+            merged[k] = v
+    return merged
+
+
+def _lv2_topnav(active: str) -> str:
+    nav_items = [
+        ("logs", "Logs", "/logs"),
+        ("summary", "Summary", "/reports/summary"),
+        ("reports", "Reports", "/reports/locales"),
+        ("settings", "Settings", "/settings"),
+    ]
+    links = "".join(
+        f"<a href='{url}' class='nav-link{' active' if active == key else ''}'>{html_escape(label)}</a>"
+        for key, label, url in nav_items
+    )
+    return (
+        "<nav class='topnav'>"
+        "<div class='brand'><span class='brand-mark'></span><span>log analyser</span></div>"
+        f"<div class='nav-links'>{links}</div>"
+        "<div class='nav-util'>"
+        "<span class='nav-pill' title='Data freshness'><span class='dot'></span>live</span>"
+        f"<button class='btn btn-icon btn-ghost' data-popover-trigger='kb-help-open' title='Shortcuts (?)' aria-label='Keyboard shortcuts'>{_lv2_icon('keyboard')}</button>"
+        "</div>"
+        "</nav>"
+    )
+
+
+def _lv2_kb_help() -> str:
+    rows = [
+        ("<kbd class='kbd'>/</kbd>", "Focus search"),
+        ("<kbd class='kbd'>?</kbd>", "Show this help"),
+        ("<kbd class='kbd'>esc</kbd>", "Close drawer / popover"),
+        ("<kbd class='kbd'>j</kbd> / <kbd class='kbd'>k</kbd>", "Next / previous row"),
+        ("<kbd class='kbd'>g</kbd>", "Toggle chart"),
+    ]
+    row_html = "".join(f"<div class='kh-row'><span>{lbl}</span><span>{k}</span></div>" for k, lbl in rows)
+    return (
+        "<div class='kb-help' id='kb-help' data-kb-close>"
+        "<div class='kb-help-panel'>"
+        "<h3>Keyboard shortcuts</h3>"
+        f"{row_html}"
+        "<div class='kh-close'><button class='btn btn-sm' data-kb-close>Close</button></div>"
+        "</div></div>"
+    )
+
+
+def _lv2_page_head(title: str, count_text: str, mode: str, params: Dict[str, Any]) -> str:
+    modes = [("rows", "Rows"), ("group", "Group"), ("timeseries", "Timeseries")]
+    seg_links = "".join(
+        f"<a class='{'active' if mode == mv else ''}' "
+        f"href='/logs?{_lv2_build_qs(params, mode=mv, page=None)}' "
+        f"hx-get='/logs?{_lv2_build_qs(params, mode=mv, page=None)}' "
+        f"hx-target='#results' hx-push-url='true' hx-swap='innerHTML'>{html_escape(ml)}</a>"
+        for mv, ml in modes
+    )
+    export_qs = _lv2_build_qs(params, mode=None, page=None, per_page=None)
+    return (
+        "<div class='page-head'>"
+        f"<div><div class='page-title'>{html_escape(title)} <small>{count_text}</small></div></div>"
+        "<div class='page-actions'>"
+        f"<div class='seg' role='tablist'>{seg_links}</div>"
+        f"<a class='btn btn-sm' href='/export/logs?{export_qs}' title='Export'>{_lv2_icon('download')}<span>Export</span></a>"
+        "</div>"
+        "</div>"
+    )
+
+
+def _lv2_views_strip(active_view: Optional[str], date_from: Optional[str], date_to: Optional[str]) -> str:
+    date_qs = ""
+    if date_from:
+        date_qs += f"&from={html_escape(date_from, quote=True)}"
+    if date_to:
+        date_qs += f"&to={html_escape(date_to, quote=True)}"
+    chips = []
+    for v in LV2_SAVED_VIEWS:
+        href = f"/logs?view={v['id']}{date_qs}"
+        active = " active" if active_view == v["id"] else ""
+        chips.append(
+            f"<a class='view-chip{active}' href='{href}' "
+            f"hx-get='{href}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML'>"
+            f"<span class='view-icon'>{html_escape(v['icon'])}</span>"
+            f"{html_escape(v['label'])}</a>"
+        )
+    return (
+        "<div class='views-strip'>"
+        "<span class='views-label'>Views</span>"
+        f"{''.join(chips)}"
+        "</div>"
+    )
+
+
+def _lv2_more_filters_popover(
+    *,
+    params: Dict[str, Any],
+    filter_opts: Dict[str, List[str]],
+    filter_selected: Dict[str, List[str]],
+    is_bot: Optional[str],
+    has_country_col: bool,
+) -> Tuple[str, int]:
+    """Render the two-pane More filters popover. Returns (html, active_count)."""
+
+    def checklist(field: str, options: List[str], selected_vals: List[str]) -> str:
+        items = []
+        for opt in options:
+            checked = "checked" if opt in selected_vals else ""
+            items.append(
+                f"<label><input type='checkbox' data-filter-field='{html_escape(field)}' "
+                f"data-filter-value='{html_escape(opt, quote=True)}' {checked}> "
+                f"<span>{html_escape(opt)}</span></label>"
+            )
+        return f"<div class='pop-checklist'>{''.join(items)}</div>"
+
+    # Panes (category → list of (label, field, options, selected_list))
+    panes: List[Tuple[str, str, List[Tuple[str, str, List[str], List[str]]]]] = [
+        ("request", "Request", [
+            ("Status code", "status",       filter_opts.get("status",      []), filter_selected.get("status", [])),
+            ("Method",      "method",       filter_opts.get("method",      []), filter_selected.get("method", [])),
+        ]),
+        ("traffic", "Traffic", [
+            ("Bot family",   "bot_family",   filter_opts.get("bot_family",   []), filter_selected.get("bot_family", [])),
+            ("Bot category", "bot_category", filter_opts.get("bot_category", []), filter_selected.get("bot_category", [])),
+            ("URL group",    "url_group",    filter_opts.get("url_group",    []), filter_selected.get("url_group", [])),
+        ]),
+        ("geo", "Geo & language", [
+            ("Locale",  "locale",  filter_opts.get("locale",  []), filter_selected.get("locale", [])),
+        ] + ([
+            ("Country", "country", filter_opts.get("country", []), filter_selected.get("country", [])),
+        ] if has_country_col else [])),
+        ("acquisition", "Acquisition", [
+            ("Referer type", "referer_type", filter_opts.get("referer_type", []), filter_selected.get("referer_type", [])),
+            ("UTM source",   "utm_source",   filter_opts.get("utm_source",   []), filter_selected.get("utm_source", [])),
+        ]),
+    ]
+
+    # Count active filters per pane (for badges) and overall.
+    total_active = sum(len(sel) for _, _, fields in panes for _, _, _, sel in fields)
+    if is_bot:
+        total_active += 1
+
+    # Nav buttons
+    nav_buttons = []
+    for idx, (pane_id, pane_label, fields) in enumerate(panes):
+        count = sum(len(sel) for _, _, _, sel in fields)
+        if pane_id == "traffic" and is_bot:
+            count += 1
+        badge = f"<span class='count'>{count}</span>" if count else ""
+        active = "active" if idx == 0 else ""
+        nav_buttons.append(
+            f"<button type='button' class='{active}' data-mfp-tab='{pane_id}'>"
+            f"<span>{html_escape(pane_label)}</span>{badge}</button>"
+        )
+
+    # Pane bodies
+    pane_bodies = []
+    for idx, (pane_id, pane_label, fields) in enumerate(panes):
+        sections = []
+        if pane_id == "traffic":
+            # is_bot radio group (single-value)
+            opts = [("", "All traffic"), ("true", "Bots only"), ("false", "Humans only")]
+            btns = []
+            for v, lbl in opts:
+                active = "active" if (is_bot or "") == v else ""
+                btns.append(
+                    f"<button type='button' class='filter-chip-btn solid{(' '+active) if active else ''}' "
+                    f"data-filter-field='is_bot' data-filter-mode='single' data-filter-value='{html_escape(v, quote=True)}' "
+                    f"style='margin-right:4px;'>{html_escape(lbl)}</button>"
+                )
+            sections.append(
+                "<div style='margin-bottom:14px;'>"
+                "<div style='font-size:11px;text-transform:uppercase;font-weight:600;color:var(--ink-3);margin-bottom:6px;'>Bot vs human</div>"
+                f"<div style='display:flex;flex-wrap:wrap;'>{''.join(btns)}</div>"
+                "</div>"
+            )
+        for label, field, options, selected_vals in fields:
+            if not options:
+                continue
+            sections.append(
+                "<div style='margin-bottom:14px;'>"
+                f"<div style='font-size:11px;text-transform:uppercase;font-weight:600;color:var(--ink-3);margin-bottom:6px;'>{html_escape(label)}</div>"
+                + checklist(field, options, selected_vals) +
+                "</div>"
+            )
+        display = "block" if idx == 0 else "none"
+        if not sections:
+            sections.append(
+                "<div style='font-size:12px;color:var(--ink-3);padding:8px 0;'>No values in this range.</div>"
+            )
+        pane_bodies.append(
+            f"<div class='mfp-pane' data-mfp-pane='{pane_id}' style='display:{display};'>"
+            f"{''.join(sections)}</div>"
+        )
+
+    # Clear-all href: drops every multi-filter + is_bot, keeps dates/mode/columns.
+    keep_keys = {"from", "to", "mode", "chart", "columns", "view"}
+    clear_qs = _lv2_build_qs({k: v for k, v in params.items() if k in keep_keys})
+
+    popover_html = (
+        "<div class='popover mfp' id='pop-add-filter' style='top:62px; left:50%;'>"
+        "<div class='mfp-head'>"
+        "<h4 style='font-size:13px;font-weight:600;color:var(--ink-1);'>All filters</h4>"
+        "<p style='font-size:12px;color:var(--ink-3);margin-top:2px;'>Tick to filter — changes apply instantly.</p>"
+        "</div>"
+        "<div class='mfp-body'>"
+        f"<div class='mfp-nav'>{''.join(nav_buttons)}</div>"
+        f"<div class='mfp-main'>{''.join(pane_bodies)}</div>"
+        "</div>"
+        "<div class='mfp-foot'>"
+        f"<span>{total_active} active</span>"
+        "<div style='display:flex;gap:6px;'>"
+        f"<a class='btn btn-sm' href='/logs?{clear_qs}' "
+        f"hx-get='/logs?{clear_qs}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML'>Clear all</a>"
+        "</div>"
+        "</div>"
+        "</div>"
+    )
+    return popover_html, total_active
+
+
+def _lv2_filter_bar(
+    *,
+    search: Optional[str],
+    date_from: Optional[str],
+    date_to: Optional[str],
+    show_chart: bool,
+    schema_cols: List[str],
+    visible_cols: List[str],
+    params: Dict[str, Any],
+    filter_opts: Optional[Dict[str, List[str]]] = None,
+    filter_selected: Optional[Dict[str, List[str]]] = None,
+    is_bot: Optional[str] = None,
+    has_country_col: bool = False,
+) -> str:
+    # Search input
+    search_val = html_escape(search or "", quote=True)
+    hidden_kvs = []
+    for hk, hv in params.items():
+        if hk in ("search", "page") or hv in (None, ""):
+            continue
+        hidden_kvs.append(
+            f"<input type='hidden' name='{html_escape(hk)}' value='{html_escape(str(hv), quote=True)}'>"
+        )
+    hidden_inputs_html = "".join(hidden_kvs)
+    search_html = (
+        "<div class='search-input'>"
+        f"{_lv2_icon('search')}"
+        "<form method='get' action='/logs' style='display:flex;flex:1;min-width:0;'>"
+        f"{hidden_inputs_html}"
+        f"<input type='text' name='search' value='{search_val}' "
+        "placeholder='Search or filter   e.g.  status:404  is:bot  path:/api' "
+        "spellcheck='false' autocomplete='off'>"
+        "</form>"
+        "<span class='sx-kbd'>/</span>"
+        "</div>"
+    )
+
+    # Date range + presets
+    def preset_link(days: Optional[int], label: str, is_active: bool) -> str:
+        if days is None:
+            qs = _lv2_build_qs(params, **{"from": None, "to": None, "page": None})
+        else:
+            today = datetime.utcnow().date()
+            frm = (today - timedelta(days=days - 1)).isoformat()
+            to = today.isoformat()
+            qs = _lv2_build_qs(params, **{"from": frm, "to": to, "page": None})
+        cls = "active" if is_active else ""
+        return (
+            f"<a class='{cls}' href='/logs?{qs}' "
+            f"hx-get='/logs?{qs}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML'>"
+            f"{html_escape(label)}</a>"
+        )
+
+    # Compute active preset by span in days
+    active_preset_days: Optional[int] = None
+    if date_from and date_to:
+        try:
+            f_d = datetime.fromisoformat(date_from).date()
+            t_d = datetime.fromisoformat(date_to).date()
+            span = (t_d - f_d).days + 1
+            today = datetime.utcnow().date()
+            if t_d == today and span in {1, 3, 7, 14, 30}:
+                active_preset_days = span
+        except ValueError:
+            active_preset_days = None
+
+    range_label = "All time"
+    if date_from and date_to:
+        if date_from == date_to:
+            range_label = date_from
+        else:
+            range_label = f"{date_from} → {date_to}"
+
+    preset_btns = "".join([
+        preset_link(1, "24h", active_preset_days == 1),
+        preset_link(3, "3d", active_preset_days == 3),
+        preset_link(7, "7d", active_preset_days == 7),
+        preset_link(14, "14d", active_preset_days == 14),
+        preset_link(30, "30d", active_preset_days == 30),
+    ])
+    date_range_html = (
+        "<div class='date-range'>"
+        f"{_lv2_icon('calendar')}"
+        f"<span class='dr-label'>{html_escape(range_label)}</span>"
+        f"<div class='dr-presets'>{preset_btns}</div>"
+        "</div>"
+    )
+
+    # Add filter button (badge count when filters active)
+    mfp_html, mfp_count = _lv2_more_filters_popover(
+        params=params,
+        filter_opts=filter_opts or {},
+        filter_selected=filter_selected or {},
+        is_bot=is_bot,
+        has_country_col=has_country_col,
+    )
+    count_badge = f"<span class='count' style='background:var(--accent);color:#fff;border-radius:999px;padding:0 6px;font-size:10px;min-width:16px;text-align:center;'>{mfp_count}</span>" if mfp_count else ""
+    add_filter_btn = (
+        "<button type='button' class='filter-chip-btn' data-popover-trigger='pop-add-filter'>"
+        f"{_lv2_icon('plus')}Add filter{count_badge}</button>"
+    )
+
+    # Columns popover
+    col_items = []
+    for c in schema_cols:
+        checked = "checked" if c in visible_cols else ""
+        lbl = LV2_COLUMN_LABELS.get(c, c)
+        col_items.append(
+            f"<label><input type='checkbox' data-col-checkbox value='{html_escape(c)}' {checked}> "
+            f"<span>{html_escape(lbl)}</span></label>"
+        )
+    columns_popover = (
+        "<div class='popover-anchor'>"
+        "<button type='button' class='filter-chip-btn' data-popover-trigger='pop-columns'>"
+        f"{_lv2_icon('columns')}Columns</button>"
+        "<div class='popover' id='pop-columns' style='top:38px; right:0;'>"
+        "<div class='popover-title'>Visible columns</div>"
+        f"<div class='pop-checklist'>{''.join(col_items)}</div>"
+        "</div>"
+        "</div>"
+    )
+
+    # Chart toggle
+    chart_qs_on = _lv2_build_qs(params, chart="1", page=None)
+    chart_qs_off = _lv2_build_qs(params, chart=None, page=None)
+    chart_href = f"/logs?{chart_qs_off if show_chart else chart_qs_on}"
+    chart_checked = "checked" if show_chart else ""
+    chart_toggle = (
+        "<label class='filter-chip-btn solid' style='margin-left:auto;'>"
+        f"<input type='checkbox' {chart_checked} "
+        f"hx-get='{chart_href}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML'> "
+        "Chart</label>"
+    )
+
+    return (
+        "<div class='filter-bar'>"
+        f"{search_html}"
+        f"{date_range_html}"
+        f"<div class='popover-anchor'>{add_filter_btn}{mfp_html}</div>"
+        f"{columns_popover}"
+        f"{chart_toggle}"
+        "</div>"
+    )
+
+
+# Short chip labels by canonical field name.
+_LV2_CHIP_LABELS = {
+    "status": "status", "status_class": "status_class", "method": "method",
+    "is_bot": "is", "bot_family": "bot_family", "bot_category": "bot_category",
+    "url_group": "url_group", "locale": "locale", "country": "country",
+    "referer_type": "referer_type", "utm_source": "utm", "path": "path",
+    "search": "search", "view": "view",
+}
+
+# URL param name that stores values for each canonical field. `is_bot` takes
+# the raw "true"/"false"; others are CSV lists.
+_LV2_URL_PARAM_BY_FIELD = {
+    "status": "status", "status_class": "status_class", "method": "method",
+    "is_bot": "is_bot", "bot_family": "bot_family", "bot_category": "bot_category",
+    "url_group": "url_group", "locale": "locale", "country": "country",
+    "referer_type": "referer_type", "utm_source": "utm_source",
+}
+
+
+def _lv2_strip_search_operator(raw_search: str, field: str, value: str, negated: bool) -> str:
+    """Return `raw_search` with the first matching `[-]key:value` token removed.
+
+    Handles both `utm:` and `utm_source:` shortcuts, and the `status:4xx` →
+    status_class shorthand. If nothing matches, returns the input unchanged.
+    """
+    tokens = (raw_search or "").split()
+    # Candidate token surface forms to try.
+    candidates: List[str] = []
+    neg = "-" if negated else ""
+    if field == "is_bot":
+        candidates.append(f"{neg}is:{'bot' if value == 'true' else 'human'}")
+    elif field == "status_class":
+        candidates.append(f"{neg}status:{value}xx")
+        candidates.append(f"{neg}status_class:{value}")
+    elif field == "utm_source":
+        candidates.append(f"{neg}utm:{value}")
+        candidates.append(f"{neg}utm_source:{value}")
+    else:
+        candidates.append(f"{neg}{field}:{value}")
+    cand_lower = {c.lower() for c in candidates}
+    out: List[str] = []
+    dropped = False
+    for tok in tokens:
+        if not dropped and tok.lower() in cand_lower:
+            dropped = True
+            continue
+        out.append(tok)
+    return " ".join(out)
+
+
+def _lv2_active_chips(
+    params: Dict[str, Any],
+    schema_cols: List[str],
+    *,
+    op_includes: Optional[Dict[str, List[str]]] = None,
+    op_excludes: Optional[Dict[str, List[str]]] = None,
+    raw_search: str = "",
+) -> str:
+    """Emit a removable chip for each active filter. Empty string when nothing active."""
+    op_includes = op_includes or {}
+    op_excludes = op_excludes or {}
+
+    # URL-origin chip fields (param_key == field name). Values are CSV or raw.
+    URL_CHIP_FIELDS = [
+        "status", "status_class", "method", "is_bot", "bot_family", "bot_category",
+        "url_group", "locale", "country", "referer_type", "utm_source", "view",
+    ]
+
+    chips: List[str] = []
+
+    def _append_chip(display_key: str, display_val: str, sep: str, remove_qs: str, tooltip: str) -> None:
+        trunc = display_val if len(display_val) <= 32 else display_val[:32] + "…"
+        chips.append(
+            f"<span class='chip'>"
+            f"<span class='chip-key'>{html_escape(display_key)}</span>"
+            f"<span class='chip-sep'>{sep}</span>"
+            f"<span class='chip-val' title='{html_escape(tooltip, quote=True)}'>{html_escape(trunc)}</span>"
+            f"<a class='chip-x' href='/logs?{remove_qs}' "
+            f"hx-get='/logs?{remove_qs}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML' "
+            f"aria-label='Remove {html_escape(display_key)}'>×</a>"
+            f"</span>"
+        )
+
+    # URL-origin chips
+    for field in URL_CHIP_FIELDS:
+        val = params.get(field)
+        if val in (None, ""):
+            continue
+        display_key = _LV2_CHIP_LABELS.get(field, field)
+        remove_qs = _lv2_build_qs(params, **{field: None, "page": None})
+        _append_chip(display_key, str(val), "=", remove_qs, str(val))
+
+    # Free-text search chip
+    if params.get("search"):
+        display_val = str(params["search"])
+        remove_qs = _lv2_build_qs(params, search=None, page=None)
+        _append_chip("search", display_val, "~", remove_qs, display_val)
+
+    # Operator-origin include chips (filter came from `status:404` etc.)
+    for field, vals in op_includes.items():
+        if field == "path":
+            label = "path"
+        else:
+            label = _LV2_CHIP_LABELS.get(field, field)
+        for v in vals:
+            # Skip values that are already represented as URL-origin chips.
+            url_field_name = _LV2_URL_PARAM_BY_FIELD.get(field)
+            if url_field_name:
+                url_val = params.get(url_field_name)
+                if url_val and v in str(url_val).split(","):
+                    continue
+            new_search = _lv2_strip_search_operator(raw_search, field, v, negated=False)
+            remove_params = dict(params)
+            if new_search:
+                remove_params["search"] = new_search
+            else:
+                remove_params.pop("search", None)
+            remove_qs = _lv2_build_qs(remove_params, page=None)
+            display_val = "bot" if field == "is_bot" and v == "true" else ("human" if field == "is_bot" and v == "false" else v)
+            sep = "=" if field != "path" else "^"
+            _append_chip(label, display_val, sep, remove_qs, v)
+
+    # Operator-origin exclude chips (`-utm:direct`)
+    for field, vals in op_excludes.items():
+        if field == "path":
+            label = "path"
+        else:
+            label = _LV2_CHIP_LABELS.get(field, field)
+        for v in vals:
+            new_search = _lv2_strip_search_operator(raw_search, field, v, negated=True)
+            remove_params = dict(params)
+            if new_search:
+                remove_params["search"] = new_search
+            else:
+                remove_params.pop("search", None)
+            remove_qs = _lv2_build_qs(remove_params, page=None)
+            display_val = "bot" if field == "is_bot" and v == "true" else ("human" if field == "is_bot" and v == "false" else v)
+            _append_chip(label, display_val, "≠", remove_qs, v)
+
+    if not chips:
+        return ""
+    clear_qs = _lv2_build_qs(
+        {k: v for k, v in params.items() if k in ("from", "to", "mode", "chart", "columns")}
+    )
+    return (
+        "<div class='chips-row'>"
+        "<span class='chips-label'>Filters</span>"
+        f"{''.join(chips)}"
+        f"<a class='clear-all' href='/logs?{clear_qs}' "
+        f"hx-get='/logs?{clear_qs}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML'>Clear all</a>"
+        "</div>"
+    )
+
+
+def _lv2_status_pill(status: Any) -> str:
+    try:
+        s = int(status)
+    except (TypeError, ValueError):
+        return html_escape(str(status) if status is not None else "")
+    cls = "status-2xx" if 200 <= s < 300 else "status-3xx" if 300 <= s < 400 else "status-4xx" if 400 <= s < 500 else "status-5xx" if 500 <= s < 600 else ""
+    return f"<span class='status-pill {cls}'>{s}</span>"
+
+
+def _lv2_method_pill(method: Any) -> str:
+    if method is None:
+        return ""
+    m = html_escape(str(method))
+    return f"<span class='method method-{m}'>{m}</span>"
+
+
+def _lv2_agent_cell(is_bot: Any, bot_family: Any, user_agent: Any) -> str:
+    is_bot_truthy = bool(is_bot) and str(is_bot).lower() not in ("false", "0", "")
+    if is_bot_truthy:
+        label = str(bot_family) if bot_family else "Bot"
+        icon = "✦"
+        cls = "bot"
+    else:
+        label = "Human"
+        icon = "☺"
+        cls = "human"
+    ua_title = html_escape(str(user_agent or ""), quote=True)
+    return (
+        f"<span class='agent-cell {cls}' title='{ua_title}'>"
+        f"<span class='agent-icon'>{icon}</span>"
+        f"<span class='agent-label'>{html_escape(label)}</span>"
+        "</span>"
+    )
+
+
+def _lv2_cell(col: str, val: Any) -> str:
+    if val is None or val == "":
+        return ""
+    if col == "status":
+        return _lv2_status_pill(val)
+    if col == "method":
+        return _lv2_method_pill(val)
+    if col == "bytes_sent":
+        try:
+            return html_escape(fmt_bytes(val))
+        except Exception:
+            return html_escape(str(val))
+    if col == "is_bot":
+        return "Bot" if val and str(val).lower() not in ("false", "0") else "Human"
+    s = str(val)
+    if col in ("ts_utc", "ts_local", "date"):
+        s = s[:19]
+    if len(s) > 80 and col in {"user_agent", "referer", "referer_path", "path", "request_target", "query_string", "utm_term", "utm_content"}:
+        s = s[:80] + "…"
+    return html_escape(s)
+
+
+def _lv2_results_card(
+    *,
+    rows: List[Any],
+    cols: List[str],
+    visible_cols: List[str],
+    sort: str,
+    order: str,
+    page_num: int,
+    per_page: int,
+    total: int,
+    params: Dict[str, Any],
+) -> str:
+    # Build combined row: col -> idx in tuple
+    col_idx = {c: i for i, c in enumerate(cols)}
+
+    # Build the agent column by combining is_bot + bot_family + user_agent.
+    def agent_html(row: Any) -> str:
+        ib = row[col_idx["is_bot"]] if "is_bot" in col_idx else None
+        bf = row[col_idx["bot_family"]] if "bot_family" in col_idx else None
+        ua = row[col_idx["user_agent"]] if "user_agent" in col_idx else ""
+        return _lv2_agent_cell(ib, bf, ua)
+
+    # Header with sortable links
+    head_cells = []
+    for c in visible_cols:
+        label = LV2_COLUMN_LABELS.get(c, c)
+        is_sorted = c == sort
+        sorted_cls = " sorted" if is_sorted else ""
+        next_order = "asc" if is_sorted and order == "desc" else "desc"
+        qs = _lv2_build_qs(params, sort=c, order=next_order, page=None)
+        arrow = "▼" if is_sorted and order == "desc" else "▲" if is_sorted else "↕"
+        head_cells.append(
+            f"<th class='col{sorted_cls}' data-column='{html_escape(c)}'>"
+            f"<a href='/logs?{qs}' hx-get='/logs?{qs}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML'>"
+            f"{html_escape(label)}<span class='sort-arrow'>{arrow}</span></a></th>"
+        )
+
+    # Body rows — each row gets a composite id for the drawer endpoint. We key
+    # on ts_utc (full precision) + date so /logs/detail can look up that single
+    # row via WHERE ts_utc = … LIMIT 1.
+    body_rows = []
+    for r in rows:
+        cells = []
+        ts_raw = r[col_idx["ts_utc"]] if "ts_utc" in col_idx else None
+        ts_str = str(ts_raw) if ts_raw is not None else ""
+        date_str = ts_str[:10] if ts_str else ""
+        row_attrs = ""
+        if ts_str and date_str:
+            href = f"/logs/detail?date={html_escape(date_str, quote=True)}&ts={html_escape(ts_str, quote=True)}"
+            row_attrs = (
+                f" data-row-ts='{html_escape(ts_str, quote=True)}' "
+                f"data-row-date='{html_escape(date_str, quote=True)}' "
+                f"hx-get='{href}' hx-target='#drawer' hx-swap='innerHTML' "
+                "hx-trigger='click' role='button' tabindex='0'"
+            )
+        for c in visible_cols:
+            idx = col_idx.get(c)
+            val = r[idx] if idx is not None else None
+            if c == "user_agent" and "is_bot" in col_idx:
+                cells.append(f"<td>{agent_html(r)}</td>")
+                continue
+            cell_html = _lv2_cell(c, val)
+            cls = ""
+            if c in ("ts_utc", "ts_local", "date"):
+                cls = "col-time"
+            elif c == "path":
+                cls = "col-path"
+            elif c == "bytes_sent":
+                cls = "col-num"
+            elif c == "edge_ip":
+                cls = "col-ip"
+            elif c in ("referer", "referer_host", "referer_path", "user_agent", "query_string"):
+                cls = "col-mono"
+            td_class = f" class='{cls}'" if cls else ""
+            cells.append(f"<td{td_class}>{cell_html}</td>")
+        body_rows.append(f"<tr{row_attrs}>{''.join(cells)}</tr>")
+
+    if not body_rows:
+        body_rows.append(f"<tr><td colspan='{len(visible_cols)}'><div class='empty'>No rows match these filters.</div></td></tr>")
+
+    # Pager
+    total_pages = max(1, (total + per_page - 1) // per_page) if per_page > 0 else 1
+    page_num = min(max(1, page_num), total_pages)
+    first_row = (page_num - 1) * per_page + 1 if total > 0 else 0
+    last_row = min(page_num * per_page, total)
+
+    def page_link(p: int, label: str, active: bool = False, disabled: bool = False) -> str:
+        if disabled:
+            return f"<span class='disabled'>{label}</span>"
+        qs = _lv2_build_qs(params, page=p)
+        cls = " class='active'" if active else ""
+        return (
+            f"<a{cls} href='/logs?{qs}' hx-get='/logs?{qs}' hx-target='#results' "
+            f"hx-push-url='true' hx-swap='innerHTML'>{label}</a>"
+        )
+
+    # Per-page selector
+    per_page_opts = "".join(
+        f"<option value='{n}'{' selected' if per_page == n else ''}>{n}</option>"
+        for n in (25, 50, 100, 200)
+    )
+    per_page_qs_base = _lv2_build_qs(params, per_page="__N__", page=None)
+    per_page_select = (
+        "<label>Rows "
+        "<select onchange=\"var u='/logs?'+this.value;"
+        "if(window.htmx){window.htmx.ajax('GET',u,{target:'#results',swap:'innerHTML'});"
+        "window.history.pushState({},'',u);}else{window.location.href=u;}\">"
+        + "".join(
+            f"<option value='{per_page_qs_base.replace('__N__', str(n))}'"
+            f"{' selected' if per_page == n else ''}>{n}</option>"
+            for n in (25, 50, 100, 200)
+        )
+        + "</select></label>"
+    )
+
+    # Build page number buttons (show up to 7 around current)
+    page_btns = []
+    start = max(1, page_num - 3)
+    end = min(total_pages, page_num + 3)
+    if start > 1:
+        page_btns.append(page_link(1, "1"))
+        if start > 2:
+            page_btns.append("<span>…</span>")
+    for p in range(start, end + 1):
+        page_btns.append(page_link(p, str(p), active=(p == page_num)))
+    if end < total_pages:
+        if end < total_pages - 1:
+            page_btns.append("<span>…</span>")
+        page_btns.append(page_link(total_pages, str(total_pages)))
+
+    pager = (
+        "<div class='pager'>"
+        f"<span>Showing <strong>{first_row:,}–{last_row:,}</strong> of <strong>{total:,}</strong></span>"
+        "<div class='pager-right'>"
+        f"{per_page_select}"
+        f"{page_link(page_num - 1, '‹', disabled=page_num <= 1)}"
+        f"<div class='pager-pages'>{''.join(page_btns)}</div>"
+        f"{page_link(page_num + 1, '›', disabled=page_num >= total_pages)}"
+        "</div>"
+        "</div>"
+    )
+
+    toolbar = (
+        "<div class='table-toolbar'>"
+        f"<div class='tt-count'><strong>{total:,}</strong> rows</div>"
+        "<div class='tt-right'>Click a row for details · <kbd class='kbd'>j</kbd> / <kbd class='kbd'>k</kbd> to navigate</div>"
+        "</div>"
+    )
+
+    return (
+        "<div class='table-wrap'>"
+        f"{toolbar}"
+        "<div class='table-scroll'>"
+        "<table class='log-table'><thead><tr>"
+        f"{''.join(head_cells)}"
+        "</tr></thead><tbody>"
+        f"{''.join(body_rows)}"
+        "</tbody></table>"
+        "</div>"
+        f"{pager}"
+        "</div>"
+    )
+
+
+# ── Phase 4 report shell ────────────────────────────────────────────────
+# Wraps existing report bodies (/reports/summary, /reports/locales, /reports/gsc)
+# in the new lv2 chrome. The body itself is untouched — the helpers
+# kpi_card/issue_card/recommendations_section/html_table/*_chart keep rendering
+# their existing markup; only the chrome and styling change.
+def _lv2_report_shell(
+    *,
+    title: str,
+    nav_key: str,
+    date_from: Optional[str],
+    date_to: Optional[str],
+    avail: List[str],
+    body: str,
+    subtitle: str = "",
+    extra_actions_html: str = "",
+) -> HTMLResponse:
+    # Params dict for the date presets (active state + hx-get targets)
+    params: Dict[str, Any] = {}
+    if date_from:
+        params["from"] = date_from
+    if date_to:
+        params["to"] = date_to
+
+    def preset_link(days: int, label: str, is_active: bool) -> str:
+        today = datetime.utcnow().date()
+        frm = (today - timedelta(days=days - 1)).isoformat()
+        to = today.isoformat()
+        qs = _lv2_build_qs(params, **{"from": frm, "to": to})
+        cls = "active" if is_active else ""
+        return f"<a class='{cls}' href='?{qs}'>{html_escape(label)}</a>"
+
+    # Detect active preset
+    active_days: Optional[int] = None
+    if date_from and date_to:
+        try:
+            f_d = datetime.fromisoformat(date_from).date()
+            t_d = datetime.fromisoformat(date_to).date()
+            span = (t_d - f_d).days + 1
+            if span in {1, 3, 7, 14, 30}:
+                active_days = span
+        except ValueError:
+            active_days = None
+
+    range_label = f"{date_from} → {date_to}" if date_from and date_to and date_from != date_to else (date_from or "All time")
+    min_d = avail[0] if avail else ""
+    max_d = avail[-1] if avail else ""
+    date_bar = (
+        "<div class='filter-bar'>"
+        "<div class='date-range'>"
+        f"{_lv2_icon('calendar')}"
+        f"<span class='dr-label'>{html_escape(range_label)}</span>"
+        "<div class='dr-presets'>"
+        f"{preset_link(3, '3d', active_days == 3)}"
+        f"{preset_link(7, '7d', active_days == 7)}"
+        f"{preset_link(14, '14d', active_days == 14)}"
+        f"{preset_link(30, '30d', active_days == 30)}"
+        "</div>"
+        "</div>"
+        # Custom-range inputs (plain form; reloads page)
+        "<form method='get' style='display:flex;gap:6px;align-items:center;'>"
+        f"<label style='font-size:12px;color:var(--ink-3);display:inline-flex;gap:4px;align-items:center;'>From <input type='date' name='from' value='{html_escape(date_from or '', quote=True)}' min='{html_escape(min_d, quote=True)}' max='{html_escape(max_d, quote=True)}' style='border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:12px;'></label>"
+        f"<label style='font-size:12px;color:var(--ink-3);display:inline-flex;gap:4px;align-items:center;'>To <input type='date' name='to' value='{html_escape(date_to or '', quote=True)}' min='{html_escape(min_d, quote=True)}' max='{html_escape(max_d, quote=True)}' style='border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:12px;'></label>"
+        "<button type='submit' class='btn btn-sm'>Apply</button>"
+        "</form>"
+        "</div>"
+    )
+
+    page_head_html = (
+        "<div class='page-head'>"
+        f"<div><div class='page-title'>{html_escape(title)}"
+        + (f" <small>{html_escape(subtitle)}</small>" if subtitle else "")
+        + "</div></div>"
+        f"<div class='page-actions'>{extra_actions_html}</div>"
+        "</div>"
+    )
+
+    body_html = page_head_html + date_bar + f"<div id='results'>{body}</div>"
+    return _lv2_page(f"Log analyser — {title}", nav_key, body_html)
+
+
+# ── Phase 3 chart emitter ────────────────────────────────────────────────
+# Stacked area SVG by status class (2xx/3xx/4xx/5xx). The card exposes t0/t1
+# (epoch ms of the rendered range) on the root div so the JS island can
+# translate pointer-x into a timestamp for brushing.
+def _lv2_chart_card(
+    *,
+    paths: List[str],
+    where: str,
+    date_from: Optional[str],
+    date_to: Optional[str],
+    bt0: Optional[int],
+    bt1: Optional[int],
+    params: Dict[str, Any],
+) -> str:
+    # Compute range endpoints as unix ms. Partitions are keyed by local date
+    # but ts_utc can span wider; querying MIN/MAX of the filtered data gives a
+    # reliable range. Brush overrides when set.
+    if bt0 is not None and bt1 is not None:
+        t0_ms, t1_ms = sorted((int(bt0), int(bt1)))
+    else:
+        mm_sql = f"SELECT EPOCH_MS(MIN(ts_utc)), EPOCH_MS(MAX(ts_utc)) FROM t {where};"
+        try:
+            _, mm = run_query(paths, mm_sql)
+            t0_ms = int(mm[0][0]) if mm and mm[0][0] is not None else 0
+            t1_ms = int(mm[0][1]) if mm and mm[0][1] is not None else 0
+        except Exception:
+            return ""
+        if not t0_ms or not t1_ms:
+            return (
+                "<div class='chart-card'>"
+                "<div class='chart-head'><div class='chart-title'><h3>Requests over time</h3>"
+                "<span class='ch-total'>0 requests</span></div></div>"
+                "<div class='empty' style='padding:40px;'>No data in range.</div>"
+                "</div>"
+            )
+
+    if t1_ms <= t0_ms:
+        t1_ms = t0_ms + 60_000
+
+    N_BUCKETS = 60
+    bucket_ms = max(1, (t1_ms - t0_ms) / N_BUCKETS)
+
+    # Always compute over the UN-BRUSHED range so the overlay can show the
+    # brushed region against the full chart. We reuse the same WHERE clauses
+    # passed in, but remove any brush clause the caller included.
+    chart_where = where  # already excludes brush because caller builds WHERE from brush-aware clauses
+    chart_sql = f"""
+    SELECT CAST(FLOOR((EPOCH_MS(ts_utc) - {t0_ms}) / {bucket_ms:.6f}) AS BIGINT) AS bucket,
+           COUNT(*) FILTER (WHERE status >= 200 AND status < 300) AS s2xx,
+           COUNT(*) FILTER (WHERE status >= 300 AND status < 400) AS s3xx,
+           COUNT(*) FILTER (WHERE status >= 400 AND status < 500) AS s4xx,
+           COUNT(*) FILTER (WHERE status >= 500 AND status < 600) AS s5xx
+    FROM t {chart_where}
+    GROUP BY bucket
+    HAVING bucket >= 0 AND bucket < {N_BUCKETS}
+    ORDER BY bucket;
+    """
+    try:
+        _, rows = run_query(paths, chart_sql)
+    except Exception:
+        return ""
+
+    buckets = [[0, 0, 0, 0] for _ in range(N_BUCKETS)]  # s2xx/s3xx/s4xx/s5xx
+    for br, s2, s3, s4, s5 in rows:
+        i = max(0, min(N_BUCKETS - 1, int(br)))
+        buckets[i] = [int(s2 or 0), int(s3 or 0), int(s4 or 0), int(s5 or 0)]
+
+    totals = [sum(b) for b in buckets]
+    y_max = max(totals) if totals else 0
+    if y_max <= 0:
+        return (
+            "<div class='chart-card'>"
+            "<div class='chart-head'><div class='chart-title'><h3>Requests over time</h3>"
+            "<span class='ch-total'>0 requests</span></div></div>"
+            "<div class='empty' style='padding:40px;'>No data in range.</div>"
+            "</div>"
+        )
+
+    # SVG layout
+    L, R, T, B = 34, 12, 10, 22
+    W, H = 1200, 160
+    plot_w = W - L - R
+    plot_h = H - T - B
+
+    def x_at(i: int) -> float:
+        return L + (i / (N_BUCKETS - 1)) * plot_w
+
+    def y_at(v: float) -> float:
+        return T + (1 - v / y_max) * plot_h
+
+    # Colors for stacked areas (2xx/3xx/4xx/5xx)
+    area_fills = ["#b7d1b5", "#a9bfde", "#e6c888", "#d6a4a4"]
+    area_strokes = ["#3d7048", "#3a5a86", "#8a6824", "#8a3a3a"]
+    legend_labels = ["2xx", "3xx", "4xx", "5xx"]
+
+    # Stacked cumulative: for each bucket, cumulative totals from the bottom.
+    # Areas drawn bottom-up, so layer 0 (2xx) is at the bottom and layer 3
+    # (5xx) at the top.
+    lower = [0.0] * N_BUCKETS
+    paths_svg: List[str] = []
+    for layer in range(4):
+        upper = [lower[i] + buckets[i][layer] for i in range(N_BUCKETS)]
+        # Upper boundary left-to-right, lower boundary right-to-left.
+        pts_top = [f"{x_at(i):.2f},{y_at(upper[i]):.2f}" for i in range(N_BUCKETS)]
+        pts_bot = [f"{x_at(i):.2f},{y_at(lower[i]):.2f}" for i in reversed(range(N_BUCKETS))]
+        d = "M" + " L".join(pts_top + pts_bot) + " Z"
+        paths_svg.append(
+            f"<path d='{d}' fill='{area_fills[layer]}' fill-opacity='0.95' "
+            f"stroke='{area_strokes[layer]}' stroke-opacity='0.4' stroke-width='1'/>"
+        )
+        lower = upper
+
+    # Y-axis grid lines at 25/50/75/100% of y_max
+    grid_html: List[str] = []
+    for frac in (0.25, 0.5, 0.75, 1.0):
+        yv = y_max * frac
+        y = y_at(yv)
+        grid_html.append(f"<line x1='{L}' x2='{W - R}' y1='{y:.2f}' y2='{y:.2f}' stroke='#ecebe7' stroke-dasharray='2,2'/>")
+        label = int(round(yv))
+        grid_html.append(f"<text x='{L - 6}' y='{y + 3:.2f}' font-size='10' fill='#97938d' text-anchor='end'>{label}</text>")
+
+    # Brush overlay — rectangle showing the currently-brushed window
+    brush_html = ""
+    if bt0 is not None and bt1 is not None and t1_ms > t0_ms:
+        a, b = sorted((int(bt0), int(bt1)))
+        xa = L + ((a - t0_ms) / (t1_ms - t0_ms)) * plot_w
+        xb = L + ((b - t0_ms) / (t1_ms - t0_ms)) * plot_w
+        xa = max(L, min(W - R, xa))
+        xb = max(L, min(W - R, xb))
+        brush_html = (
+            f"<rect x='{xa:.2f}' y='{T}' width='{max(1, xb-xa):.2f}' height='{plot_h:.2f}' "
+            "fill='rgba(47,92,197,0.08)' stroke='#2f5cc5' stroke-dasharray='3,3' "
+            "stroke-width='1' data-brush-overlay/>"
+        )
+
+    # X-axis date labels (5 equally-spaced ticks)
+    from datetime import timezone
+    tick_labels: List[str] = []
+    for i in range(5):
+        frac = i / 4
+        tms = t0_ms + frac * (t1_ms - t0_ms)
+        dt = datetime.fromtimestamp(tms / 1000.0, tz=timezone.utc)
+        span_hours = (t1_ms - t0_ms) / 3_600_000
+        if span_hours <= 48:
+            label = dt.strftime("%H:%M")
+        else:
+            label = dt.strftime("%b %d")
+        tick_labels.append(label)
+    xaxis_html = "".join(f"<span>{html_escape(lbl)}</span>" for lbl in tick_labels)
+
+    # Legend with totals
+    series_totals = [sum(b[layer] for b in buckets) for layer in range(4)]
+    legend_html = "".join(
+        f"<span><span class='lg-swatch' style='background:{area_fills[i]};outline:1px solid {area_strokes[i]}33;'></span>"
+        f"{legend_labels[i]} <strong style='color:var(--ink-1);margin-left:2px;'>{series_totals[i]:,}</strong></span>"
+        for i in range(4)
+    )
+
+    total_requests = sum(totals)
+
+    # Clear-brush chip when active
+    brush_chip = ""
+    if bt0 is not None and bt1 is not None:
+        clear_qs = _lv2_build_qs(params, bt0=None, bt1=None, page=None)
+        brush_chip = (
+            f"<span class='chart-selection'>brushed window "
+            f"<a href='/logs?{clear_qs}' hx-get='/logs?{clear_qs}' hx-target='#results' "
+            "hx-push-url='true' hx-swap='innerHTML' style='color:var(--accent-ink);'>×</a>"
+            "</span>"
+        )
+
+    return (
+        "<div class='chart-card' data-lv2-chart "
+        f"data-t0='{t0_ms}' data-t1='{t1_ms}' "
+        f"data-bt0='{bt0 if bt0 is not None else ''}' data-bt1='{bt1 if bt1 is not None else ''}' "
+        f"data-plot-l='{L}' data-plot-r='{R}'>"
+        "<div class='chart-head'>"
+        "<div class='chart-title'>"
+        "<h3>Requests over time</h3>"
+        f"<span class='ch-total'><strong>{total_requests:,}</strong> requests · {N_BUCKETS} buckets</span>"
+        f"{brush_chip}"
+        "</div>"
+        f"<div class='chart-legend'>{legend_html}</div>"
+        "</div>"
+        "<div class='chart-brush-hint'>Drag to filter range</div>"
+        f"<svg class='chart-svg' viewBox='0 0 {W} {H}' preserveAspectRatio='none'>"
+        f"{''.join(grid_html)}"
+        f"{''.join(paths_svg)}"
+        f"{brush_html}"
+        "</svg>"
+        f"<div class='chart-xaxis' style='padding-left:{L}px;padding-right:{R}px;'>{xaxis_html}</div>"
+        "</div>"
+    )
+
+
+def _lv2_page(title: str, active_nav: str, body: str) -> HTMLResponse:
+    """Full page shell for log viewer v2 routes. No sidebar; htmx + CSS via /static."""
+    html = (
+        "<!doctype html>"
+        "<html lang='en'>"
+        "<head>"
+        "<meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        f"<title>{html_escape(title)}</title>"
+        "<link rel='preconnect' href='https://fonts.googleapis.com'>"
+        "<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>"
+        "<link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap'>"
+        "<link rel='stylesheet' href='/static/logviewer.css'>"
+        "<script src='https://unpkg.com/htmx.org@1.9.12'></script>"
+        "<script src='https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js'></script>"
+        "</head>"
+        f"<body data-app='logviewer-v2'>"
+        f"{_lv2_topnav(active_nav)}"
+        f"<main class='page'>{body}</main>"
+        "<div class='drawer-backdrop' id='drawer-backdrop'></div>"
+        "<aside class='drawer' id='drawer' aria-hidden='true'></aside>"
+        f"{_lv2_kb_help()}"
+        "<script src='/static/logviewer.js' defer></script>"
+        "</body></html>"
+    )
+    return HTMLResponse(html)
+
+
 @app.get("/logs", response_class=HTMLResponse)
 def log_viewer(
+    request: Request,
     date_from: Optional[str] = Query(None, alias="from"),
     date_to: Optional[str] = Query(None, alias="to"),
     page_num: int = Query(1, alias="page"),
@@ -4103,6 +5349,9 @@ def log_viewer(
     limit: int = Query(500),
     preset: Optional[str] = Query(None),
     columns: Optional[str] = Query(None),
+    view: Optional[str] = Query(None),
+    bt0: Optional[int] = Query(None),
+    bt1: Optional[int] = Query(None),
 ):
     if preset:
         return _resolve_log_preset(
@@ -4110,6 +5359,20 @@ def log_viewer(
             date_from=date_from, date_to=date_to,
             extra_status=status, extra_url_group=url_group,
         )
+
+    # Apply saved-view defaults (URL-explicit values always win).
+    if view:
+        _view_cfg = next((v for v in LV2_SAVED_VIEWS if v["id"] == view), None)
+        if _view_cfg:
+            vf = _view_cfg["filters"]
+            if not status and vf.get("status"): status = vf["status"]
+            if not status_class and vf.get("status_class"): status_class = vf["status_class"]
+            if not is_bot and vf.get("is_bot"): is_bot = vf["is_bot"]
+            if not bot_family and vf.get("bot_family"): bot_family = vf["bot_family"]
+            if not bot_category and vf.get("bot_category"): bot_category = vf["bot_category"]
+            if not url_group and vf.get("url_group"): url_group = vf["url_group"]
+            if not utm_source and vf.get("utm_source"): utm_source = vf["utm_source"]
+
     status_codes = _parse_status_list(status)
     status_classes = [int(c) for c in _parse_csv_param(status_class) if c.isdigit()]
     methods = _parse_csv_param(method)
@@ -4174,206 +5437,135 @@ def log_viewer(
     referer_type_opts = distinct_parsed_values("referer_type", date_from, date_to) if paths else []
     utm_source_opts = distinct_parsed_values("utm_source_norm", date_from, date_to) if paths else []
 
-    # ── Filter form ──
-    body = ""
+    # ── Parse search operators (Phase 2) ──
+    # Split operator tokens out of the raw search string, merge their values
+    # into the existing filter lists for SQL. The raw `search` param stays in
+    # the URL so links roundtrip; chips render the effective filter state.
+    raw_search = search or ""
+    cleaned_free_text, op_includes, op_excludes, forced_mode = _parse_search_operators(raw_search)
+    if forced_mode:
+        search_mode = forced_mode
 
-    # Mode toggle (above the filter bar)
-    body += "<div class='mode-toggle' style='margin:0 0 8px 0;display:flex;gap:6px;'>"
-    for mval, mlbl in LOG_MODE_OPTIONS:
-        active = "background:#3b82f6;color:#fff;" if mode == mval else "background:#f1f5f9;color:#1e293b;"
-        body += (
-            f"<a href='#' class='mode-link' data-mode='{mval}' "
-            f"style='padding:6px 14px;border-radius:4px;text-decoration:none;font-size:13px;{active}'>"
-            f"{mlbl}</a>"
+    def _merge_ints(url_list: List[int], key: str) -> List[int]:
+        extra = [int(v) for v in op_includes.get(key, []) if str(v).isdigit()]
+        seen = set(url_list)
+        out = list(url_list)
+        for v in extra:
+            if v not in seen:
+                seen.add(v)
+                out.append(v)
+        return out
+
+    def _merge_strs(url_list: List[str], key: str) -> List[str]:
+        extra = op_includes.get(key, [])
+        seen = set(url_list)
+        out = list(url_list)
+        for v in extra:
+            if v not in seen:
+                seen.add(v)
+                out.append(v)
+        return out
+
+    status_codes = _merge_ints(status_codes, "status")
+    status_classes = _merge_ints(status_classes, "status_class")
+    methods = _merge_strs(methods, "method")
+    bot_families = _merge_strs(bot_families, "bot_family")
+    bot_categories = _merge_strs(bot_categories, "bot_category")
+    url_groups = _merge_strs(url_groups, "url_group")
+    locales = _merge_strs(locales, "locale")
+    countries = _merge_strs(countries, "country")
+    referer_types = _merge_strs(referer_types, "referer_type")
+    utm_sources = _merge_strs(utm_sources, "utm_source")
+    if not is_bot and op_includes.get("is_bot"):
+        is_bot = op_includes["is_bot"][0]
+    paths_include = list(op_includes.get("path", []))
+    paths_exclude = list(op_excludes.get("path", []))
+    # `search` passed to the SQL builder is the free-text leftover only.
+    effective_search = cleaned_free_text
+
+    # ── Build canonical ui_params dict (single source of truth for URLs) ──
+    show_chart = chart == "1"
+    ui_params: Dict[str, Any] = {}
+    if date_from: ui_params["from"] = date_from
+    if date_to: ui_params["to"] = date_to
+    if view: ui_params["view"] = view
+    if search: ui_params["search"] = search
+    if search_mode and search_mode != "contains": ui_params["search_mode"] = search_mode
+    if search_field and search_field != "any": ui_params["search_field"] = search_field
+    if status_codes: ui_params["status"] = ",".join(str(c) for c in status_codes)
+    if status_classes: ui_params["status_class"] = ",".join(str(c) for c in status_classes)
+    if methods: ui_params["method"] = ",".join(methods)
+    if is_bot: ui_params["is_bot"] = is_bot
+    if bot_families: ui_params["bot_family"] = ",".join(bot_families)
+    if bot_categories: ui_params["bot_category"] = ",".join(bot_categories)
+    if url_groups: ui_params["url_group"] = ",".join(url_groups)
+    if locales: ui_params["locale"] = ",".join(locales)
+    if countries: ui_params["country"] = ",".join(countries)
+    if referer_types: ui_params["referer_type"] = ",".join(referer_types)
+    if utm_sources: ui_params["utm_source"] = ",".join(utm_sources)
+    if not include_assets: ui_params["include_assets"] = "false"
+    if content_only: ui_params["content_only"] = "true"
+    if mode != "rows": ui_params["mode"] = mode
+    if show_chart: ui_params["chart"] = "1"
+    if sort and sort != "ts_utc": ui_params["sort"] = sort
+    if order and order != "desc": ui_params["order"] = order
+    if per_page != 100: ui_params["per_page"] = str(per_page)
+    default_col_set = {c for c in LOG_DEFAULT_COLUMNS if c in schema_cols}
+    if visible_cols and set(visible_cols) != default_col_set:
+        ui_params["columns"] = ",".join(visible_cols)
+
+    # Shell chrome (topnav/views/filter-bar) is OUTSIDE #results and not swapped.
+    chrome_html = (
+        _lv2_page_head("Logs", "", mode, ui_params)
+        + _lv2_views_strip(view, date_from, date_to)
+        + _lv2_filter_bar(
+            search=search,
+            date_from=date_from,
+            date_to=date_to,
+            show_chart=show_chart,
+            schema_cols=schema_cols,
+            visible_cols=visible_cols,
+            params=ui_params,
+            filter_opts={
+                "status":       status_opts,
+                "method":       ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"],
+                "bot_family":   bot_family_opts,
+                "bot_category": bot_category_opts,
+                "url_group":    url_group_opts,
+                "locale":       locale_opts,
+                "country":      country_opts,
+                "referer_type": referer_type_opts,
+                "utm_source":   utm_source_opts,
+            },
+            filter_selected={
+                "status":       [str(c) for c in status_codes],
+                "method":       list(methods),
+                "bot_family":   list(bot_families),
+                "bot_category": list(bot_categories),
+                "url_group":    list(url_groups),
+                "locale":       list(locales),
+                "country":      list(countries),
+                "referer_type": list(referer_types),
+                "utm_source":   list(utm_sources),
+            },
+            is_bot=is_bot,
+            has_country_col=has_country_col,
         )
-    body += "</div>"
-    # Tiny JS to flip the mode field in the filter form and submit. Avoids building separate forms.
-    body += (
-        "<script>document.querySelectorAll('.mode-link').forEach(function(a){"
-        "a.addEventListener('click',function(e){e.preventDefault();"
-        "var f=document.querySelector('form.filter-bar');if(!f)return;"
-        "var m=f.querySelector(\"[name='mode']\");if(m){m.value=a.dataset.mode;}"
-        "f.submit();});});</script>"
-    )
-    # Live-update the Search hint line when Field or Match changes.
-    body += (
-        "<script>(function(){"
-        "var FP={any:'path, IP, UA, or referer',path:'Path',ip:'IP',"
-        "user_agent:'User agent',user_agent_family:'User-agent family',"
-        "referer:'Referer',referer_host:'Referer host'};"
-        "var VB={contains:'contains',not_contains:'does not contain',"
-        "equals:'equals',starts_with:'starts with',ends_with:'ends with'};"
-        "function hint(field,mode){"
-        "var p=FP[field]||FP.any;var any=field==='any';"
-        "if(mode==='regex'){"
-        "var t=' \\u2014 case-insensitive by default; prepend (?-i) for case-sensitive.';"
-        "return any?('Matches if any of '+p+' matches the pattern'+t)"
-        ":(p+' matches the pattern'+t);}"
-        "var v=VB[mode]||VB.contains;var t2=' \\u2014 case-insensitive.';"
-        "if(any){var q=mode==='not_contains'?'none of':'any of';"
-        "return 'Matches if '+q+' '+p+' '+v+' the text'+t2;}"
-        "return p+' '+v+' the text'+t2;}"
-        "var el=document.querySelector('[data-search-hint]');"
-        "var ff=document.querySelector(\"[name='search_field']\");"
-        "var mm=document.querySelector(\"[name='search_mode']\");"
-        "function upd(){if(!el||!ff||!mm)return;el.textContent=hint(ff.value,mm.value);}"
-        "if(ff)ff.addEventListener('change',upd);"
-        "if(mm)mm.addEventListener('change',upd);"
-        "})();</script>"
     )
 
-    # Insights strip — chip shortcuts to preset views (drawn from LOG_PRESETS).
-    body += _render_insights_strip(date_from, date_to)
-
-    min_date = avail[0] if avail else ""
-    max_date = avail[-1] if avail else ""
-    presets_disabled = "" if max_date else " disabled"
-    method_opts = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]
-    assets_checked = "checked" if include_assets else ""
-    content_checked = "checked" if content_only else ""
-
-    body += "<form method='get' class='filter-bar'>"
-    body += f"<input type='hidden' name='mode' value='{mode}'>"
-
-    # Group 1: When & what — dates, quick ranges, search
-    body += "<details class='filter-group' data-group='when' open>"
-    body += "<summary class='filter-group-label'>When &amp; what</summary>"
-    body += "<div class='filter-group-fields'>"
-    body += f"<label>From<input type='date' name='from' value='{date_from or ''}' min='{min_date}' max='{max_date}'></label>"
-    body += f"<label>To<input type='date' name='to' value='{date_to or ''}' min='{min_date}' max='{max_date}'></label>"
-    body += (
-        f"<div class='date-presets' data-min='{min_date}' data-max='{max_date}'>"
-        f"<button type='button' class='date-preset-btn' onclick='applyDatePreset(this.form, 3)'{presets_disabled}>Last 3 days</button>"
-        f"<button type='button' class='date-preset-btn' onclick='applyDatePreset(this.form, 7)'{presets_disabled}>Last 7 days</button>"
-        f"<button type='button' class='date-preset-btn' onclick='applyDatePreset(this.form, 14)'{presets_disabled}>Last 14 days</button>"
-        f"<button type='button' class='date-preset-btn' onclick='applyDatePreset(this.form, 30)'{presets_disabled}>Last 30 days</button>"
-        f"</div>"
-    )
-    body += f"<label>Search<input type='text' name='search' value='{html_escape(search or '')}' placeholder='search text'></label>"
-    body += "<label>In<select name='search_field'>"
-    for fval, flbl, _cols in LOG_SEARCH_FIELDS:
-        sel = "selected" if search_field == fval else ""
-        body += f"<option value='{fval}' {sel}>{html_escape(flbl)}</option>"
-    body += "</select></label>"
-    body += "<label>Match<select name='search_mode'>"
-    for mval, mlbl in LOG_SEARCH_MODES:
-        sel = "selected" if search_mode == mval else ""
-        body += f"<option value='{mval}' {sel}>{html_escape(mlbl)}</option>"
-    body += "</select></label>"
-    body += (
-        f"<div class='search-hint' data-search-hint>"
-        f"{html_escape(_search_hint_text(search_field, search_mode))}"
-        f"</div>"
-    )
-    body += "</div></details>"
-
-    # Group 2: Request — status + method
-    body += "<details class='filter-group' data-group='request'>"
-    body += "<summary class='filter-group-label'>Request</summary>"
-    body += "<div class='filter-group-fields'>"
-    body += multi_select_html("status", status_opts, [str(c) for c in status_codes], "Status")
-    body += multi_select_html("method", method_opts, methods, "Method")
-    body += "</div></details>"
-
-    # Group 3: Traffic — bot/human binary + bot family + bot category
-    body += "<details class='filter-group' data-group='traffic'>"
-    body += "<summary class='filter-group-label'>Traffic</summary>"
-    body += "<div class='filter-group-fields'>"
-    body += "<label>Bot<select name='is_bot'><option value=''>All</option>"
-    for val, lbl in [("true", "Bots only"), ("false", "Humans only")]:
-        sel = "selected" if is_bot == val else ""
-        body += f"<option value='{val}' {sel}>{lbl}</option>"
-    body += "</select></label>"
-    body += multi_select_html("bot_family", bot_family_opts, bot_families, "Bot family")
-    body += multi_select_html("bot_category", bot_category_opts, bot_categories, "Bot category")
-    body += "</div></details>"
-
-    # Group 4: Content — URL group, asset/content scope toggles
-    body += "<details class='filter-group' data-group='content'>"
-    body += "<summary class='filter-group-label'>Content</summary>"
-    body += "<div class='filter-group-fields'>"
-    body += multi_select_html("url_group", url_group_opts, url_groups, "URL group")
-    body += f"<label><input type='checkbox' name='include_assets' value='true' {assets_checked}> Include assets</label>"
-    body += f"<label><input type='checkbox' name='content_only' value='true' {content_checked}> Content only</label>"
-    body += "</div></details>"
-
-    # Group 5: Geo & language
-    body += "<details class='filter-group' data-group='geo'>"
-    body += "<summary class='filter-group-label'>Geo &amp; language</summary>"
-    body += "<div class='filter-group-fields'>"
-    body += multi_select_html("locale", locale_opts, locales, "Locale")
-    if has_country_col:
-        body += multi_select_html("country", country_opts, countries, "Country")
-    body += "</div></details>"
-
-    # Group 6: Acquisition — referer + UTM
-    body += "<details class='filter-group' data-group='acquisition'>"
-    body += "<summary class='filter-group-label'>Acquisition</summary>"
-    body += "<div class='filter-group-fields'>"
-    body += multi_select_html("referer_type", referer_type_opts, referer_types, "Referer type")
-    body += multi_select_html("utm_source", utm_source_opts, utm_sources, "UTM source")
-    body += "</div></details>"
-
-    # Group 7: This view — mode-specific controls + Apply
-    body += "<details class='filter-group filter-group-view' data-group='view' open>"
-    body += "<summary class='filter-group-label'>This view</summary>"
-    body += "<div class='filter-group-fields'>"
-    if mode == "rows":
-        body += "<label>Per page<select name='per_page'>"
-        for pp in [25, 50, 100, 200]:
-            sel = "selected" if per_page == pp else ""
-            body += f"<option value='{pp}' {sel}>{pp}</option>"
-        body += "</select></label>"
-        chart_checked = "checked" if show_chart else ""
-        body += f"<label><input type='checkbox' name='chart' value='1' {chart_checked}> Show chart</label>"
-        if schema_cols:
-            body += multi_select_html("columns", schema_cols, visible_cols, "Columns")
-    elif mode == "group":
-        body += "<label>Group by<select name='group_by'>"
-        body += "<option value=''>(pick one)</option>"
-        for gv, gl in LOG_GROUP_BY_COLUMNS:
-            if gv == "country" and not has_country_col:
-                continue
-            sel = "selected" if group_by == gv else ""
-            body += f"<option value='{gv}' {sel}>{gl}</option>"
-        body += "</select></label>"
-        body += "<label>Then by<select name='group_by_2'>"
-        body += "<option value=''>(none)</option>"
-        for gv, gl in LOG_GROUP_BY_COLUMNS:
-            if gv == "country" and not has_country_col:
-                continue
-            sel = "selected" if group_by_2 == gv else ""
-            body += f"<option value='{gv}' {sel}>{gl}</option>"
-        body += "</select></label>"
-        body += "<label>Sort by<select name='sort_by'>"
-        for sv, sl in LOG_SORT_BY_OPTIONS:
-            sel = "selected" if sort_by == sv else ""
-            body += f"<option value='{sv}' {sel}>{sl}</option>"
-        body += "</select></label>"
-        body += f"<label>Limit<input type='number' name='limit' value='{int(limit)}' min='1' max='5000' size='5'></label>"
-    elif mode == "timeseries":
-        body += "<label>Bucket<select name='bucket'>"
-        for bv, bl in [("", "auto"), ("hour", "hour"), ("day", "day")]:
-            sel = "selected" if (bucket or "") == bv else ""
-            body += f"<option value='{bv}' {sel}>{bl}</option>"
-        body += "</select></label>"
-        body += "<label>Stack by<select name='stack_by'>"
-        for sv, sl in LOG_STACK_BY_OPTIONS:
-            sel = "selected" if stack_by == sv else ""
-            body += f"<option value='{sv}' {sel}>{sl}</option>"
-        body += "</select></label>"
-    body += "<span class='filter-group-actions'>"
-    body += "<button type='submit'>Apply</button>"
-    body += "<a class='clear-filters-btn' href='/logs'>Clear filters</a>"
-    body += "</span>"
-    body += "</div></details>"
-
-    body += "</form>"
-
+    # ── Early-return when there's no data at all ──
     if not paths:
-        return page("Log Viewer", body + no_data_notice())
+        results_inner = (
+            _lv2_active_chips(ui_params, schema_cols)
+            + "<div class='lv2-card'><div class='empty'>No ingested data for this range. "
+              "Adjust the date or ingest more partitions.</div></div>"
+        )
+        if request.headers.get("HX-Request") == "true":
+            return HTMLResponse(results_inner)
+        body_html = chrome_html + f"<div id='results'>{results_inner}</div>"
+        return _lv2_page("Log analyser — Logs", "logs", body_html)
 
-    # Special-case: waste_score sort forces is_bot=true (the formula is only meaningful for bots).
+    # Special-case: waste_score sort forces is_bot=true (formula only meaningful for bots).
     if mode == "group" and sort_by == "waste_score":
         is_bot = "true"
 
@@ -4391,230 +5583,415 @@ def log_viewer(
         is_bot=is_bot,
         include_assets=include_assets,
         content_only=content_only,
-        search=search,
+        search=effective_search,
         search_mode=search_mode,
         search_field=search_field,
         has_country_col=has_country_col,
+        excludes=op_excludes,
+        paths_include=paths_include,
+        paths_exclude=paths_exclude,
     )
+    # Chart WHERE (no brush — chart shows the full requested range with a brush
+    # overlay), vs. results WHERE (brush narrows to the selected window).
+    chart_where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    if bt0 is not None and bt1 is not None:
+        a, b = sorted((int(bt0), int(bt1)))
+        clauses = clauses + [f"EPOCH_MS(ts_utc) >= {a} AND EPOCH_MS(ts_utc) <= {b}"]
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    if bt0 is not None:
+        ui_params["bt0"] = str(bt0)
+    if bt1 is not None:
+        ui_params["bt1"] = str(bt1)
 
-    # ── Group / Timeseries modes ──
+    # ── Build the results fragment body (goes inside #results) ──
+    chips_html = _lv2_active_chips(ui_params, schema_cols,
+                                   op_includes=op_includes, op_excludes=op_excludes,
+                                   raw_search=raw_search)
+
     if mode == "group":
         if not group_by:
-            body += "<p class='no-data'>Pick a Group by column to aggregate.</p>"
-            return page("Log Viewer", body)
-        if sort_by == "waste_score":
-            body += ("<p style='color:#64748b;font-size:13px;margin:6px 0;'>"
-                     "Waste-score sort forces <em>Bots only</em>.</p>")
-        body += _render_log_group_mode(
-            paths, where,
-            group_by=group_by, group_by_2=group_by_2, sort_by=sort_by, limit=int(limit),
-            has_country_col=has_country_col, is_bot=is_bot,
-        )
-        return page("Log Viewer", body)
-
-    if mode == "timeseries":
-        body += _render_log_timeseries_mode(
+            inner = chips_html + "<div class='lv2-card'><div class='empty'>Pick a Group by column to aggregate.</div></div>"
+        else:
+            note = ""
+            if sort_by == "waste_score":
+                note = "<div class='lv2-note'>Waste-score sort forces <em>Bots only</em>.</div>"
+            inner = chips_html + note + "<div class='lv2-card'>" + _render_log_group_mode(
+                paths, where,
+                group_by=group_by, group_by_2=group_by_2, sort_by=sort_by, limit=int(limit),
+                has_country_col=has_country_col, is_bot=is_bot,
+            ) + "</div>"
+    elif mode == "timeseries":
+        inner = chips_html + "<div class='lv2-card'>" + _render_log_timeseries_mode(
             paths, where,
             date_from=date_from, date_to=date_to,
             bucket=(bucket or ""), stack_by=stack_by,
-        )
-        return page("Log Viewer", body)
+        ) + "</div>"
+    else:
+        # Rows mode
+        chart_html = ""
+        if show_chart:
+            chart_html = _lv2_chart_card(
+                paths=paths, where=chart_where,
+                date_from=date_from, date_to=date_to,
+                bt0=bt0, bt1=bt1, params=ui_params,
+            )
 
-    # ── Rows mode (existing behaviour) ──
-    chart_html = ""
-    if show_chart:
-        single_day = date_from and date_to and date_from == date_to
-        if single_day:
-            time_expr = "date_trunc('hour', ts_utc)"
-            granularity_label = "hourly"
-        else:
-            time_expr = "CAST(ts_utc AS DATE)"
-            granularity_label = "daily"
-        chart_sql = f"""
-        SELECT {time_expr} AS time_bucket,
-               COUNT(*) FILTER (WHERE status >= 200 AND status < 300) AS s2xx,
-               COUNT(*) FILTER (WHERE status >= 300 AND status < 400) AS s3xx,
-               COUNT(*) FILTER (WHERE status >= 400 AND status < 500) AS s4xx,
-               COUNT(*) FILTER (WHERE status >= 500 AND status < 600) AS s5xx
+        # Validate sort column against the live schema.
+        sort_col = sort if sort in schema_cols else "ts_utc"
+        sort_dir = "ASC" if order.lower() == "asc" else "DESC"
+
+        per_page = min(max(per_page, 25), 200)
+        page_num = max(page_num, 1)
+        offset = (page_num - 1) * per_page
+
+        count_sql = f"SELECT COUNT(*) FROM t {where};"
+        _, count_rows = run_query(paths, count_sql)
+        total = count_rows[0][0] if count_rows else 0
+
+        # `ts_local` is TIMESTAMPTZ and needs casting for DuckDB to materialise
+        # without pytz; `country` historically casted too.
+        def _col_select(name: str) -> str:
+            if name == "ts_local":
+                return "CAST(ts_local AS VARCHAR) AS ts_local"
+            if name == "country":
+                return "CAST(country AS VARCHAR) AS country"
+            return name
+        # Always fetch ts_utc so rows expose a stable key to the drawer, even
+        # when the user has hidden the Timestamp column.
+        fetch_cols = list(visible_cols)
+        if "ts_utc" in schema_cols and "ts_utc" not in fetch_cols:
+            fetch_cols = ["ts_utc"] + fetch_cols
+        select_list = ", ".join(_col_select(c) for c in fetch_cols)
+        data_sql = f"""
+        SELECT {select_list}
         FROM t
         {where}
-        GROUP BY time_bucket
-        ORDER BY time_bucket;
+        ORDER BY {sort_col} {sort_dir}
+        LIMIT {per_page} OFFSET {offset};
         """
-        chart_cols, chart_rows = run_query(paths, chart_sql)
-        chart_html = line_chart(
-            chart_rows, chart_cols, x_col="time_bucket",
-            y_cols=["s2xx", "s3xx", "s4xx", "s5xx"],
-            title=f"Requests over time ({granularity_label})",
+        cols, rows = run_query(paths, data_sql)
+
+        results_card_html = _lv2_results_card(
+            rows=rows,
+            cols=cols,
+            visible_cols=visible_cols,
+            sort=sort_col,
+            order=order,
+            page_num=page_num,
+            per_page=per_page,
+            total=total,
+            params=ui_params,
         )
+        inner = chips_html + chart_html + results_card_html
 
-    # Validate sort column against the live schema.
-    sort_col = sort if sort in schema_cols else "ts_utc"
-    sort_dir = "ASC" if order.lower() == "asc" else "DESC"
+    if request.headers.get("HX-Request") == "true":
+        return HTMLResponse(inner)
 
-    per_page = min(max(per_page, 25), 200)
-    page_num = max(page_num, 1)
-    offset = (page_num - 1) * per_page
+    # Full page: replace the count text in page-head now that we know totals
+    if mode == "rows":
+        try:
+            count_text = f"{total:,} matching requests"
+        except Exception:
+            count_text = ""
+    else:
+        count_text = ""
+    chrome_html = (
+        _lv2_page_head("Logs", count_text, mode, ui_params)
+        + _lv2_views_strip(view, date_from, date_to)
+        + _lv2_filter_bar(
+            search=search,
+            date_from=date_from,
+            date_to=date_to,
+            show_chart=show_chart,
+            schema_cols=schema_cols,
+            visible_cols=visible_cols,
+            params=ui_params,
+            filter_opts={
+                "status":       status_opts,
+                "method":       ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"],
+                "bot_family":   bot_family_opts,
+                "bot_category": bot_category_opts,
+                "url_group":    url_group_opts,
+                "locale":       locale_opts,
+                "country":      country_opts,
+                "referer_type": referer_type_opts,
+                "utm_source":   utm_source_opts,
+            },
+            filter_selected={
+                "status":       [str(c) for c in status_codes],
+                "method":       list(methods),
+                "bot_family":   list(bot_families),
+                "bot_category": list(bot_categories),
+                "url_group":    list(url_groups),
+                "locale":       list(locales),
+                "country":      list(countries),
+                "referer_type": list(referer_types),
+                "utm_source":   list(utm_sources),
+            },
+            is_bot=is_bot,
+            has_country_col=has_country_col,
+        )
+    )
+    body_html = chrome_html + f"<div id='results'>{inner}</div>"
+    return _lv2_page("Log analyser — Logs", "logs", body_html)
 
-    count_sql = f"SELECT COUNT(*) FROM t {where};"
-    _, count_rows = run_query(paths, count_sql)
-    total = count_rows[0][0] if count_rows else 0
 
-    # Build the SELECT from the chosen visible columns. `ts_local` is TIMESTAMPTZ,
-    # which DuckDB needs pytz to materialise into Python — cast it to VARCHAR so
-    # the viewer works without optional deps. Country is already cast to VARCHAR
-    # historically for the same reason.
-    def _col_select(name: str) -> str:
-        if name == "ts_local":
-            return "CAST(ts_local AS VARCHAR) AS ts_local"
-        if name == "country":
-            return "CAST(country AS VARCHAR) AS country"
-        return name
-    select_list = ", ".join(_col_select(c) for c in visible_cols)
-    data_sql = f"""
-    SELECT {select_list}
-    FROM t
-    {where}
-    ORDER BY {sort_col} {sort_dir}
-    LIMIT {per_page} OFFSET {offset};
-    """
-    cols, rows = run_query(paths, data_sql)
+# ── Autocomplete for the search input (Phase 2) ────────────────────────────
+# Distinct-value scans are the expensive part, so cache by (field, from, to)
+# with a 5-minute TTL. Prefix filtering happens in-memory after lookup.
+_LV2_AUTOCOMPLETE_FIELDS = {
+    "status", "method", "bot_family", "bot_category", "url_group",
+    "locale", "country", "referer_type", "utm_source_norm",
+}
+_LV2_AC_TTL = 300.0
+_LV2_AC_CACHE: Dict[Tuple[str, str, str], Tuple[float, List[str]]] = {}
 
-    TIME_COLS = {"ts_utc", "ts_local", "date"}
-    LONG_TEXT_COLS = {"user_agent", "referer", "referer_path", "path",
-                      "request_target", "query_string", "utm_term", "utm_content"}
 
-    display_rows = []
-    for r in rows:
-        row = []
-        for name, v in zip(cols, r):
-            if v is None:
-                row.append("")
-            elif name in TIME_COLS:
-                row.append(str(v)[:19])
-            elif name == "bytes_sent":
-                row.append(fmt_bytes(v))
-            elif name == "is_bot":
-                row.append("Bot" if v else "Human")
-            elif name in LONG_TEXT_COLS and isinstance(v, str) and len(v) > 80:
-                row.append(v[:80] + "\u2026")
+def _lv2_autocomplete_values(field: str, date_from: Optional[str], date_to: Optional[str]) -> List[str]:
+    key = (field, date_from or "", date_to or "")
+    now = time.monotonic()
+    hit = _LV2_AC_CACHE.get(key)
+    if hit and (now - hit[0]) < _LV2_AC_TTL:
+        return hit[1]
+    vals = distinct_parsed_values(field, date_from, date_to)
+    _LV2_AC_CACHE[key] = (now, vals)
+    return vals
+
+
+@app.get("/logs/autocomplete")
+def log_autocomplete(
+    field: str = Query(...),
+    q: str = Query(""),
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    limit: int = Query(10, ge=1, le=50),
+):
+    """JSON suggestions for a filter field, prefix-matched by `q`."""
+    # Accept `utm` as a short alias for utm_source_norm
+    real_field = "utm_source_norm" if field in ("utm", "utm_source") else field
+    if real_field not in _LV2_AUTOCOMPLETE_FIELDS:
+        return JSONResponse({"field": field, "suggestions": []})
+    values = _lv2_autocomplete_values(real_field, date_from, date_to)
+    needle = (q or "").strip().lower()
+    if needle:
+        suggestions = [v for v in values if needle in v.lower()][:limit]
+    else:
+        suggestions = values[:limit]
+    return JSONResponse({"field": field, "suggestions": suggestions})
+
+
+# ── Drawer fragment (Phase 3) ──────────────────────────────────────────────
+_LV2_DRAWER_SECTIONS = [
+    ("Request",   ["method", "path", "url_group", "request_target", "query_string", "is_parameterized", "is_resource"]),
+    ("Response",  ["status", "status_class", "bytes_sent"]),
+    ("Client",    ["edge_ip", "country", "locale", "user_agent", "is_bot", "bot_family", "bot_category"]),
+    ("Referer",   ["referer", "referer_host", "referer_path", "referer_type"]),
+    ("Attribution", ["utm_source_norm", "utm_medium", "utm_campaign", "utm_term", "utm_content"]),
+]
+
+
+def _lv2_drawer_fragment(entry: Any, cols: List[str], date: str, row_num: Optional[int] = None) -> str:
+    col_idx = {c: i for i, c in enumerate(cols)}
+
+    def get(col: str) -> Any:
+        i = col_idx.get(col)
+        return entry[i] if i is not None else None
+
+    status_val = get("status")
+    method_val = get("method")
+    bytes_val = get("bytes_sent")
+    ts_val = get("ts_utc")
+    is_bot_val = get("is_bot")
+    bot_family_val = get("bot_family")
+    ua_val = get("user_agent")
+
+    summary_items = [
+        ("Status", _lv2_status_pill(status_val) if status_val is not None else "—"),
+        ("Method", _lv2_method_pill(method_val) if method_val is not None else "—"),
+        ("Bytes",  html_escape(fmt_bytes(bytes_val)) if bytes_val is not None else "—"),
+        ("Time (UTC)", f"<span class='mono'>{html_escape(str(ts_val)[:19]) if ts_val is not None else '—'}</span>"),
+        ("Agent", _lv2_agent_cell(is_bot_val, bot_family_val, ua_val)),
+    ]
+    summary_html = "".join(
+        f"<div class='ds-item'><span class='ds-label'>{html_escape(lbl)}</span><span class='ds-value'>{val}</span></div>"
+        for lbl, val in summary_items
+    )
+
+    # KV sections
+    body_sections: List[str] = []
+    for section_title, field_list in _LV2_DRAWER_SECTIONS:
+        kvs = []
+        for field in field_list:
+            if field not in col_idx:
+                continue
+            raw = get(field)
+            if raw is None or raw == "":
+                continue
+            if field == "bytes_sent":
+                display = html_escape(f"{raw} ({fmt_bytes(raw)})")
+            elif field == "status":
+                display = _lv2_status_pill(raw)
+            elif field == "method":
+                display = _lv2_method_pill(raw)
+            elif field == "is_bot":
+                display = "Bot" if raw and str(raw).lower() not in ("false", "0") else "Human"
             else:
-                row.append(v)
-        display_rows.append(row)
+                s = str(raw)
+                display = html_escape(s)
+            kvs.append(
+                f"<div class='kv'>"
+                f"<span class='k'>{html_escape(field)}</span>"
+                f"<span class='v'>{display}</span>"
+                "</div>"
+            )
+        if kvs:
+            body_sections.append(f"<h4>{html_escape(section_title)}</h4>" + "".join(kvs))
 
-    total_pages = max(1, (total + per_page - 1) // per_page)
-    page_num = min(page_num, total_pages)
-
-    params: dict[str, str] = {}
-    if date_from:
-        params["from"] = date_from
-    if date_to:
-        params["to"] = date_to
-    if search:
-        params["search"] = search
-    if search_mode and search_mode != "contains":
-        params["search_mode"] = search_mode
-    if search_field and search_field != "any":
-        params["search_field"] = search_field
-    if status_codes:
-        params["status"] = ",".join(str(c) for c in status_codes)
-    if status_classes:
-        params["status_class"] = ",".join(str(c) for c in status_classes)
-    if methods:
-        params["method"] = ",".join(methods)
-    if is_bot:
-        params["is_bot"] = is_bot
-    if bot_families:
-        params["bot_family"] = ",".join(bot_families)
-    if bot_categories:
-        params["bot_category"] = ",".join(bot_categories)
-    if url_groups:
-        params["url_group"] = ",".join(url_groups)
-    if locales:
-        params["locale"] = ",".join(locales)
-    if countries:
-        params["country"] = ",".join(countries)
-    if referer_types:
-        params["referer_type"] = ",".join(referer_types)
-    if utm_sources:
-        params["utm_source"] = ",".join(utm_sources)
-    if not include_assets:
-        params["include_assets"] = "false"
-    if content_only:
-        params["content_only"] = "true"
-    if per_page != 100:
-        params["per_page"] = str(per_page)
-    if sort != "ts_utc":
-        params["sort"] = sort
-    if order != "desc":
-        params["order"] = order
-    if show_chart:
-        params["chart"] = "1"
-    # Include columns in the URL only when the user has pinned a non-default set.
-    default_col_set = {c for c in LOG_DEFAULT_COLUMNS if c in schema_cols}
-    if visible_cols and set(visible_cols) != default_col_set:
-        params["columns"] = ",".join(visible_cols)
-
-    def page_link(p: int, label: str) -> str:
-        qs = "&".join(f"{k}={v}" for k, v in params.items())
-        return f"<a href='/logs?page={p}&{qs}' style='padding:4px 10px;border:1px solid #cbd5e1;border-radius:4px;text-decoration:none;color:#3b82f6;font-size:13px;margin:0 2px;'>{label}</a>"
-
-    hidden_inputs = "".join(
-        f"<input type='hidden' name='{k}' value='{html_escape(v)}'>"
-        for k, v in params.items() if k != "page"
-    )
-    jump_form = (
-        "<form method='get' action='/logs' style='display:inline-flex;align-items:center;gap:4px;margin:0;'>"
-        f"{hidden_inputs}"
-        "<label style='font-size:12px;color:#64748b;text-transform:none;letter-spacing:0;font-weight:500;'>Go to page "
-        f"<input type='number' name='page' value='{page_num}' min='1' max='{total_pages}' "
-        "style='width:64px;padding:3px 6px;border:1px solid #cbd5e1;border-radius:4px;font-size:12px;'>"
-        "</label>"
-        "<button type='submit' style='padding:3px 10px;border:1px solid #cbd5e1;border-radius:4px;"
-        "background:#f8fafc;color:#3b82f6;font-size:12px;cursor:pointer;'>Go</button>"
-        "</form>"
+    # Quick filter buttons (path + ip)
+    path_val = get("path")
+    ip_val = get("edge_ip")
+    quick_filters: List[str] = []
+    if path_val:
+        esc = html_escape(f"path:{path_val}", quote=True)
+        quick_filters.append(
+            f"<button type='button' class='qf' "
+            f"onclick=\"var u=new URL(window.location.href);u.searchParams.set('search','{esc}');"
+            "u.searchParams.delete('page');"
+            "if(window.htmx){window.htmx.ajax('GET',u.pathname+u.search,{target:'#results',swap:'innerHTML'});"
+            "window.history.pushState({},'',u.toString());}else{window.location.href=u.toString();}"
+            "closeDrawer&&closeDrawer();\">"
+            "<span class='qf-icon'>+</span>Filter path</button>"
+        )
+    if ip_val:
+        esc = html_escape(f"edge_ip:{ip_val}", quote=True)
+        quick_filters.append(
+            f"<button type='button' class='qf' "
+            f"onclick=\"var u=new URL(window.location.href);u.searchParams.set('search','{esc}');"
+            "u.searchParams.delete('page');"
+            "if(window.htmx){window.htmx.ajax('GET',u.pathname+u.search,{target:'#results',swap:'innerHTML'});"
+            "window.history.pushState({},'',u.toString());}else{window.location.href=u.toString();}"
+            "closeDrawer&&closeDrawer();\">"
+            "<span class='qf-icon'>+</span>Filter this IP</button>"
+        )
+    if ua_val:
+        esc = html_escape(str(ua_val), quote=True)
+        quick_filters.append(
+            f"<button type='button' class='qf' onclick=\"navigator.clipboard&&navigator.clipboard.writeText('{esc}');this.textContent='Copied';\">"
+            "<span class='qf-icon'>⧉</span>Copy UA</button>"
+        )
+    quick_filters_html = (
+        f"<div class='quick-filters'>{''.join(quick_filters)}</div>" if quick_filters else ""
     )
 
-    pagination = f"<div style='display:flex;align-items:center;gap:8px;margin:12px 0;flex-wrap:wrap;'>"
-    pagination += f"<span style='font-size:13px;color:#64748b;'>{total:,} rows &middot; page {page_num} of {total_pages:,}</span>"
-    if page_num > 1:
-        pagination += page_link(1, "&laquo; First")
-        pagination += page_link(page_num - 1, "&lsaquo; Prev")
-    pagination += jump_form
-    if page_num < total_pages:
-        pagination += page_link(page_num + 1, "Next &rsaquo;")
-        pagination += page_link(total_pages, "Last &raquo;")
-    pagination += "</div>"
+    # Raw JSON dump (truncate very long user-agent)
+    raw_items = {}
+    for c, v in zip(cols, entry):
+        if v is None:
+            continue
+        if hasattr(v, "isoformat"):
+            raw_items[c] = v.isoformat()
+        elif isinstance(v, (int, float, bool, str)):
+            raw_items[c] = v
+        else:
+            raw_items[c] = str(v)
+    raw_json = html_escape(json.dumps(raw_items, default=str, indent=2))
 
-    if chart_html:
-        body += chart_html
-    body += pagination
-    body += html_table(display_rows, cols, max_rows=per_page, server_paginated=True)
-    body += pagination
-
-    return page("Log Viewer", body)
+    subtitle = html_escape(date)
+    if row_num is not None:
+        subtitle += f" · row {row_num}"
+    return (
+        "<div class='drawer-head'>"
+        f"<h3>Request detail <small style='color:var(--ink-3);font-weight:500;margin-left:8px;font-size:12px;'>{subtitle}</small></h3>"
+        "<div class='dh-nav'>"
+        "<button data-drawer-nav='prev' title='Previous (k)'>‹</button>"
+        "<button data-drawer-nav='next' title='Next (j)'>›</button>"
+        "<button data-drawer-close style='margin-left:4px;' title='Close (esc)'>×</button>"
+        "</div>"
+        "</div>"
+        f"<div class='drawer-summary'>{summary_html}</div>"
+        "<div class='drawer-body'>"
+        f"{''.join(body_sections)}"
+        f"{quick_filters_html}"
+        f"<h4>Raw record</h4><pre class='ua'>{raw_json}</pre>"
+        "</div>"
+    )
 
 
 @app.get("/logs/detail", response_class=HTMLResponse)
 def log_detail(
+    request: Request,
     date: str = Query(...),
-    row: int = Query(...),
+    row: Optional[int] = Query(None),
+    ts: Optional[str] = Query(None),
 ):
-    """Show all fields for a single log entry identified by date + row offset."""
-    paths = list_parsed_partitions(date, date)
+    """Show all fields for a single log entry, keyed by `ts` (preferred) or `row`.
+
+    When called with HX-Request: true, returns only the drawer-inner HTML
+    (head + summary + body) for target="#drawer" hx-swap="innerHTML". For full
+    navigation (shareable deep link) it falls back to the legacy full page.
+    """
+    # Parquet partitions are keyed by local date while ts_utc is UTC, so a row
+    # tagged with date=D may actually live in the neighboring partition. Widen
+    # the lookup by ±1 day so drawer hits find the row regardless.
+    try:
+        d = datetime.fromisoformat(date).date()
+        from_d = (d - timedelta(days=1)).isoformat()
+        to_d = (d + timedelta(days=1)).isoformat()
+        paths = list_parsed_partitions(from_d, to_d)
+    except ValueError:
+        paths = list_parsed_partitions(date, date)
+    is_htmx = request.headers.get("HX-Request") == "true"
+
     if not paths:
+        if is_htmx:
+            return HTMLResponse(
+                "<div class='drawer-head'><h3>Log detail</h3>"
+                "<button data-drawer-close>×</button></div>"
+                "<div class='drawer-body'><div class='empty'>No data for this date.</div></div>"
+            )
         return page("Log Detail", "<p class='no-data'>No data for this date.</p>")
 
-    sql = f"""
-    SELECT *
-    FROM t
-    LIMIT 1 OFFSET {max(0, int(row))};
-    """
+    # Select every schema column, but cast types DuckDB can't materialise to
+    # Python natively (TIMESTAMPTZ, ENUM).
+    detail_schema_cols, _ = run_query(paths, "SELECT * FROM t LIMIT 0")
+    def _detail_col(c: str) -> str:
+        if c == "ts_local":
+            return "CAST(ts_local AS VARCHAR) AS ts_local"
+        if c == "country":
+            return "CAST(country AS VARCHAR) AS country"
+        return c
+    select_list = ", ".join(_detail_col(c) for c in detail_schema_cols)
+    if ts:
+        esc_ts = sql_escape_string(ts)
+        sql = f"""
+        SELECT {select_list}
+        FROM t
+        WHERE CAST(ts_utc AS VARCHAR) = '{esc_ts}'
+           OR CAST(ts_utc AS VARCHAR) LIKE '{esc_ts}%'
+        ORDER BY ts_utc
+        LIMIT 1;
+        """
+    else:
+        offset = max(0, int(row or 0))
+        sql = f"""
+        SELECT {select_list}
+        FROM t
+        LIMIT 1 OFFSET {offset};
+        """
     cols, rows = run_query(paths, sql)
     if not rows:
+        if is_htmx:
+            return HTMLResponse(
+                "<div class='drawer-head'><h3>Log detail</h3>"
+                "<button data-drawer-close>×</button></div>"
+                "<div class='drawer-body'><div class='empty'>Row not found.</div></div>"
+            )
         return page("Log Detail", "<p class='no-data'>Row not found.</p>")
 
+    if is_htmx:
+        return HTMLResponse(_lv2_drawer_fragment(rows[0], cols, date, int(row) if row is not None else None))
+
+    # Legacy full-page fallback (kept for deep-linking)
     entry = rows[0]
     items = ""
     for col_name, val in zip(cols, entry):
@@ -4627,8 +6004,6 @@ def log_detail(
             f"<td style='padding:6px 0;word-break:break-all;font-size:13px;'>{display_val}</td>"
             f"</tr>"
         )
-
     body = f"<p style='margin-bottom:12px;'><a href='/logs?from={date}&to={date}' style='color:#3b82f6;text-decoration:none;font-size:13px;'>&larr; Back to logs</a></p>"
     body += f"<div class='card'><table style='width:100%;border-collapse:collapse;'>{items}</table></div>"
-
     return page(f"Log Detail — {date}", body)

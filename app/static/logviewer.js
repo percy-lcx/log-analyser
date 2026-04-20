@@ -1,0 +1,646 @@
+// Log viewer v2 — Phase 1 + 2 JS island.
+// Phase 1: `/` focus search, `?` help modal, Esc close, popover toggles,
+//   column-checkbox submit-on-change, close-popover-on-htmx-settle.
+// Phase 2: search autocomplete, More filters popover (pane switch + checkbox
+//   URL sync + single-value chips), active-state sync after htmx settles.
+(function () {
+  'use strict';
+
+  function isTypingTarget(el) {
+    if (!el) return false;
+    var tag = (el.tagName || '').toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
+  }
+
+  function closeAllPopovers() {
+    document.querySelectorAll('.popover.is-open').forEach(function (p) {
+      p.classList.remove('is-open');
+    });
+  }
+
+  function togglePopover(id) {
+    var p = document.getElementById(id);
+    if (!p) return;
+    var wasOpen = p.classList.contains('is-open');
+    closeAllPopovers();
+    if (!wasOpen) p.classList.add('is-open');
+  }
+
+  function navigate(url) {
+    if (window.htmx) {
+      window.htmx.ajax('GET', url, { target: '#results', swap: 'innerHTML' });
+      window.history.pushState({}, '', url);
+    } else {
+      window.location.href = url;
+    }
+  }
+
+  // ── Popover open/close ────────────────────────────────────────────────
+  document.addEventListener('click', function (e) {
+    var trigger = e.target.closest('[data-popover-trigger]');
+    if (trigger) {
+      e.preventDefault();
+      togglePopover(trigger.getAttribute('data-popover-trigger'));
+      return;
+    }
+    if (!e.target.closest('.popover') && !e.target.closest('[data-popover-trigger]')) {
+      closeAllPopovers();
+    }
+  });
+
+  // ── Keyboard shortcuts ────────────────────────────────────────────────
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      closeAllPopovers();
+      var kb = document.getElementById('kb-help');
+      if (kb) kb.classList.remove('is-open');
+      var hint = document.querySelector('.search-hint');
+      if (hint) hint.style.display = '';
+      return;
+    }
+    if (isTypingTarget(e.target)) {
+      // In search input: handle arrow-nav + Enter inside autocomplete dropdown
+      var inp = e.target.closest('.search-input input');
+      if (inp) handleSearchKey(e, inp);
+      return;
+    }
+    if (e.key === '/') {
+      var searchInp = document.querySelector('.search-input input');
+      if (searchInp) {
+        e.preventDefault();
+        searchInp.focus();
+        searchInp.select();
+      }
+    } else if (e.key === '?') {
+      var kb = document.getElementById('kb-help');
+      if (kb) {
+        e.preventDefault();
+        kb.classList.toggle('is-open');
+      }
+    }
+  });
+
+  document.addEventListener('click', function (e) {
+    var kb = document.getElementById('kb-help');
+    if (!kb || !kb.classList.contains('is-open')) return;
+    if (e.target === kb || e.target.matches('[data-kb-close]')) {
+      kb.classList.remove('is-open');
+    }
+  });
+
+  // ── Columns popover checkbox sync ─────────────────────────────────────
+  document.addEventListener('change', function (e) {
+    var cb = e.target.closest('[data-col-checkbox]');
+    if (!cb) return;
+    var form = cb.closest('.popover');
+    var checked = form.querySelectorAll('[data-col-checkbox]:checked');
+    var cols = Array.from(checked).map(function (el) { return el.value; });
+    var url = new URL(window.location.href);
+    if (cols.length) url.searchParams.set('columns', cols.join(','));
+    else             url.searchParams.delete('columns');
+    url.searchParams.delete('page');
+    navigate(url.pathname + url.search);
+  });
+
+  // ── More filters: pane switching (category nav) ───────────────────────
+  document.addEventListener('click', function (e) {
+    var tabBtn = e.target.closest('[data-mfp-tab]');
+    if (!tabBtn) return;
+    var popover = tabBtn.closest('.mfp');
+    if (!popover) return;
+    var target = tabBtn.getAttribute('data-mfp-tab');
+    popover.querySelectorAll('[data-mfp-tab]').forEach(function (b) {
+      b.classList.toggle('active', b.getAttribute('data-mfp-tab') === target);
+    });
+    popover.querySelectorAll('[data-mfp-pane]').forEach(function (p) {
+      p.style.display = (p.getAttribute('data-mfp-pane') === target) ? 'block' : 'none';
+    });
+  });
+
+  // ── More filters: checkbox → URL param sync ───────────────────────────
+  document.addEventListener('change', function (e) {
+    var cb = e.target.closest('[data-filter-field]');
+    if (!cb || !cb.matches('input[type="checkbox"]')) return;
+    var field = cb.getAttribute('data-filter-field');
+    var popover = cb.closest('.popover');
+    // Collect all checked values for this field
+    var checked = popover.querySelectorAll(
+      'input[data-filter-field="' + field + '"]:checked'
+    );
+    var values = Array.from(checked).map(function (el) {
+      return el.getAttribute('data-filter-value');
+    });
+    var url = new URL(window.location.href);
+    if (values.length) url.searchParams.set(field, values.join(','));
+    else               url.searchParams.delete(field);
+    url.searchParams.delete('page');
+    navigate(url.pathname + url.search);
+  });
+
+  // Single-value buttons (is_bot radio-like)
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-filter-mode="single"]');
+    if (!btn) return;
+    e.preventDefault();
+    var field = btn.getAttribute('data-filter-field');
+    var value = btn.getAttribute('data-filter-value');
+    var url = new URL(window.location.href);
+    if (value) url.searchParams.set(field, value);
+    else       url.searchParams.delete(field);
+    url.searchParams.delete('page');
+    navigate(url.pathname + url.search);
+  });
+
+  // ── Search autocomplete ───────────────────────────────────────────────
+  // When the user types inside the search input, detect the current token
+  // (by cursor position), parse its `key:value` form, and fetch /logs/autocomplete.
+  var acState = { items: [], activeIdx: -1, tokenStart: 0, tokenEnd: 0 };
+  var acTimer = null;
+
+  function currentTokenAt(input) {
+    var val = input.value;
+    var pos = input.selectionStart || 0;
+    var before = val.slice(0, pos);
+    var after  = val.slice(pos);
+    var startIdx = before.search(/\S+$/);
+    if (startIdx < 0) startIdx = pos;
+    var endIdx = pos + (after.match(/^\S*/) || [''])[0].length;
+    return { text: val.slice(startIdx, endIdx), start: startIdx, end: endIdx };
+  }
+
+  var FIELD_ALIAS = {
+    status: 'status', method: 'method', bot_family: 'bot_family',
+    bot_category: 'bot_category', url_group: 'url_group',
+    locale: 'locale', country: 'country',
+    referer_type: 'referer_type', utm: 'utm_source', utm_source: 'utm_source',
+  };
+
+  var SYNTAX_HINTS = [
+    { op: 'status:404',   desc: 'only a specific code' },
+    { op: 'status:4xx',   desc: 'all 4xx errors (status_class)' },
+    { op: 'method:GET',   desc: 'filter by method' },
+    { op: 'is:bot',       desc: 'bot traffic only' },
+    { op: 'is:human',     desc: 'human traffic only' },
+    { op: 'path:/api',    desc: 'path prefix match' },
+    { op: 'bot_family:GPTBot', desc: 'filter by bot family' },
+    { op: 'utm:chatgpt',  desc: 'UTM source (utm_source alias)' },
+    { op: '-utm:direct',  desc: 'negate — exclude this value' },
+    { op: '/regex/',      desc: 'free-text regex on path/UA/referer' },
+  ];
+
+  function renderSyntaxHints(hint, query) {
+    var qLower = (query || '').toLowerCase();
+    var rows = SYNTAX_HINTS
+      .filter(function (h) { return !qLower || h.op.toLowerCase().includes(qLower); })
+      .slice(0, 8)
+      .map(function (h, i) {
+        return (
+          "<div class='sh-row' data-sh-idx='" + i + "' data-sh-insert='" + h.op + "'>" +
+            "<code>" + h.op + "</code>" +
+            "<span class='sh-desc'>" + h.desc + "</span>" +
+          "</div>"
+        );
+      }).join('');
+    hint.innerHTML = (
+      "<div class='sh-title'>Filter syntax</div>" +
+      (rows || "<div class='sh-row'><span class='sh-desc'>No matching operator.</span></div>")
+    );
+    hint.style.display = 'block';
+    acState.items = Array.from(hint.querySelectorAll('[data-sh-idx]'));
+    acState.activeIdx = acState.items.length ? 0 : -1;
+    updateHintActive();
+  }
+
+  function renderValueSuggestions(hint, field, values, tokenStart, tokenEnd) {
+    var rows = values.map(function (v, i) {
+      var insert = field + ':' + v;
+      return (
+        "<div class='sh-row' data-sh-idx='" + i + "' " +
+        "data-sh-insert='" + insert + "' data-sh-field='" + field + "' data-sh-value='" + v + "'>" +
+          "<code>" + insert + "</code>" +
+          "<span class='sh-desc'>" + values.length + " matching</span>" +
+        "</div>"
+      );
+    }).join('');
+    hint.innerHTML = (
+      "<div class='sh-title'>Suggestions for " + field + "</div>" +
+      (rows || "<div class='sh-row'><span class='sh-desc'>No matches.</span></div>")
+    );
+    hint.style.display = 'block';
+    acState.items = Array.from(hint.querySelectorAll('[data-sh-idx]'));
+    acState.activeIdx = acState.items.length ? 0 : -1;
+    acState.tokenStart = tokenStart;
+    acState.tokenEnd = tokenEnd;
+    updateHintActive();
+  }
+
+  function updateHintActive() {
+    acState.items.forEach(function (row, i) {
+      row.classList.toggle('active', i === acState.activeIdx);
+    });
+    if (acState.activeIdx >= 0 && acState.items[acState.activeIdx]) {
+      acState.items[acState.activeIdx].scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function applyHintRow(input, row) {
+    var insert = row.getAttribute('data-sh-insert') || '';
+    var tok = currentTokenAt(input);
+    var val = input.value;
+    var next = val.slice(0, tok.start) + insert + val.slice(tok.end);
+    input.value = next;
+    var newPos = tok.start + insert.length;
+    input.setSelectionRange(newPos, newPos);
+    // Collapse hint; user typically submits next
+    var hint = document.querySelector('.search-hint');
+    if (hint) hint.style.display = 'none';
+  }
+
+  function handleSearchInput(input) {
+    var hint = document.querySelector('.search-hint');
+    if (!hint) return;
+    var tok = currentTokenAt(input);
+    var text = tok.text;
+    // No token yet → just show syntax hints
+    if (!text) {
+      renderSyntaxHints(hint, '');
+      return;
+    }
+    // Looks like `key:value` prefix → hit autocomplete
+    var colon = text.indexOf(':');
+    if (colon > 0) {
+      var rawKey = text.slice(0, colon).replace(/^-/, '').toLowerCase();
+      var field = FIELD_ALIAS[rawKey];
+      if (field) {
+        var value = text.slice(colon + 1);
+        // Debounce
+        clearTimeout(acTimer);
+        acTimer = setTimeout(function () {
+          var url = new URL(window.location.href);
+          var qs = new URLSearchParams({ field: field, q: value, limit: '10' });
+          var from = url.searchParams.get('from');
+          var to   = url.searchParams.get('to');
+          if (from) qs.set('from', from);
+          if (to)   qs.set('to', to);
+          fetch('/logs/autocomplete?' + qs.toString())
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+              renderValueSuggestions(hint, rawKey, j.suggestions || [], tok.start, tok.end);
+            })
+            .catch(function () { /* silent */ });
+        }, 120);
+        return;
+      }
+    }
+    // Fallback: syntax hints filtered by whatever was typed
+    renderSyntaxHints(hint, text);
+  }
+
+  function handleSearchKey(e, input) {
+    if (e.key === 'ArrowDown') {
+      if (!acState.items.length) return;
+      e.preventDefault();
+      acState.activeIdx = (acState.activeIdx + 1) % acState.items.length;
+      updateHintActive();
+    } else if (e.key === 'ArrowUp') {
+      if (!acState.items.length) return;
+      e.preventDefault();
+      acState.activeIdx = (acState.activeIdx - 1 + acState.items.length) % acState.items.length;
+      updateHintActive();
+    } else if (e.key === 'Enter') {
+      if (acState.activeIdx >= 0 && acState.items[acState.activeIdx]) {
+        e.preventDefault();
+        applyHintRow(input, acState.items[acState.activeIdx]);
+      }
+      // If Enter without active selection, let the <form> submit
+    } else if (e.key === 'Tab' && acState.activeIdx >= 0 && acState.items[acState.activeIdx]) {
+      e.preventDefault();
+      applyHintRow(input, acState.items[acState.activeIdx]);
+    }
+  }
+
+  // Delegate input listener (search box may re-render after htmx swap)
+  document.addEventListener('input', function (e) {
+    var inp = e.target.closest('.search-input input');
+    if (!inp) return;
+    handleSearchInput(inp);
+  });
+
+  // Focus → render initial syntax hints
+  document.addEventListener('focusin', function (e) {
+    var inp = e.target.closest('.search-input input');
+    if (!inp) return;
+    handleSearchInput(inp);
+  });
+
+  // Click on a suggestion row → apply
+  document.addEventListener('mousedown', function (e) {
+    var row = e.target.closest('.search-hint [data-sh-idx]');
+    if (!row) return;
+    e.preventDefault();
+    var inp = document.querySelector('.search-input input');
+    if (inp) applyHintRow(inp, row);
+  });
+
+  // ── Drawer ────────────────────────────────────────────────────────────
+  function openDrawer() {
+    var d = document.getElementById('drawer');
+    var bd = document.getElementById('drawer-backdrop');
+    if (d) d.classList.add('open');
+    if (bd) bd.classList.add('open');
+  }
+  function closeDrawer() {
+    var d = document.getElementById('drawer');
+    var bd = document.getElementById('drawer-backdrop');
+    if (d) d.classList.remove('open');
+    if (bd) bd.classList.remove('open');
+    // Clear selected-row highlight
+    document.querySelectorAll('.log-table tbody tr.selected').forEach(function (tr) {
+      tr.classList.remove('selected');
+    });
+  }
+  window.closeDrawer = closeDrawer; // reachable from inline onclick in fragment
+
+  // When an htmx swap targets #drawer, open the drawer and highlight the row.
+  document.body.addEventListener('htmx:afterSwap', function (evt) {
+    closeAllPopovers();
+    if (evt.target && evt.target.id === 'drawer') {
+      openDrawer();
+    }
+  });
+
+  // Close clicks: data-drawer-close button, or backdrop click
+  document.addEventListener('click', function (e) {
+    if (e.target.closest('[data-drawer-close]')) {
+      e.preventDefault();
+      closeDrawer();
+      return;
+    }
+    if (e.target.id === 'drawer-backdrop') {
+      closeDrawer();
+    }
+  });
+
+  // Row click highlighting (complement to row's hx-get)
+  document.addEventListener('click', function (e) {
+    var tr = e.target.closest('.log-table tbody tr[data-row-ts]');
+    if (!tr) return;
+    document.querySelectorAll('.log-table tbody tr.selected').forEach(function (o) {
+      if (o !== tr) o.classList.remove('selected');
+    });
+    tr.classList.add('selected');
+  });
+
+  // j / k row navigation
+  function navigateRow(direction) {
+    var rows = Array.from(document.querySelectorAll('.log-table tbody tr[data-row-ts]'));
+    if (!rows.length) return;
+    var selected = document.querySelector('.log-table tbody tr.selected[data-row-ts]');
+    var idx = selected ? rows.indexOf(selected) : -1;
+    var next = direction > 0 ? rows[idx + 1] || rows[0] : rows[idx - 1] || rows[rows.length - 1];
+    if (!next) return;
+    if (selected) selected.classList.remove('selected');
+    next.classList.add('selected');
+    next.scrollIntoView({ block: 'nearest' });
+    if (window.htmx) {
+      // Trigger the row's hx-get (fires against #drawer)
+      next.click();
+    }
+  }
+
+  // Drawer head prev/next buttons
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-drawer-nav]');
+    if (!btn) return;
+    e.preventDefault();
+    navigateRow(btn.getAttribute('data-drawer-nav') === 'next' ? 1 : -1);
+  });
+
+  // ── Global shortcuts: j / k / g ───────────────────────────────────────
+  document.addEventListener('keydown', function (e) {
+    if (isTypingTarget(e.target)) return;
+    if (e.key === 'j') { e.preventDefault(); navigateRow(1); }
+    else if (e.key === 'k') { e.preventDefault(); navigateRow(-1); }
+    else if (e.key === 'g') {
+      e.preventDefault();
+      var url = new URL(window.location.href);
+      if (url.searchParams.get('chart') === '1') url.searchParams.delete('chart');
+      else url.searchParams.set('chart', '1');
+      url.searchParams.delete('page');
+      navigate(url.pathname + url.search);
+    }
+  });
+
+  // ── Chart brush: pointer drag over .chart-svg → bt0/bt1 URL params ────
+  (function wireBrush() {
+    document.addEventListener('pointerdown', function (e) {
+      var svg = e.target.closest('.chart-svg');
+      if (!svg) return;
+      var card = svg.closest('[data-lv2-chart]');
+      if (!card) return;
+      var t0 = parseInt(card.getAttribute('data-t0') || '0', 10);
+      var t1 = parseInt(card.getAttribute('data-t1') || '0', 10);
+      if (!t0 || !t1 || t1 <= t0) return;
+      var L = parseFloat(card.getAttribute('data-plot-l') || '34');
+      var R = parseFloat(card.getAttribute('data-plot-r') || '12');
+      var vb = svg.viewBox.baseVal; // { x, y, width, height }
+      var plotW = vb.width - L - R;
+
+      function pxToMs(clientX) {
+        var rect = svg.getBoundingClientRect();
+        var ratio = vb.width / rect.width;
+        var x = (clientX - rect.left) * ratio;
+        var frac = Math.max(0, Math.min(1, (x - L) / plotW));
+        return Math.round(t0 + frac * (t1 - t0));
+      }
+
+      e.preventDefault();
+      svg.setPointerCapture(e.pointerId);
+      var startClientX = e.clientX;
+      var startMs = pxToMs(e.clientX);
+
+      // Create (or reuse) a drag-preview rect
+      var ns = 'http://www.w3.org/2000/svg';
+      var preview = svg.querySelector('[data-brush-preview]');
+      if (!preview) {
+        preview = document.createElementNS(ns, 'rect');
+        preview.setAttribute('data-brush-preview', '');
+        preview.setAttribute('y', '10');
+        preview.setAttribute('height', String(vb.height - 10 - 22));
+        preview.setAttribute('fill', 'rgba(47,92,197,0.12)');
+        preview.setAttribute('stroke', '#2f5cc5');
+        preview.setAttribute('stroke-width', '1');
+        svg.appendChild(preview);
+      }
+
+      function rectFrom(clientStartX, clientNowX) {
+        var rect = svg.getBoundingClientRect();
+        var ratio = vb.width / rect.width;
+        var xa = (clientStartX - rect.left) * ratio;
+        var xb = (clientNowX   - rect.left) * ratio;
+        var lo = Math.max(L, Math.min(xa, xb));
+        var hi = Math.min(vb.width - R, Math.max(xa, xb));
+        preview.setAttribute('x', String(lo));
+        preview.setAttribute('width', String(Math.max(0.5, hi - lo)));
+      }
+      rectFrom(startClientX, startClientX);
+
+      function onMove(ev) { rectFrom(startClientX, ev.clientX); }
+      function onUp(ev) {
+        svg.removeEventListener('pointermove', onMove);
+        svg.removeEventListener('pointerup', onUp);
+        try { svg.releasePointerCapture(e.pointerId); } catch (_) {}
+        var endMs = pxToMs(ev.clientX);
+        if (Math.abs(endMs - startMs) < 1000) {
+          // treat tiny drag as a click — drop the preview without navigating
+          if (preview && preview.parentNode) preview.parentNode.removeChild(preview);
+          return;
+        }
+        var lo = Math.min(startMs, endMs);
+        var hi = Math.max(startMs, endMs);
+        var url = new URL(window.location.href);
+        url.searchParams.set('bt0', String(lo));
+        url.searchParams.set('bt1', String(hi));
+        url.searchParams.delete('page');
+        // Ensure chart stays visible so the overlay renders
+        url.searchParams.set('chart', '1');
+        navigate(url.pathname + url.search);
+      }
+      svg.addEventListener('pointermove', onMove);
+      svg.addEventListener('pointerup', onUp);
+    });
+  })();
+
+  // ── Report pages: tab switching (.tab-btn + .tab-panel#tab-<id>) ──────
+  (function wireTabs() {
+    function activate(tabId) {
+      document.querySelectorAll('.tab-btn').forEach(function (b) {
+        b.classList.toggle('active', b.getAttribute('data-tab') === tabId);
+      });
+      document.querySelectorAll('.tab-panel').forEach(function (p) {
+        p.classList.toggle('active', p.id === 'tab-' + tabId);
+      });
+      var url = new URL(window.location);
+      url.searchParams.set('tab', tabId);
+      window.history.replaceState(null, '', url.toString());
+    }
+    function init() {
+      var btns = document.querySelectorAll('.tab-btn');
+      if (!btns.length) return;
+      btns.forEach(function (b) {
+        b.addEventListener('click', function () {
+          activate(b.getAttribute('data-tab'));
+        });
+      });
+      var params = new URLSearchParams(window.location.search);
+      var current = params.get('tab');
+      if (!current || !document.getElementById('tab-' + current)) {
+        current = btns[0].getAttribute('data-tab');
+      }
+      activate(current);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
+  })();
+
+  // ── Multi-select dropdown (.ms-wrap) — used by /reports/locales ───────
+  (function wireMultiSelect() {
+    function init(wrap) {
+      if (wrap.__lv2Wired) return;
+      wrap.__lv2Wired = true;
+      var toggle = wrap.querySelector('.ms-toggle');
+      var dropdown = wrap.querySelector('.ms-dropdown');
+      var hidden = wrap.querySelector('input[type=hidden]');
+      if (!toggle || !dropdown || !hidden) return;
+      var search = dropdown.querySelector('.ms-search');
+      var countEl = dropdown.querySelector('.ms-count');
+      var list = dropdown.querySelector('.ms-list');
+      var labels = list ? Array.from(list.querySelectorAll('label')) : [];
+      var total = labels.length;
+
+      function applyFilter(q) {
+        q = (q || '').trim().toLowerCase();
+        var shown = 0;
+        labels.forEach(function (lbl) {
+          var txt = lbl.textContent.trim().toLowerCase();
+          var match = !q || txt.indexOf(q) !== -1;
+          lbl.classList.toggle('ms-hidden', !match);
+          if (match) shown++;
+        });
+        if (countEl) countEl.textContent = q ? (shown + ' of ' + total) : String(total);
+      }
+      function updateState() {
+        var checked = dropdown.querySelectorAll('input[type=checkbox]:checked');
+        var vals = Array.from(checked).map(function (cb) { return cb.value; });
+        hidden.value = vals.join(',');
+        if (vals.length === 0) toggle.textContent = 'All \u25BE';
+        else if (vals.length === 1) toggle.textContent = vals[0] + ' \u25BE';
+        else toggle.textContent = vals.length + ' selected \u25BE';
+      }
+
+      toggle.addEventListener('click', function (e) {
+        e.preventDefault();
+        document.querySelectorAll('.ms-dropdown.open').forEach(function (d) {
+          if (d !== dropdown) d.classList.remove('open');
+        });
+        var willOpen = !dropdown.classList.contains('open');
+        dropdown.classList.toggle('open');
+        if (willOpen && search) {
+          search.value = '';
+          applyFilter('');
+          search.focus();
+        }
+      });
+      dropdown.querySelectorAll('input[type=checkbox]').forEach(function (cb) {
+        cb.addEventListener('change', updateState);
+      });
+      if (search) {
+        search.addEventListener('input', function () { applyFilter(search.value); });
+        search.addEventListener('click', function (e) { e.stopPropagation(); });
+      }
+      var selBtn = dropdown.querySelector('.ms-select-visible');
+      if (selBtn) selBtn.addEventListener('click', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        labels.forEach(function (lbl) {
+          if (lbl.classList.contains('ms-hidden')) return;
+          var cb = lbl.querySelector('input[type=checkbox]');
+          if (cb && !cb.checked) cb.checked = true;
+        });
+        updateState();
+      });
+      var clrBtn = dropdown.querySelector('.ms-clear-all');
+      if (clrBtn) clrBtn.addEventListener('click', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        labels.forEach(function (lbl) {
+          var cb = lbl.querySelector('input[type=checkbox]');
+          if (cb && cb.checked) cb.checked = false;
+        });
+        updateState();
+      });
+      applyFilter('');
+    }
+    function initAll() {
+      document.querySelectorAll('.ms-wrap').forEach(init);
+    }
+    document.addEventListener('click', function (e) {
+      if (!e.target.closest('.ms-wrap')) {
+        document.querySelectorAll('.ms-dropdown.open').forEach(function (d) {
+          d.classList.remove('open');
+        });
+      }
+    });
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initAll);
+    } else {
+      initAll();
+    }
+  })();
+
+  // Re-run htmx process on drawer inserts (it happens via hx-swap on tr)
+  document.body.addEventListener('htmx:beforeRequest', function () {
+    // no-op placeholder — kept for future hooks
+  });
+})();
