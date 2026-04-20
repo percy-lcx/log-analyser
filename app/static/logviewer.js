@@ -47,12 +47,38 @@
   }
 
   // ── Popover open/close ────────────────────────────────────────────────
+  function closeAllNavDropdowns() {
+    document.querySelectorAll('.nav-dropdown.is-open').forEach(function (d) {
+      d.classList.remove('is-open');
+    });
+    document.querySelectorAll('[data-nav-dropdown][aria-expanded="true"]').forEach(function (b) {
+      b.setAttribute('aria-expanded', 'false');
+    });
+  }
+
   document.addEventListener('click', function (e) {
     var trigger = e.target.closest('[data-popover-trigger]');
     if (trigger) {
       e.preventDefault();
       togglePopover(trigger.getAttribute('data-popover-trigger'));
       return;
+    }
+    var navTrigger = e.target.closest('[data-nav-dropdown]');
+    if (navTrigger) {
+      e.preventDefault();
+      var id = navTrigger.getAttribute('data-nav-dropdown');
+      var dd = document.getElementById(id);
+      if (!dd) return;
+      var wasOpen = dd.classList.contains('is-open');
+      closeAllNavDropdowns();
+      if (!wasOpen) {
+        dd.classList.add('is-open');
+        navTrigger.setAttribute('aria-expanded', 'true');
+      }
+      return;
+    }
+    if (!e.target.closest('.nav-dropdown') && !e.target.closest('[data-nav-dropdown]')) {
+      closeAllNavDropdowns();
     }
     if (!e.target.closest('.popover') && !e.target.closest('[data-popover-trigger]')) {
       closeAllPopovers();
@@ -63,6 +89,7 @@
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
       closeAllPopovers();
+      closeAllNavDropdowns();
       var kb = document.getElementById('kb-help');
       if (kb) kb.classList.remove('is-open');
       var hint = document.querySelector('.search-hint');

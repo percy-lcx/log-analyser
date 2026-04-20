@@ -4278,20 +4278,43 @@ def _lv2_apply_view(view_id: Optional[str], current: Dict[str, Optional[str]]) -
 
 
 def _lv2_topnav(active: str) -> str:
-    nav_items = [
+    """Render the sticky top nav. Reports is a dropdown; other items are plain links."""
+    reports_children = [
+        ("Locales", "/reports/locales"),
+        ("Search Console", "/reports/gsc"),
+    ]
+    reports_active = "active" if active == "reports" else ""
+    reports_items = "".join(
+        f"<a href='{url}'>{html_escape(label)}</a>"
+        for label, url in reports_children
+    )
+    reports_dropdown = (
+        f"<div class='nav-item-dropdown'>"
+        f"<button type='button' class='nav-link {reports_active}' "
+        "data-nav-dropdown='nav-dd-reports' aria-haspopup='true' aria-expanded='false'>"
+        "Reports"
+        f"<span class='caret'>{_lv2_icon('chevron')}</span>"
+        "</button>"
+        f"<div class='nav-dropdown' id='nav-dd-reports' role='menu'>{reports_items}</div>"
+        "</div>"
+    )
+
+    plain_items = [
         ("logs", "Logs", "/logs"),
         ("summary", "Summary", "/reports/summary"),
-        ("reports", "Reports", "/reports/locales"),
-        ("settings", "Settings", "/settings"),
     ]
-    links = "".join(
+    plain_links = "".join(
         f"<a href='{url}' class='nav-link{' active' if active == key else ''}'>{html_escape(label)}</a>"
-        for key, label, url in nav_items
+        for key, label, url in plain_items
     )
+    settings_link = (
+        f"<a href='/settings' class='nav-link{' active' if active == 'settings' else ''}'>Settings</a>"
+    )
+
     return (
         "<nav class='topnav'>"
         "<div class='brand'><span class='brand-mark'></span><span>log analyser</span></div>"
-        f"<div class='nav-links'>{links}</div>"
+        f"<div class='nav-links'>{plain_links}{reports_dropdown}{settings_link}</div>"
         "<div class='nav-util'>"
         "<span class='nav-pill' title='Data freshness'><span class='dot'></span>live</span>"
         f"<button class='btn btn-icon btn-ghost' data-popover-trigger='kb-help-open' title='Shortcuts (?)' aria-label='Keyboard shortcuts'>{_lv2_icon('keyboard')}</button>"

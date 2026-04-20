@@ -99,7 +99,27 @@ body[data-app="logviewer-v2"] textarea{ font:inherit; color:inherit; }
 }
 .topnav .nav-link:hover{ color: var(--ink-1); text-decoration:none; }
 .topnav .nav-link.active{ color: var(--ink-1); border-bottom-color: var(--accent); font-weight: 600; }
-.topnav .nav-link .caret{ margin-left: 4px; opacity:.6; font-size: 9px; }
+.topnav .nav-link .caret{ display: inline-flex; margin-left: 4px; opacity: .6; }
+.topnav .nav-link .caret svg{ width: 10px; height: 10px; }
+.topnav .nav-link[aria-expanded="true"] .caret{ opacity: 1; transform: rotate(180deg); }
+.topnav .nav-item-dropdown{ position: relative; display: inline-flex; height: 100%; }
+.topnav .nav-dropdown{
+  position: absolute; top: 100%; left: 0;
+  min-width: 200px; padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  z-index: 90;
+  display: none;
+}
+.topnav .nav-dropdown.is-open{ display: block; }
+.topnav .nav-dropdown a{
+  display: block; padding: 7px 10px;
+  font-size: 12.5px; color: var(--ink-2); text-decoration: none;
+  border-radius: 4px;
+}
+.topnav .nav-dropdown a:hover{ background: var(--surface-alt); color: var(--ink-1); text-decoration: none; }
 .topnav .nav-util{ margin-left:auto; display:flex; align-items:center; gap: 14px; height: 100%;}
 .topnav .nav-pill{
   display:inline-flex; align-items:center; gap:6px;
