@@ -4379,7 +4379,7 @@ def _lv2_more_filters_popover(
         for opt in options:
             checked = "checked" if opt in selected_vals else ""
             items.append(
-                f"<label><input type='checkbox' data-filter-field='{html_escape(field)}' "
+                f"<label><input type='checkbox' data-mfp-field='{html_escape(field)}' "
                 f"data-filter-value='{html_escape(opt, quote=True)}' {checked}> "
                 f"<span>{html_escape(opt)}</span></label>"
             )
@@ -4437,7 +4437,7 @@ def _lv2_more_filters_popover(
                 active = "active" if (is_bot or "") == v else ""
                 btns.append(
                     f"<button type='button' class='filter-chip-btn solid{(' '+active) if active else ''}' "
-                    f"data-filter-field='is_bot' data-filter-mode='single' data-filter-value='{html_escape(v, quote=True)}' "
+                    f"data-mfp-single='is_bot' data-filter-value='{html_escape(v, quote=True)}' "
                     f"style='margin-right:4px;'>{html_escape(lbl)}</button>"
                 )
             sections.append(
@@ -4470,20 +4470,25 @@ def _lv2_more_filters_popover(
     clear_qs = _lv2_build_qs({k: v for k, v in params.items() if k in keep_keys})
 
     popover_html = (
-        "<div class='popover mfp' id='pop-add-filter' style='top:62px; left:50%;'>"
+        "<div class='popover mfp' id='pop-add-filter'>"
         "<div class='mfp-head'>"
+        "<div>"
         "<h4 style='font-size:13px;font-weight:600;color:var(--ink-1);'>All filters</h4>"
-        "<p style='font-size:12px;color:var(--ink-3);margin-top:2px;'>Tick to filter — changes apply instantly.</p>"
+        "<p style='font-size:12px;color:var(--ink-3);margin-top:2px;'>Tick what you want, then click Apply.</p>"
+        "</div>"
+        f"<button type='button' class='mfp-close btn btn-icon btn-ghost' data-mfp-close aria-label='Close'>{_lv2_icon('x')}</button>"
         "</div>"
         "<div class='mfp-body'>"
         f"<div class='mfp-nav'>{''.join(nav_buttons)}</div>"
         f"<div class='mfp-main'>{''.join(pane_bodies)}</div>"
         "</div>"
         "<div class='mfp-foot'>"
-        f"<span>{total_active} active</span>"
+        f"<span data-mfp-active-count>{total_active} active</span>"
         "<div style='display:flex;gap:6px;'>"
         f"<a class='btn btn-sm' href='/logs?{clear_qs}' "
-        f"hx-get='/logs?{clear_qs}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML'>Clear all</a>"
+        f"hx-get='/logs?{clear_qs}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML' "
+        "data-mfp-close>Clear all</a>"
+        "<button type='button' class='btn btn-sm btn-primary' data-mfp-apply>Apply</button>"
         "</div>"
         "</div>"
         "</div>"
@@ -4618,11 +4623,15 @@ def _lv2_filter_bar(
     chart_qs_off = _lv2_build_qs(params, chart=None, page=None)
     chart_href = f"/logs?{chart_qs_off if show_chart else chart_qs_on}"
     chart_checked = "checked" if show_chart else ""
+    # Anchor handles the toggle via htmx; the checkbox is a non-interactive
+    # visual indicator. This avoids htmx-on-checkbox edge cases and makes the
+    # whole chip clickable.
     chart_toggle = (
-        "<label class='filter-chip-btn solid' style='margin-left:auto;'>"
-        f"<input type='checkbox' {chart_checked} "
-        f"hx-get='{chart_href}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML'> "
-        "Chart</label>"
+        f"<a class='filter-chip-btn solid chart-toggle' href='{chart_href}' "
+        f"hx-get='{chart_href}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML' "
+        "style='margin-left:auto;text-decoration:none;'>"
+        f"<input type='checkbox' {chart_checked} tabindex='-1' aria-hidden='true' "
+        "style='pointer-events:none;margin:0;'> Chart</a>"
     )
 
     return (
@@ -5307,6 +5316,7 @@ def _lv2_page(title: str, active_nav: str, body: str) -> HTMLResponse:
         f"<main class='page'>{body}</main>"
         "<div class='drawer-backdrop' id='drawer-backdrop'></div>"
         "<aside class='drawer' id='drawer' aria-hidden='true'></aside>"
+        "<div class='popover-backdrop' id='popover-backdrop'></div>"
         f"{_lv2_kb_help()}"
         "<script src='/static/logviewer.js' defer></script>"
         "</body></html>"

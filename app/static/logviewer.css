@@ -425,9 +425,32 @@ body[data-app="logviewer-v2"] textarea{ font:inherit; color:inherit; }
 
 .popover-anchor{ position: relative; display: inline-flex; }
 
-/* More filters popover (two-pane) */
-.mfp{ width: 520px; padding: 0; overflow: hidden; }
-.mfp-head{ padding: 10px 14px; border-bottom: 1px solid var(--border);}
+/* More filters popover (two-pane, centered modal) */
+.popover-backdrop{
+  position: fixed; inset: 0;
+  background: rgba(20,18,15,.3);
+  z-index: 405;
+  display: none;
+}
+.popover-backdrop.is-open{ display: block; }
+
+.mfp{
+  width: 520px; max-width: 96vw; max-height: 85vh;
+  padding: 0; overflow: hidden;
+  display: none;
+  position: fixed !important;
+  top: 50% !important;
+  left: 50% !important;
+  transform: translate(-50%, -50%);
+  z-index: 410;
+  box-shadow: var(--shadow-lg);
+}
+.mfp.is-open{ display: flex; flex-direction: column; }
+.mfp-head{
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+}
+.mfp-head .mfp-close{ margin-top:-4px; }
 .mfp-head h4{ font-size: 13px; font-weight: 600; color: var(--ink-1);}
 .mfp-head p{ font-size: 12px; color: var(--ink-3); margin-top: 2px;}
 .mfp-body{ display: flex; }

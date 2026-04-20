@@ -12,10 +12,17 @@
     return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
   }
 
+  function setPopoverBackdrop(on) {
+    var b = document.getElementById('popover-backdrop');
+    if (!b) return;
+    b.classList.toggle('is-open', !!on);
+  }
+
   function closeAllPopovers() {
     document.querySelectorAll('.popover.is-open').forEach(function (p) {
       p.classList.remove('is-open');
     });
+    setPopoverBackdrop(false);
   }
 
   function togglePopover(id) {
@@ -23,7 +30,11 @@
     if (!p) return;
     var wasOpen = p.classList.contains('is-open');
     closeAllPopovers();
-    if (!wasOpen) p.classList.add('is-open');
+    if (!wasOpen) {
+      p.classList.add('is-open');
+      // Modal popovers (.mfp) get the backdrop; regular popovers don't.
+      setPopoverBackdrop(p.classList.contains('mfp'));
+    }
   }
 
   function navigate(url) {
@@ -117,38 +128,74 @@
     });
   });
 
-  // ── More filters: checkbox → URL param sync ───────────────────────────
-  document.addEventListener('change', function (e) {
-    var cb = e.target.closest('[data-filter-field]');
-    if (!cb || !cb.matches('input[type="checkbox"]')) return;
-    var field = cb.getAttribute('data-filter-field');
-    var popover = cb.closest('.popover');
-    // Collect all checked values for this field
-    var checked = popover.querySelectorAll(
-      'input[data-filter-field="' + field + '"]:checked'
-    );
-    var values = Array.from(checked).map(function (el) {
-      return el.getAttribute('data-filter-value');
+  // ── More filters: single-value buttons (is_bot) buffer locally ────────
+  // Clicking toggles active class within the popover; nothing is applied
+  // until the Apply button fires.
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-mfp-single]');
+    if (!btn) return;
+    var popover = btn.closest('.mfp');
+    if (!popover) return;
+    e.preventDefault();
+    var field = btn.getAttribute('data-mfp-single');
+    popover.querySelectorAll('[data-mfp-single="' + field + '"]').forEach(function (b) {
+      b.classList.remove('active');
     });
+    btn.classList.add('active');
+  });
+
+  // ── More filters: Apply → collect state → build URL → navigate ────────
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest('[data-mfp-apply]');
+    if (!btn) return;
+    e.preventDefault();
+    var popover = btn.closest('.mfp');
+    if (!popover) return;
     var url = new URL(window.location.href);
-    if (values.length) url.searchParams.set(field, values.join(','));
-    else               url.searchParams.delete(field);
+
+    // Multi-value fields (checkbox groups keyed by data-mfp-field)
+    var multiFields = new Set();
+    popover.querySelectorAll('[data-mfp-field]').forEach(function (cb) {
+      multiFields.add(cb.getAttribute('data-mfp-field'));
+    });
+    multiFields.forEach(function (f) {
+      var checked = popover.querySelectorAll(
+        'input[data-mfp-field="' + f + '"]:checked'
+      );
+      var vals = Array.from(checked).map(function (el) {
+        return el.getAttribute('data-filter-value');
+      });
+      if (vals.length) url.searchParams.set(f, vals.join(','));
+      else             url.searchParams.delete(f);
+    });
+
+    // Single-value fields (is_bot)
+    var singleFields = new Set();
+    popover.querySelectorAll('[data-mfp-single]').forEach(function (b) {
+      singleFields.add(b.getAttribute('data-mfp-single'));
+    });
+    singleFields.forEach(function (f) {
+      var activeBtn = popover.querySelector('[data-mfp-single="' + f + '"].active');
+      if (activeBtn) {
+        var v = activeBtn.getAttribute('data-filter-value');
+        if (v) url.searchParams.set(f, v);
+        else   url.searchParams.delete(f);
+      }
+    });
+
     url.searchParams.delete('page');
+    closeAllPopovers();
     navigate(url.pathname + url.search);
   });
 
-  // Single-value buttons (is_bot radio-like)
+  // ── More filters: close button (X in header) ──────────────────────────
   document.addEventListener('click', function (e) {
-    var btn = e.target.closest('[data-filter-mode="single"]');
-    if (!btn) return;
-    e.preventDefault();
-    var field = btn.getAttribute('data-filter-field');
-    var value = btn.getAttribute('data-filter-value');
-    var url = new URL(window.location.href);
-    if (value) url.searchParams.set(field, value);
-    else       url.searchParams.delete(field);
-    url.searchParams.delete('page');
-    navigate(url.pathname + url.search);
+    var closer = e.target.closest('[data-mfp-close]');
+    if (!closer) return;
+    // Don't swallow anchor navigation (Clear-all is also [data-mfp-close])
+    var popover = closer.closest('.mfp');
+    if (popover) popover.classList.remove('is-open');
+    setPopoverBackdrop(false);
   });
 
   // ── Search autocomplete ───────────────────────────────────────────────
