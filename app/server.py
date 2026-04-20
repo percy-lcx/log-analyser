@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -1148,8 +1149,30 @@ def page(title: str, body: str) -> HTMLResponse:
         ("Settings", "/settings"),
     ]
     nav_links = "\n".join(
-        f"<a href='{url}' class='nav-link' data-path='{url}'>{name}</a>"
+        f"<a href='{url}' class='topnav-link' data-path='{url}'>{name}</a>"
         for name, url in nav_items
+    )
+
+    # Lift the first <form class="filter-bar">…</form> out of body into the rail.
+    # Route handlers keep emitting the form inline; page() repositions it so the
+    # data lands above the fold. If no filter-bar is present, the rail is omitted.
+    rail_html = ""
+    m = re.search(r"<form[^>]*class=['\"]filter-bar['\"][^>]*>.*?</form>", body, re.DOTALL)
+    if m:
+        rail_html = m.group(0)
+        body = body[:m.start()] + body[m.end():]
+    has_rail = bool(rail_html)
+    layout_class = "with-rail" if has_rail else "no-rail"
+    rail_aside = (
+        f"""<aside class="filter-rail" id="filterRail" data-collapsed="0">
+            <div class="rail-header">
+                <span class="rail-title">Filters</span>
+                <button type="button" class="rail-toggle" id="railToggle"
+                        aria-label="Collapse filters" title="Collapse filters">‹</button>
+            </div>
+            <div class="rail-body">{rail_html}</div>
+        </aside>"""
+        if has_rail else ""
     )
 
     css = """<style>
@@ -1159,77 +1182,137 @@ body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     background: #f1f5f9;
     color: #334155;
-    display: flex;
+    display: block;
     min-height: 100vh;
 }
 
-/* ── Sidebar ── */
-.sidebar {
-    width: 210px;
-    min-width: 210px;
+/* ── Top nav ── */
+.topnav {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    display: flex;
+    align-items: stretch;
     background: #1e293b;
     color: #cbd5e1;
-    display: flex;
-    flex-direction: column;
-    position: fixed;
-    top: 0; left: 0; bottom: 0;
-    overflow-y: auto;
-    z-index: 100;
+    height: 48px;
+    padding: 0 18px;
+    border-bottom: 1px solid #0f172a;
 }
-.sidebar-logo {
-    padding: 18px 16px;
+.topnav-brand {
     font-size: 13px;
     font-weight: 700;
     color: #f8fafc;
-    border-bottom: 1px solid #334155;
+    text-transform: uppercase;
     letter-spacing: 0.5px;
-    text-transform: uppercase;
-    line-height: 1.3;
+    display: flex;
+    align-items: center;
+    padding-right: 22px;
+    margin-right: 8px;
+    border-right: 1px solid #334155;
+    white-space: nowrap;
 }
-.sidebar-logo span { display: block; font-size: 10px; font-weight: 400; color: #64748b; text-transform: none; margin-top: 2px; letter-spacing: 0; }
-.sidebar-section {
-    padding: 14px 16px 4px;
+.topnav-brand span {
     font-size: 10px;
-    color: #475569;
-    text-transform: uppercase;
-    letter-spacing: 1px;
-    font-weight: 600;
+    color: #64748b;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    margin-left: 6px;
 }
-.nav-link {
-    display: block;
-    padding: 7px 16px;
+.topnav-links { display: flex; gap: 2px; align-items: stretch; }
+.topnav-link {
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
     color: #94a3b8;
     text-decoration: none;
     font-size: 13px;
-    border-left: 3px solid transparent;
-    transition: background 0.12s, color 0.12s;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    border-bottom: 2px solid transparent;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
 }
-.nav-link:hover { background: #334155; color: #e2e8f0; border-left-color: #475569; }
-.nav-link.active { background: #0f172a; color: #60a5fa; border-left-color: #3b82f6; font-weight: 600; }
+.topnav-link:hover { color: #e2e8f0; background: #334155; }
+.topnav-link.active { color: #60a5fa; border-bottom-color: #3b82f6; font-weight: 600; }
 
-/* ── Main content ── */
-.main {
-    margin-left: 210px;
-    flex: 1;
+/* ── Layout: top nav + (optional) filter rail + content ── */
+.layout { display: flex; min-height: calc(100vh - 48px); align-items: stretch; }
+.layout.no-rail .filter-rail { display: none; }
+
+/* ── Filter rail (left) ── */
+.filter-rail {
+    width: 280px;
+    min-width: 280px;
+    background: #fff;
+    border-right: 1px solid #e2e8f0;
     display: flex;
     flex-direction: column;
-    min-height: 100vh;
+    position: sticky;
+    top: 48px;
+    align-self: flex-start;
+    max-height: calc(100vh - 48px);
+    overflow-y: auto;
+    transition: width 0.18s, min-width 0.18s;
+    z-index: 40;
+}
+.filter-rail[data-collapsed="1"] { width: 36px; min-width: 36px; overflow: hidden; }
+.filter-rail[data-collapsed="1"] .rail-body,
+.filter-rail[data-collapsed="1"] .rail-title { display: none; }
+.filter-rail[data-collapsed="1"] .rail-toggle { transform: rotate(180deg); }
+.rail-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-bottom: 1px solid #e2e8f0;
+    position: sticky;
+    top: 0;
+    background: #fff;
+    z-index: 1;
+}
+.rail-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: #475569;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.rail-toggle {
+    width: 22px;
+    height: 22px;
+    border: 1px solid #e2e8f0;
+    background: #f8fafc;
+    border-radius: 4px;
+    cursor: pointer;
+    color: #64748b;
+    font-size: 14px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.18s, border-color 0.12s, color 0.12s;
+}
+.rail-toggle:hover { border-color: #94a3b8; color: #1e293b; }
+.rail-body { padding: 8px 10px 14px; }
+
+/* ── Content area (right of rail or full-width) ── */
+.content-area {
+    flex: 1;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
 }
 .topbar {
     background: #fff;
     border-bottom: 1px solid #e2e8f0;
     padding: 14px 24px;
     position: sticky;
-    top: 0;
+    top: 48px;
     z-index: 50;
+    display: flex;
+    align-items: center;
 }
-.topbar { display: flex; align-items: center; }
 .topbar h1 { font-size: 18px; font-weight: 700; color: #1e293b; }
-.content { padding: 20px 24px; flex: 1; overflow: hidden; }
+.content { padding: 20px 24px; flex: 1; overflow: visible; }
 
 /* Hide raw <br> separators between cards */
 .content > br { display: none; }
@@ -1358,6 +1441,124 @@ body {
 .content form.filter-bar .ms-dropdown label { display: flex; flex-direction: row; align-items: center; gap: 6px; padding: 4px 12px; font-size: 13px; cursor: pointer; text-transform: none; font-weight: 400; color: #334155; letter-spacing: 0; }
 .content form.filter-bar .ms-dropdown label:hover { background: #f1f5f9; }
 .content form.filter-bar .ms-dropdown label.ms-hidden { display: none !important; }
+
+/* ── Rail-flavored filter-bar (when lifted into .filter-rail) ── */
+.filter-rail form.filter-bar {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+    gap: 0;
+    flex-direction: column;
+    align-items: stretch;
+}
+.filter-rail form.filter-bar .filter-group {
+    display: block;
+    border: none;
+    border-bottom: 1px solid #f1f5f9;
+    padding: 2px 0;
+    margin: 0;
+}
+.filter-rail form.filter-bar .filter-group:last-of-type { border-bottom: none; }
+.filter-rail form.filter-bar summary.filter-group-label {
+    list-style: none;
+    cursor: pointer;
+    padding: 8px 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #475569;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-radius: 4px;
+}
+.filter-rail form.filter-bar summary.filter-group-label::-webkit-details-marker { display: none; }
+.filter-rail form.filter-bar summary.filter-group-label::before {
+    content: "▸";
+    font-size: 10px;
+    color: #94a3b8;
+    transition: transform 0.12s;
+    display: inline-block;
+}
+.filter-rail form.filter-bar details[open] > summary.filter-group-label::before { transform: rotate(90deg); }
+.filter-rail form.filter-bar summary.filter-group-label:hover { background: #f8fafc; color: #1e293b; }
+.filter-rail form.filter-bar .filter-group-fields {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding: 4px 6px 10px;
+}
+.filter-rail form.filter-bar label { width: 100%; }
+.filter-rail form.filter-bar input:not([type=checkbox]):not([type=hidden]),
+.filter-rail form.filter-bar select,
+.filter-rail form.filter-bar .ms-toggle { width: 100%; }
+.filter-rail form.filter-bar input[type=date],
+.filter-rail form.filter-bar input[type=text][name=search],
+.filter-rail form.filter-bar select[name=per_page] { width: 100%; }
+.filter-rail form.filter-bar .date-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.filter-rail form.filter-bar .date-preset-btn { padding: 0 8px; }
+.filter-rail form.filter-bar .search-hint { font-size: 11px; color: #64748b; margin-top: 2px; }
+/* Sticky view-group with full-width Apply */
+.filter-rail form.filter-bar .filter-group-view {
+    position: sticky;
+    bottom: 0;
+    background: #fff;
+    border-top: 1px solid #e2e8f0;
+    border-bottom: none;
+    margin: 0 -10px;
+    padding: 6px 10px 10px;
+    z-index: 1;
+}
+.filter-rail form.filter-bar .filter-group-view .filter-group-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-left: 0;
+    margin-top: 8px;
+}
+.filter-rail form.filter-bar .filter-group-view button[type=submit] { flex: 1; width: 100%; }
+.filter-rail form.filter-bar .filter-group-view .clear-filters-btn { flex: 0 0 auto; }
+/* Auto-injected "Clear filters" link sits at form bottom in rail; show + full-width */
+.filter-rail form.filter-bar > .clear-filters-btn {
+    display: block;
+    width: 100%;
+    text-align: center;
+    margin-top: 10px;
+    height: 32px;
+    line-height: 32px;
+    padding: 0;
+}
+/* Multi-select dropdowns inside the rail span the rail width */
+.filter-rail form.filter-bar .ms-dropdown {
+    left: 0;
+    right: 0;
+    min-width: 0;
+}
+.filter-rail form.filter-bar .ms-dropdown input.ms-search {
+    box-sizing: border-box; width: 100%; height: 28px; padding: 0 8px;
+    border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px;
+    color: #334155; background: #fff; outline: none;
+}
+.filter-rail form.filter-bar .ms-dropdown input.ms-search:focus {
+    border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.15);
+}
+.filter-rail form.filter-bar .ms-dropdown .ms-actions button {
+    background: none; border: none; padding: 2px 4px; height: auto;
+    font-size: 11px; color: #3b82f6; cursor: pointer;
+    text-transform: none; letter-spacing: 0;
+}
+.filter-rail form.filter-bar .ms-dropdown .ms-actions button:hover { text-decoration: underline; background: none; }
+.filter-rail form.filter-bar .ms-dropdown label {
+    display: flex; flex-direction: row; align-items: center; gap: 6px;
+    padding: 4px 12px; font-size: 13px; cursor: pointer; text-transform: none;
+    font-weight: 400; color: #334155; letter-spacing: 0; width: auto;
+}
+.filter-rail form.filter-bar .ms-dropdown label:hover { background: #f1f5f9; }
+.filter-rail form.filter-bar .ms-dropdown label.ms-hidden { display: none !important; }
 
 /* ── Buttons ── */
 button[type=submit] {
@@ -1624,11 +1825,14 @@ table.sortable tbody tr:last-child td { border-bottom: none; }
 
     js = """<script>
 (function() {
-// Highlight the active nav link based on current path
-var path = window.location.pathname;
-document.querySelectorAll('.nav-link').forEach(function(a) {
-    if (a.getAttribute('data-path') === path) a.classList.add('active');
-});
+// Highlight the active top-nav link based on current path
+(function() {
+    var path = window.location.pathname;
+    document.querySelectorAll('.topnav-link').forEach(function(a) {
+        var p = a.getAttribute('data-path');
+        if (path === p || path.startsWith(p + '/')) a.classList.add('active');
+    });
+})();
 
 const BYTE_UNITS = { B: 1, KB: 1024, MB: 1048576, GB: 1073741824, TB: 1099511627776 };
 function parseNumber(s) {
@@ -2014,6 +2218,32 @@ document.addEventListener("DOMContentLoaded", () => {
             form.appendChild(a);
         });
     })();
+
+    // Filter rail: collapse toggle (persisted) + per-group accordion state (persisted).
+    (function() {
+        var rail = document.getElementById('filterRail');
+        var btn  = document.getElementById('railToggle');
+        if (rail && btn) {
+            if (localStorage.getItem('logdash.rail.collapsed') === '1') {
+                rail.setAttribute('data-collapsed', '1');
+            }
+            btn.addEventListener('click', function() {
+                var collapsed = rail.getAttribute('data-collapsed') === '1';
+                rail.setAttribute('data-collapsed', collapsed ? '0' : '1');
+                localStorage.setItem('logdash.rail.collapsed', collapsed ? '0' : '1');
+                if (window.resizeAllECharts) setTimeout(resizeAllECharts, 220);
+            });
+        }
+        document.querySelectorAll('.filter-rail details[data-group]').forEach(function(d) {
+            var key = 'logdash.group.' + d.getAttribute('data-group');
+            var saved = localStorage.getItem(key);
+            if (saved === '1') d.open = true;
+            else if (saved === '0') d.open = false;
+            d.addEventListener('toggle', function() {
+                localStorage.setItem(key, d.open ? '1' : '0');
+            });
+        });
+    })();
 });
 
 // Date-range presets used by report filter bars and the log viewer form.
@@ -2061,16 +2291,20 @@ window.applyDatePreset = function(form, days) {
     {css}
 </head>
 <body>
-    <nav class="sidebar">
-        <div class="sidebar-logo">Log Dashboard<span>nginx analytics</span></div>
-        <div class="sidebar-section">Reports</div>
-        {nav_links}
-    </nav>
-    <div class="main">
-        <div class="topbar"><h1>{title}</h1></div>
-        <div class="content">
-            {body}
-        </div>
+    <header class="topnav">
+        <div class="topnav-brand">Log Dashboard<span>nginx analytics</span></div>
+        <nav class="topnav-links">
+            {nav_links}
+        </nav>
+    </header>
+    <div class="layout {layout_class}">
+        {rail_aside}
+        <main class="content-area">
+            <div class="topbar"><h1>{title}</h1></div>
+            <div class="content">
+                {body}
+            </div>
+        </main>
     </div>
     {js}
 </body>
@@ -4002,8 +4236,8 @@ def log_viewer(
     body += f"<input type='hidden' name='mode' value='{mode}'>"
 
     # Group 1: When & what — dates, quick ranges, search
-    body += "<div class='filter-group'>"
-    body += "<div class='filter-group-label'>When &amp; what</div>"
+    body += "<details class='filter-group' data-group='when' open>"
+    body += "<summary class='filter-group-label'>When &amp; what</summary>"
     body += "<div class='filter-group-fields'>"
     body += f"<label>From<input type='date' name='from' value='{date_from or ''}' min='{min_date}' max='{max_date}'></label>"
     body += f"<label>To<input type='date' name='to' value='{date_to or ''}' min='{min_date}' max='{max_date}'></label>"
@@ -4031,19 +4265,19 @@ def log_viewer(
         f"{html_escape(_search_hint_text(search_field, search_mode))}"
         f"</div>"
     )
-    body += "</div></div>"
+    body += "</div></details>"
 
     # Group 2: Request — status + method
-    body += "<div class='filter-group'>"
-    body += "<div class='filter-group-label'>Request</div>"
+    body += "<details class='filter-group' data-group='request'>"
+    body += "<summary class='filter-group-label'>Request</summary>"
     body += "<div class='filter-group-fields'>"
     body += multi_select_html("status", status_opts, [str(c) for c in status_codes], "Status")
     body += multi_select_html("method", method_opts, methods, "Method")
-    body += "</div></div>"
+    body += "</div></details>"
 
     # Group 3: Traffic — bot/human binary + bot family + bot category
-    body += "<div class='filter-group'>"
-    body += "<div class='filter-group-label'>Traffic</div>"
+    body += "<details class='filter-group' data-group='traffic'>"
+    body += "<summary class='filter-group-label'>Traffic</summary>"
     body += "<div class='filter-group-fields'>"
     body += "<label>Bot<select name='is_bot'><option value=''>All</option>"
     for val, lbl in [("true", "Bots only"), ("false", "Humans only")]:
@@ -4052,37 +4286,37 @@ def log_viewer(
     body += "</select></label>"
     body += multi_select_html("bot_family", bot_family_opts, bot_families, "Bot family")
     body += multi_select_html("bot_category", bot_category_opts, bot_categories, "Bot category")
-    body += "</div></div>"
+    body += "</div></details>"
 
     # Group 4: Content — URL group, asset/content scope toggles
-    body += "<div class='filter-group'>"
-    body += "<div class='filter-group-label'>Content</div>"
+    body += "<details class='filter-group' data-group='content'>"
+    body += "<summary class='filter-group-label'>Content</summary>"
     body += "<div class='filter-group-fields'>"
     body += multi_select_html("url_group", url_group_opts, url_groups, "URL group")
     body += f"<label><input type='checkbox' name='include_assets' value='true' {assets_checked}> Include assets</label>"
     body += f"<label><input type='checkbox' name='content_only' value='true' {content_checked}> Content only</label>"
-    body += "</div></div>"
+    body += "</div></details>"
 
     # Group 5: Geo & language
-    body += "<div class='filter-group'>"
-    body += "<div class='filter-group-label'>Geo &amp; language</div>"
+    body += "<details class='filter-group' data-group='geo'>"
+    body += "<summary class='filter-group-label'>Geo &amp; language</summary>"
     body += "<div class='filter-group-fields'>"
     body += multi_select_html("locale", locale_opts, locales, "Locale")
     if has_country_col:
         body += multi_select_html("country", country_opts, countries, "Country")
-    body += "</div></div>"
+    body += "</div></details>"
 
     # Group 6: Acquisition — referer + UTM
-    body += "<div class='filter-group'>"
-    body += "<div class='filter-group-label'>Acquisition</div>"
+    body += "<details class='filter-group' data-group='acquisition'>"
+    body += "<summary class='filter-group-label'>Acquisition</summary>"
     body += "<div class='filter-group-fields'>"
     body += multi_select_html("referer_type", referer_type_opts, referer_types, "Referer type")
     body += multi_select_html("utm_source", utm_source_opts, utm_sources, "UTM source")
-    body += "</div></div>"
+    body += "</div></details>"
 
     # Group 7: This view — mode-specific controls + Apply
-    body += "<div class='filter-group filter-group-view'>"
-    body += "<div class='filter-group-label'>This view</div>"
+    body += "<details class='filter-group filter-group-view' data-group='view' open>"
+    body += "<summary class='filter-group-label'>This view</summary>"
     body += "<div class='filter-group-fields'>"
     if mode == "rows":
         body += "<label>Per page<select name='per_page'>"
@@ -4132,7 +4366,7 @@ def log_viewer(
     body += "<button type='submit'>Apply</button>"
     body += "<a class='clear-filters-btn' href='/logs'>Clear filters</a>"
     body += "</span>"
-    body += "</div></div>"
+    body += "</div></details>"
 
     body += "</form>"
 
