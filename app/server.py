@@ -4599,11 +4599,46 @@ def _lv2_filter_bar(
         preset_link(14, "14d", active_preset_days == 14),
         preset_link(30, "30d", active_preset_days == 30),
     ])
+    # Hidden inputs for the custom-range form so other filters survive submit.
+    dr_hidden_parts: List[str] = []
+    for hk, hv in params.items():
+        if hk in ("from", "to", "page") or hv in (None, ""):
+            continue
+        dr_hidden_parts.append(
+            f"<input type='hidden' name='{html_escape(hk)}' value='{html_escape(str(hv), quote=True)}'>"
+        )
+    dr_hidden_html = "".join(dr_hidden_parts)
+    dr_clear_qs = _lv2_build_qs(params, **{"from": None, "to": None, "page": None})
+    _dr_input_style = (
+        "border:1px solid var(--border);border-radius:4px;padding:5px 8px;"
+        "font-size:13px;background:var(--surface);color:var(--ink-1);width:100%;"
+    )
     date_range_html = (
         "<div class='date-range'>"
+        "<span class='dr-trigger' data-popover-trigger='pop-date-range' "
+        "role='button' tabindex='0' "
+        "style='display:inline-flex;align-items:center;gap:6px;cursor:pointer;'>"
         f"{_lv2_icon('calendar')}"
         f"<span class='dr-label'>{html_escape(range_label)}</span>"
+        "</span>"
         f"<div class='dr-presets'>{preset_btns}</div>"
+        "<div class='popover' id='pop-date-range' "
+        "style='top:38px; left:0; min-width:260px;'>"
+        "<div class='popover-title'>Custom date range</div>"
+        "<form method='get' action='/logs'>"
+        f"{dr_hidden_html}"
+        "<div class='pop-row'><label>From</label>"
+        f"<input type='date' name='from' value='{html_escape(date_from or '', quote=True)}' "
+        f"style='{_dr_input_style}'></div>"
+        "<div class='pop-row'><label>To</label>"
+        f"<input type='date' name='to' value='{html_escape(date_to or '', quote=True)}' "
+        f"style='{_dr_input_style}'></div>"
+        "<div class='pop-actions'>"
+        f"<a href='/logs?{dr_clear_qs}' class='btn btn-sm btn-ghost'>All time</a>"
+        "<button type='submit' class='btn btn-sm btn-primary'>Apply</button>"
+        "</div>"
+        "</form>"
+        "</div>"
         "</div>"
     )
 
