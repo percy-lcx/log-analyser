@@ -941,3 +941,90 @@ body[data-app="logviewer-v2"] form.filter-bar input[type='checkbox']{ accent-col
 
 /* sr-only */
 .sr-only{ position: absolute; width:1px; height:1px; padding:0; margin: -1px; overflow:hidden; clip: rect(0,0,0,0); white-space: nowrap; border:0;}
+
+/* ── Drawer (slide-out request detail) ── */
+.drawer-backdrop{
+  position: fixed; inset: 0;
+  background: rgba(20,18,15,.3);
+  z-index: 300;
+  opacity: 0; pointer-events: none;
+  transition: opacity .18s;
+}
+.drawer-backdrop.open{ opacity: 1; pointer-events: auto;}
+.drawer{
+  position: fixed; top: 0; right: 0; bottom: 0;
+  width: 560px; max-width: 96vw;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  z-index: 310;
+  transform: translateX(100%);
+  transition: transform .22s cubic-bezier(.2,.8,.2,1);
+  display: flex; flex-direction: column;
+}
+.drawer.open{ transform: translateX(0);}
+.drawer-head{
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+  display:flex; align-items:center; gap: 12px;
+}
+.drawer-head h3{ font-size: 14px; font-weight: 600; color: var(--ink-1); flex: 1;}
+.drawer-head .dh-nav{ display:flex; gap: 2px;}
+.drawer-head .dh-nav button{
+  width: 26px; height: 26px; border-radius: 4px;
+  display:inline-flex; align-items:center; justify-content:center;
+  color: var(--ink-3);
+}
+.drawer-head .dh-nav button:hover{ background: var(--surface-alt); color: var(--ink-1);}
+.drawer-summary{
+  padding: 12px 18px; display:flex; flex-wrap: wrap; gap: 16px 28px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-alt);
+}
+.drawer-summary .ds-item{ display:flex; flex-direction: column; gap: 2px; min-width: 80px;}
+.drawer-summary .ds-label{ font-size: 10px; text-transform: uppercase; letter-spacing:.08em; color: var(--ink-4); font-weight: 600;}
+.drawer-summary .ds-value{ font-size: 13px; color: var(--ink-1); font-weight: 500; font-variant-numeric: tabular-nums;}
+.drawer-summary .ds-value.mono{ font-family: var(--font-mono); font-size: 12px;}
+.drawer-body{ flex:1; overflow: auto; padding: 14px 18px;}
+.drawer-body h4{
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--ink-3); font-weight: 700;
+  margin: 14px 0 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.drawer-body h4:first-child{ margin-top: 0; padding-top: 0; border-top: none;}
+.drawer-body .kv{
+  display:grid;
+  grid-template-columns: 120px 1fr;
+  gap: 6px 14px;
+  padding: 2px 0;
+  font-size: 12.5px;
+}
+.drawer-body .kv .k{ color: var(--ink-3); font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap;}
+.drawer-body .kv .v{ color: var(--ink-1); word-break: break-all; font-family: var(--font-mono); font-size: 11.5px;}
+.drawer-body .kv .v.plain{ font-family: var(--font-sans); font-size: 12.5px;}
+.drawer-body pre.ua{
+  font-family: var(--font-mono); font-size: 11.5px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  padding: 8px 10px; border-radius: var(--radius);
+  white-space: pre-wrap; word-break: break-all;
+  color: var(--ink-2);
+  margin-top: 4px;
+}
+.drawer-body .quick-filters{
+  display:flex; flex-wrap: wrap; gap: 6px;
+  margin-top: 6px;
+}
+.drawer-body .quick-filters .qf{
+  display:inline-flex; align-items:center; gap: 4px;
+  font-size: 11.5px;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--ink-2);
+}
+.drawer-body .quick-filters .qf:hover{ border-color: var(--accent); color: var(--accent);}
+.drawer-body .quick-filters .qf .qf-icon{ color: var(--ink-4);}
