@@ -628,6 +628,36 @@
     } catch (e) { fail(); }
   };
 
+  // Close the Insights dropdown when a click lands outside it.
+  document.addEventListener('click', function (e) {
+    document.querySelectorAll('.insights-jump details[open]').forEach(function (d) {
+      if (!d.contains(e.target)) d.open = false;
+    });
+  });
+
+  // View / preset chips are baked into the page chrome and not re-rendered
+  // when filters change via htmx. Before the chip's click reaches htmx or the
+  // browser, copy from/to from the current URL onto the chip's target so the
+  // user's live date range wins over the stale rendered one.
+  document.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest && e.target.closest('a.view-chip, a.ij-item');
+    if (!a) return;
+    var href = a.getAttribute('href');
+    if (!href) return;
+    var curr = new URLSearchParams(window.location.search);
+    var from = curr.get('from');
+    var to = curr.get('to');
+    if (!from && !to) return;
+    try {
+      var u = new URL(href, window.location.origin);
+      if (from) u.searchParams.set('from', from); else u.searchParams.delete('from');
+      if (to) u.searchParams.set('to', to); else u.searchParams.delete('to');
+      var newHref = u.pathname + u.search;
+      a.setAttribute('href', newHref);
+      if (a.hasAttribute('hx-get')) a.setAttribute('hx-get', newHref);
+    } catch (_) { /* ignore malformed URLs */ }
+  }, true);
+
   // Keep the Rows/Group/Timeseries segmented control in sync with the URL.
   // The control lives outside #results, so it isn't re-rendered on swap — we
   // re-apply the .active class from the current location.

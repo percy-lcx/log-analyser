@@ -1410,14 +1410,6 @@ body {
 .content form.filter-bar .date-preset-btn { height: 34px; padding: 0 12px; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; color: #475569; font-size: 13px; font-weight: 500; cursor: pointer; transition: border-color 0.12s, color 0.12s, background 0.12s; }
 .content form.filter-bar .date-preset-btn:hover { border-color: #3b82f6; color: #1d4ed8; background: #eff6ff; }
 
-/* ── Insights strip (preset chips above filter bar) ── */
-.content .insights-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 12px; margin: 0 0 10px 0; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
-.content .insights-strip .insights-lead { font-size: 11px; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 4px; }
-.content .insights-strip .insights-cat { font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.4px; margin-right: 2px; }
-.content .insights-strip .insights-sep { width: 1px; height: 18px; background: #cbd5e1; margin: 0 4px; display: inline-block; }
-.content .insights-strip .insights-chip { display: inline-flex; align-items: center; padding: 3px 10px; background: #fff; border: 1px solid #cbd5e1; border-radius: 999px; color: #334155; font-size: 12px; font-weight: 500; text-decoration: none; transition: border-color 0.12s, color 0.12s, background 0.12s; }
-.content .insights-strip .insights-chip:hover { border-color: #3b82f6; color: #1d4ed8; background: #eff6ff; }
-
 /* ── Filter-group wrappers inside .filter-bar ── */
 .content form.filter-bar { flex-direction: column; align-items: stretch; gap: 0; padding: 4px 18px; }
 .content form.filter-bar .filter-group { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px dashed #e2e8f0; }
@@ -4180,6 +4172,11 @@ def _resolve_log_preset(
         params["status"] = extra_status
     if extra_url_group:
         params["url_group"] = extra_url_group
+    # Carry the preset key forward under a distinct name so the render path
+    # can highlight it in the Insights dropdown without re-entering the
+    # redirect loop (the handler only redirects on ?preset=, not on
+    # ?active_preset=).
+    params["active_preset"] = name
     qs = "&".join(f"{k}={v}" for k, v in params.items())
     return RedirectResponse(url=f"/logs?{qs}", status_code=302)
 
@@ -4219,30 +4216,65 @@ def _search_hint_text(field: str, mode: str) -> str:
     return f"{phrase} {verb} the text{tail}"
 
 
-def _render_insights_strip(date_from: Optional[str], date_to: Optional[str]) -> str:
-    """Chip strip above the filter bar: one-click shortcuts to preset views.
+def _render_insights_strip(
+    date_from: Optional[str],
+    date_to: Optional[str],
+    mode: str = "rows",
+    active_preset: Optional[str] = None,
+) -> str:
+    """Single-line 'Jump to view ▾' dropdown (Group + Timeseries modes only).
 
-    Each chip redirects via /logs?preset=... which _resolve_log_preset expands
-    into canonical filter params, preserving the user's current From/To dates.
+    The dropdown remembers the current view: when `active_preset` matches a
+    chip, its label becomes the summary text ("Jump to: Top 404 ▾") and it's
+    highlighted in the menu. Dates in the URL are preserved.
+
+    Returns "" in Rows mode — presets only make sense for aggregated views.
     """
+    if mode not in ("group", "timeseries"):
+        return ""
+
     date_qs = ""
     if date_from:
-        date_qs += f"&from={html_escape(date_from)}"
+        date_qs += f"&from={html_escape(date_from, quote=True)}"
     if date_to:
-        date_qs += f"&to={html_escape(date_to)}"
+        date_qs += f"&to={html_escape(date_to, quote=True)}"
 
-    parts: List[str] = ["<div class='insights-strip'>"]
-    parts.append("<span class='insights-lead'>Insights</span>")
-    for cat_idx, (category, chips) in enumerate(LOG_PRESET_CHIP_GROUPS):
-        if cat_idx > 0:
-            parts.append("<span class='insights-sep' aria-hidden='true'></span>")
-        parts.append(f"<span class='insights-cat'>{html_escape(category)}</span>")
+    label_for: Dict[str, str] = {}
+    for _, chips in LOG_PRESET_CHIP_GROUPS:
+        for key, label in chips:
+            label_for[key] = label
+
+    active_label = label_for.get(active_preset or "")
+    summary_text = (
+        f"Jump to: <strong>{html_escape(active_label)}</strong>"
+        if active_label else "Jump to a view"
+    )
+
+    parts: List[str] = ["<div class='insights-jump'>"]
+    parts.append("<span class='ij-lead'>Insights</span>")
+    parts.append("<details>")
+    parts.append(f"<summary>{summary_text}</summary>")
+    parts.append("<div class='ij-menu' role='menu'>")
+
+    for category, chips in LOG_PRESET_CHIP_GROUPS:
+        parts.append("<div class='ij-col'>")
+        parts.append(f"<div class='ij-cat'>{html_escape(category)}</div>")
         for preset_key, label in chips:
-            href = f"/logs?preset={html_escape(preset_key)}{date_qs}"
-            parts.append(
-                f"<a class='insights-chip' href='{href}'>{html_escape(label)}</a>"
-            )
-    parts.append("</div>")
+            cls = "ij-item active" if preset_key == active_preset else "ij-item"
+            href = f"/logs?preset={html_escape(preset_key, quote=True)}{date_qs}"
+            parts.append(f"<a class='{cls}' href='{html_escape(href, quote=True)}'>{html_escape(label)}</a>")
+        parts.append("</div>")
+
+    parts.append("</div>")   # .ij-menu
+    parts.append("</details>")
+
+    if active_preset:
+        clear_href = f"/logs?{date_qs.lstrip('&')}" if date_qs else "/logs"
+        parts.append(
+            f"<a class='ij-clear' href='{html_escape(clear_href, quote=True)}'>Clear view</a>"
+        )
+
+    parts.append("</div>")   # .insights-jump
     return "".join(parts)
 
 
@@ -4388,8 +4420,8 @@ def _lv2_page_head(title: str, count_text: str, mode: str, params: Dict[str, Any
     modes = [("rows", "Rows"), ("group", "Group"), ("timeseries", "Timeseries")]
     seg_links = "".join(
         f"<a data-mode-val='{mv}' class='{'active' if mode == mv else ''}' "
-        f"href='/logs?{_lv2_build_qs(params, mode=mv, page=None)}' "
-        f"hx-get='/logs?{_lv2_build_qs(params, mode=mv, page=None)}' "
+        f"href='/logs?{_lv2_build_qs(params, mode=mv, page=None, active_preset=None)}' "
+        f"hx-get='/logs?{_lv2_build_qs(params, mode=mv, page=None, active_preset=None)}' "
         f"hx-target='#results' hx-push-url='true' hx-swap='innerHTML'>{html_escape(ml)}</a>"
         for mv, ml in modes
     )
@@ -4403,32 +4435,6 @@ def _lv2_page_head(title: str, count_text: str, mode: str, params: Dict[str, Any
         "</div>"
         "</div>"
     )
-
-
-def _lv2_presets_strip(date_from: Optional[str], date_to: Optional[str]) -> str:
-    """Preset chip strip: one-click shortcuts to Group / Timeseries views.
-
-    Sits below the Saved Views strip on the /logs page. Each chip redirects
-    via /logs?preset=<key>, which _resolve_log_preset expands into the full
-    filter/mode params. The user's current date range is preserved so the
-    preset reuses the chosen window.
-    """
-    date_qs = ""
-    if date_from:
-        date_qs += f"&from={html_escape(date_from, quote=True)}"
-    if date_to:
-        date_qs += f"&to={html_escape(date_to, quote=True)}"
-
-    parts: List[str] = ["<div class='presets-strip'>", "<span class='presets-label'>Presets</span>"]
-    for cat_idx, (category, chips) in enumerate(LOG_PRESET_CHIP_GROUPS):
-        if cat_idx > 0:
-            parts.append("<span class='presets-divider' aria-hidden='true'></span>")
-        parts.append(f"<span class='presets-cat'>{html_escape(category)}</span>")
-        for preset_key, label in chips:
-            href = f"/logs?preset={html_escape(preset_key, quote=True)}{date_qs}"
-            parts.append(f"<a class='preset-chip' href='{html_escape(href, quote=True)}'>{html_escape(label)}</a>")
-    parts.append("</div>")
-    return "".join(parts)
 
 
 def _lv2_views_strip(active_view: Optional[str], date_from: Optional[str], date_to: Optional[str]) -> str:
@@ -5753,6 +5759,7 @@ def log_viewer(
     bt0: Optional[int] = Query(None),
     bt1: Optional[int] = Query(None),
     chart_metric: Optional[str] = Query(None),
+    active_preset: Optional[str] = Query(None),
 ):
     if preset:
         return _resolve_log_preset(
@@ -5912,6 +5919,7 @@ def log_viewer(
     if mode != "rows": ui_params["mode"] = mode
     if show_chart: ui_params["chart"] = "1"
     if show_chart and chart_metric != "requests": ui_params["chart_metric"] = chart_metric
+    if active_preset: ui_params["active_preset"] = active_preset
     if sort and sort != "ts_utc": ui_params["sort"] = sort
     if order and order != "desc": ui_params["order"] = order
     if per_page != 100: ui_params["per_page"] = str(per_page)
@@ -5923,7 +5931,6 @@ def log_viewer(
     chrome_html = (
         _lv2_page_head("Logs", "", mode, ui_params)
         + _lv2_views_strip(view, date_from, date_to)
-        + _lv2_presets_strip(date_from, date_to)
         + _lv2_filter_bar(
             search=search,
             date_from=date_from,
@@ -5963,7 +5970,8 @@ def log_viewer(
     # ── Early-return when there's no data at all ──
     if not paths:
         results_inner = (
-            _lv2_active_chips(ui_params, schema_cols)
+            _render_insights_strip(date_from, date_to, mode=mode, active_preset=active_preset)
+            + _lv2_active_chips(ui_params, schema_cols)
             + "<div class='lv2-card'><div class='empty'>No ingested data for this range. "
               "Adjust the date or ingest more partitions.</div></div>"
         )
@@ -6014,21 +6022,26 @@ def log_viewer(
     chips_html = _lv2_active_chips(ui_params, schema_cols,
                                    op_includes=op_includes, op_excludes=op_excludes,
                                    raw_search=raw_search)
+    # Insights dropdown lives INSIDE #results so htmx mode toggles re-render
+    # it alongside the mode-specific body (it's hidden in Rows mode).
+    insights_html = _render_insights_strip(
+        date_from, date_to, mode=mode, active_preset=active_preset,
+    )
 
     if mode == "group":
         if not group_by:
-            inner = chips_html + "<div class='lv2-card'><div class='empty'>Pick a Group by column to aggregate.</div></div>"
+            inner = insights_html + chips_html + "<div class='lv2-card'><div class='empty'>Pick a Group by column to aggregate.</div></div>"
         else:
             note = ""
             if sort_by == "waste_score":
                 note = "<div class='lv2-note'>Waste-score sort forces <em>Bots only</em>.</div>"
-            inner = chips_html + note + "<div class='lv2-card'>" + _render_log_group_mode(
+            inner = insights_html + chips_html + note + "<div class='lv2-card'>" + _render_log_group_mode(
                 paths, where,
                 group_by=group_by, group_by_2=group_by_2, sort_by=sort_by, limit=int(limit),
                 has_country_col=has_country_col, is_bot=is_bot,
             ) + "</div>"
     elif mode == "timeseries":
-        inner = chips_html + "<div class='lv2-card'>" + _render_log_timeseries_mode(
+        inner = insights_html + chips_html + "<div class='lv2-card'>" + _render_log_timeseries_mode(
             paths, where,
             date_from=date_from, date_to=date_to,
             bucket=(bucket or ""), stack_by=stack_by,
@@ -6108,7 +6121,6 @@ def log_viewer(
     chrome_html = (
         _lv2_page_head("Logs", count_text, mode, ui_params)
         + _lv2_views_strip(view, date_from, date_to)
-        + _lv2_presets_strip(date_from, date_to)
         + _lv2_filter_bar(
             search=search,
             date_from=date_from,
