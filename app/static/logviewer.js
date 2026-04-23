@@ -248,6 +248,35 @@
     setPopoverBackdrop(false);
   });
 
+  // ── More filters: per-section search (type-to-filter checkboxes) ──────
+  var checklistFilterTimers = new WeakMap();
+  function applyChecklistFilter(input) {
+    var wrap = input.closest('.pop-checklist-wrap');
+    if (!wrap) return;
+    var list = wrap.querySelector('.pop-checklist');
+    var meta = wrap.querySelector('[data-checklist-meta]');
+    if (!list) return;
+    var q = (input.value || '').trim().toLowerCase();
+    var labels = list.querySelectorAll('label');
+    var shown = 0;
+    labels.forEach(function (lbl) {
+      var txt = (lbl.textContent || '').trim().toLowerCase();
+      var match = !q || txt.indexOf(q) !== -1;
+      lbl.classList.toggle('ms-hidden', !match);
+      if (match) shown++;
+    });
+    if (meta) meta.textContent = q ? (shown + ' of ' + labels.length) : '';
+  }
+  document.addEventListener('input', function (e) {
+    var input = e.target.closest('.pop-checklist-search');
+    if (!input) return;
+    var prev = checklistFilterTimers.get(input);
+    if (prev) clearTimeout(prev);
+    checklistFilterTimers.set(input, setTimeout(function () {
+      applyChecklistFilter(input);
+    }, 120));
+  });
+
   // ── Search autocomplete ───────────────────────────────────────────────
   // When the user types inside the search input, detect the current token
   // (by cursor position), parse its `key:value` form, and fetch /logs/autocomplete.

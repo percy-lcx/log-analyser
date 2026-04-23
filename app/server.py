@@ -4243,6 +4243,16 @@ LV2_COLUMN_LABELS: Dict[str, str] = {
 }
 
 
+_LV2_STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def _lv2_static_ver(name: str) -> str:
+    try:
+        return str(int((_LV2_STATIC_DIR / name).stat().st_mtime))
+    except OSError:
+        return "0"
+
+
 def _lv2_icon(name: str, cls: str = "") -> str:
     extra = f" class='{cls}'" if cls else ""
     return f"<svg{extra} width='14' height='14' aria-hidden='true'><use href='/static/icons.svg#{name}'/></svg>"
@@ -4407,7 +4417,19 @@ def _lv2_more_filters_popover(
                 f"data-filter-value='{html_escape(opt, quote=True)}' {checked}> "
                 f"<span>{html_escape(opt)}</span></label>"
             )
-        return f"<div class='pop-checklist'>{''.join(items)}</div>"
+        list_html = f"<div class='pop-checklist'>{''.join(items)}</div>"
+        if len(options) <= 6:
+            return list_html
+        placeholder = html_escape(field.replace("_", " "), quote=True)
+        return (
+            "<div class='pop-checklist-wrap'>"
+            f"<input type='text' class='pop-checklist-search' "
+            f"placeholder='Filter {placeholder}…' "
+            "autocomplete='off' spellcheck='false'>"
+            f"{list_html}"
+            "<div class='pop-checklist-meta' data-checklist-meta></div>"
+            "</div>"
+        )
 
     # Panes (category → list of (label, field, options, selected_list))
     panes: List[Tuple[str, str, List[Tuple[str, str, List[str], List[str]]]]] = [
@@ -5373,7 +5395,7 @@ def _lv2_page(title: str, active_nav: str, body: str) -> HTMLResponse:
         "<link rel='preconnect' href='https://fonts.googleapis.com'>"
         "<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>"
         "<link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap'>"
-        "<link rel='stylesheet' href='/static/logviewer.css'>"
+        f"<link rel='stylesheet' href='/static/logviewer.css?v={_lv2_static_ver('logviewer.css')}'>"
         "<script src='https://unpkg.com/htmx.org@1.9.12'></script>"
         "<script src='https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js'></script>"
         "</head>"
@@ -5384,7 +5406,7 @@ def _lv2_page(title: str, active_nav: str, body: str) -> HTMLResponse:
         "<aside class='drawer' id='drawer' aria-hidden='true'></aside>"
         "<div class='popover-backdrop' id='popover-backdrop'></div>"
         f"{_lv2_kb_help()}"
-        "<script src='/static/logviewer.js' defer></script>"
+        f"<script src='/static/logviewer.js?v={_lv2_static_ver('logviewer.js')}' defer></script>"
         "</body></html>"
     )
     return HTMLResponse(html)

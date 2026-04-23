@@ -445,7 +445,7 @@ body[data-app="logviewer-v2"] textarea{ font:inherit; color:inherit; }
 
 .popover-anchor{ position: relative; display: inline-flex; }
 
-/* More filters popover (two-pane, centered modal) */
+/* More filters popover (two-pane, viewport-filling modal) */
 .popover-backdrop{
   position: fixed; inset: 0;
   background: rgba(20,18,15,.3);
@@ -455,13 +455,10 @@ body[data-app="logviewer-v2"] textarea{ font:inherit; color:inherit; }
 .popover-backdrop.is-open{ display: block; }
 
 .mfp{
-  width: 520px; max-width: 96vw; max-height: 85vh;
+  position: fixed !important;
+  inset: 32px;
   padding: 0; overflow: hidden;
   display: none;
-  position: fixed !important;
-  top: 50% !important;
-  left: 50% !important;
-  transform: translate(-50%, -50%);
   z-index: 410;
   box-shadow: var(--shadow-lg);
 }
@@ -469,15 +466,18 @@ body[data-app="logviewer-v2"] textarea{ font:inherit; color:inherit; }
 .mfp-head{
   padding: 10px 14px; border-bottom: 1px solid var(--border);
   display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+  flex: 0 0 auto;
 }
 .mfp-head .mfp-close{ margin-top:-4px; }
 .mfp-head h4{ font-size: 13px; font-weight: 600; color: var(--ink-1);}
 .mfp-head p{ font-size: 12px; color: var(--ink-3); margin-top: 2px;}
-.mfp-body{ display: flex; }
+.mfp-body{ display: flex; flex: 1; min-height: 0; }
 .mfp-nav{
-  width: 140px; border-right: 1px solid var(--border);
-  padding: 6px; background: var(--surface-alt);
+  width: 180px; border-right: 1px solid var(--border);
+  padding: 8px; background: var(--surface-alt);
   display: flex; flex-direction: column; gap: 2px;
+  flex: 0 0 auto;
+  overflow-y: auto;
 }
 .mfp-nav button{
   text-align: left; padding: 6px 10px; border-radius: 4px;
@@ -487,13 +487,36 @@ body[data-app="logviewer-v2"] textarea{ font:inherit; color:inherit; }
 .mfp-nav button:hover{ background: var(--surface);}
 .mfp-nav button.active{ background: var(--surface); color: var(--ink-1); font-weight: 600; box-shadow: var(--shadow-sm);}
 .mfp-nav .count{ background: var(--accent); color:#fff; border-radius: 999px; padding: 0 6px; font-size: 10px; line-height: 16px; min-width: 16px; text-align: center;}
-.mfp-main{ flex: 1; padding: 12px 14px; min-height: 260px; max-height: 380px; overflow: auto;}
+.mfp-main{ flex: 1; padding: 16px 20px; min-height: 0; overflow: auto;}
 .mfp-foot{
   padding: 10px 14px; border-top: 1px solid var(--border);
   display: flex; justify-content: space-between; align-items: center;
   background: var(--surface-alt);
   font-size: 12px; color: var(--ink-3);
+  flex: 0 0 auto;
 }
+
+/* Per-section search inside popover checklists */
+.pop-checklist-wrap{ display: flex; flex-direction: column; gap: 6px; }
+.pop-checklist-search{
+  width: 100%; box-sizing: border-box;
+  height: 30px; padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 12.5px; color: var(--ink-1);
+  background: var(--surface);
+  outline: none;
+}
+.pop-checklist-search:focus{
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.pop-checklist-meta{
+  font-size: 11px; color: var(--ink-3);
+  padding: 0 2px;
+  min-height: 14px;
+}
+.popover .pop-checklist label.ms-hidden{ display: none !important; }
 .filter-chip-btn.solid.active{ border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft);}
 
 /* ── Table ── */
