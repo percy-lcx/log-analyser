@@ -149,6 +149,105 @@
     if (cb) cb.checked = on;
   });
 
+  // ── Filter-bar sync: chrome sits outside #results so we must re-align
+  //    the date label, preset .active, from/to inputs, and relative-preset
+  //    hrefs with the URL after every htmx swap.
+  function syncDateRangeUi() {
+    var url = new URL(window.location.href);
+    var from = url.searchParams.get('from') || '';
+    var to = url.searchParams.get('to') || '';
+    var dr = document.querySelector('[data-date-range]');
+    if (!dr) return;
+    var availFrom = dr.getAttribute('data-avail-from') || '';
+    var availTo = dr.getAttribute('data-avail-to') || '';
+
+    // Date label
+    var isAllTime = availFrom && availTo && from === availFrom && to === availTo;
+    var label;
+    if (!from && !to) label = 'All time';
+    else if (isAllTime) label = 'All time';
+    else if (from && to) label = (from === to) ? from : (from + ' → ' + to);
+    else label = 'All time';
+    var labelEl = dr.querySelector('.dr-label');
+    if (labelEl) labelEl.textContent = label;
+
+    // Popover from/to inputs
+    var pop = document.getElementById('pop-date-range');
+    if (pop) {
+      var fromInp = pop.querySelector('input[name="from"][type="date"]');
+      var toInp = pop.querySelector('input[name="to"][type="date"]');
+      if (fromInp) fromInp.value = from;
+      if (toInp) toInp.value = to;
+    }
+
+    // Preset anchor = latest available data day (falls back to today).
+    var anchorIso;
+    if (availTo) {
+      anchorIso = availTo;
+    } else {
+      var now = new Date();
+      anchorIso = now.getUTCFullYear() + '-' +
+        String(now.getUTCMonth() + 1).padStart(2, '0') + '-' +
+        String(now.getUTCDate()).padStart(2, '0');
+    }
+
+    // Active preset based on span ending on the anchor.
+    var activeDays = null;
+    if (from && to) {
+      try {
+        var fd = new Date(from + 'T00:00:00Z');
+        var td = new Date(to + 'T00:00:00Z');
+        var spanDays = Math.round((td - fd) / 86400000) + 1;
+        if (to === anchorIso && [1, 3, 7, 14, 30].indexOf(spanDays) !== -1) {
+          activeDays = spanDays;
+        }
+      } catch (e) { /* fall through — no active */ }
+    }
+    dr.querySelectorAll('[data-preset-days]').forEach(function (a) {
+      var d = parseInt(a.getAttribute('data-preset-days'), 10);
+      a.classList.toggle('active', d === activeDays);
+    });
+
+    // Rebuild hrefs on presets + All-time so they carry the current URL's
+    // non-date filters forward (chrome isn't re-rendered between swaps).
+    function buildQsWithDates(fromVal, toVal) {
+      var u = new URL(url.pathname + url.search, window.location.origin);
+      if (fromVal) u.searchParams.set('from', fromVal); else u.searchParams.delete('from');
+      if (toVal) u.searchParams.set('to', toVal); else u.searchParams.delete('to');
+      u.searchParams.delete('page');
+      return u.pathname + u.search;
+    }
+    var anchorParts = anchorIso.split('-').map(function (s) { return parseInt(s, 10); });
+    var anchorUtc = Date.UTC(anchorParts[0], anchorParts[1] - 1, anchorParts[2]);
+    dr.querySelectorAll('[data-preset-days]').forEach(function (a) {
+      var d = parseInt(a.getAttribute('data-preset-days'), 10);
+      var fromUtc = new Date(anchorUtc - (d - 1) * 86400000);
+      var fromIso = fromUtc.getUTCFullYear() + '-' +
+        String(fromUtc.getUTCMonth() + 1).padStart(2, '0') + '-' +
+        String(fromUtc.getUTCDate()).padStart(2, '0');
+      var href = buildQsWithDates(fromIso, anchorIso);
+      a.setAttribute('href', href);
+      a.setAttribute('hx-get', href);
+    });
+    // "All time" link inside the popover
+    if (pop && availFrom && availTo) {
+      var allLink = pop.querySelector('a.btn-ghost[hx-target="#results"]');
+      if (allLink) {
+        var allHref = buildQsWithDates(availFrom, availTo);
+        allLink.setAttribute('href', allHref);
+        allLink.setAttribute('hx-get', allHref);
+      }
+    }
+
+    // Let htmx rescan the new attributes.
+    if (window.htmx && window.htmx.process) {
+      dr.querySelectorAll('[hx-get]').forEach(function (el) { window.htmx.process(el); });
+      if (pop) pop.querySelectorAll('[hx-get]').forEach(function (el) { window.htmx.process(el); });
+    }
+  }
+  document.body.addEventListener('htmx:afterSettle', syncDateRangeUi);
+  document.addEventListener('DOMContentLoaded', syncDateRangeUi);
+
   // ── Columns popover checkbox sync ─────────────────────────────────────
   document.addEventListener('change', function (e) {
     var cb = e.target.closest('[data-col-checkbox]');

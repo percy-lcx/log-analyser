@@ -4555,6 +4555,7 @@ def _lv2_filter_bar(
     filter_selected: Optional[Dict[str, List[str]]] = None,
     is_bot: Optional[str] = None,
     has_country_col: bool = False,
+    avail_dates: Optional[List[str]] = None,
 ) -> str:
     # Search input
     search_val = html_escape(search or "", quote=True)
@@ -4579,37 +4580,55 @@ def _lv2_filter_bar(
         "</div>"
     )
 
+    avail_from = avail_dates[0] if avail_dates else None
+    avail_to = avail_dates[-1] if avail_dates else None
+
+    # Presets anchor on the latest available date (not today's wall clock), so
+    # each window always lands on real data. Falls back to today if nothing
+    # is ingested yet.
+    try:
+        preset_anchor = (
+            datetime.fromisoformat(avail_to).date()
+            if avail_to
+            else datetime.utcnow().date()
+        )
+    except ValueError:
+        preset_anchor = datetime.utcnow().date()
+
     # Date range + presets
     def preset_link(days: Optional[int], label: str, is_active: bool) -> str:
         if days is None:
             qs = _lv2_build_qs(params, **{"from": None, "to": None, "page": None})
         else:
-            today = datetime.utcnow().date()
-            frm = (today - timedelta(days=days - 1)).isoformat()
-            to = today.isoformat()
+            frm = (preset_anchor - timedelta(days=days - 1)).isoformat()
+            to = preset_anchor.isoformat()
             qs = _lv2_build_qs(params, **{"from": frm, "to": to, "page": None})
         cls = "active" if is_active else ""
+        days_attr = f" data-preset-days='{days}'" if days is not None else ""
         return (
             f"<a class='{cls}' href='/logs?{qs}' "
-            f"hx-get='/logs?{qs}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML'>"
+            f"hx-get='/logs?{qs}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML'"
+            f"{days_attr}>"
             f"{html_escape(label)}</a>"
         )
 
-    # Compute active preset by span in days
+    # Compute active preset by span in days (anchored on the latest data day).
     active_preset_days: Optional[int] = None
     if date_from and date_to:
         try:
             f_d = datetime.fromisoformat(date_from).date()
             t_d = datetime.fromisoformat(date_to).date()
             span = (t_d - f_d).days + 1
-            today = datetime.utcnow().date()
-            if t_d == today and span in {1, 3, 7, 14, 30}:
+            if t_d == preset_anchor and span in {1, 3, 7, 14, 30}:
                 active_preset_days = span
         except ValueError:
             active_preset_days = None
-
+    is_all_time = bool(
+        avail_from and avail_to
+        and date_from == avail_from and date_to == avail_to
+    )
     range_label = "All time"
-    if date_from and date_to:
+    if date_from and date_to and not is_all_time:
         if date_from == date_to:
             range_label = date_from
         else:
@@ -4631,13 +4650,20 @@ def _lv2_filter_bar(
             f"<input type='hidden' name='{html_escape(hk)}' value='{html_escape(str(hv), quote=True)}'>"
         )
     dr_hidden_html = "".join(dr_hidden_parts)
-    dr_clear_qs = _lv2_build_qs(params, **{"from": None, "to": None, "page": None})
+    if avail_from and avail_to:
+        dr_clear_qs = _lv2_build_qs(
+            params, **{"from": avail_from, "to": avail_to, "page": None}
+        )
+    else:
+        dr_clear_qs = _lv2_build_qs(params, **{"from": None, "to": None, "page": None})
     _dr_input_style = (
         "border:1px solid var(--border);border-radius:4px;padding:5px 8px;"
         "font-size:13px;background:var(--surface);color:var(--ink-1);width:100%;"
     )
+    avail_from_attr = f" data-avail-from='{html_escape(avail_from or '', quote=True)}'" if avail_from else ""
+    avail_to_attr = f" data-avail-to='{html_escape(avail_to or '', quote=True)}'" if avail_to else ""
     date_range_html = (
-        "<div class='date-range'>"
+        f"<div class='date-range' data-date-range{avail_from_attr}{avail_to_attr}>"
         "<span class='dr-trigger' data-popover-trigger='pop-date-range' "
         "role='button' tabindex='0' "
         "style='display:inline-flex;align-items:center;gap:6px;cursor:pointer;'>"
@@ -4657,7 +4683,9 @@ def _lv2_filter_bar(
         f"<input type='date' name='to' value='{html_escape(date_to or '', quote=True)}' "
         f"style='{_dr_input_style}'></div>"
         "<div class='pop-actions'>"
-        f"<a href='/logs?{dr_clear_qs}' class='btn btn-sm btn-ghost'>All time</a>"
+        f"<a href='/logs?{dr_clear_qs}' class='btn btn-sm btn-ghost' "
+        f"hx-get='/logs?{dr_clear_qs}' hx-target='#results' "
+        "hx-push-url='true' hx-swap='innerHTML'>All time</a>"
         "<button type='submit' class='btn btn-sm btn-primary'>Apply</button>"
         "</div>"
         "</form>"
@@ -5667,6 +5695,7 @@ def log_viewer(
             },
             is_bot=is_bot,
             has_country_col=has_country_col,
+            avail_dates=avail,
         )
     )
 
@@ -5849,6 +5878,7 @@ def log_viewer(
             },
             is_bot=is_bot,
             has_country_col=has_country_col,
+            avail_dates=avail,
         )
     )
     body_html = chrome_html + f"<div id='results'>{inner}</div>"
