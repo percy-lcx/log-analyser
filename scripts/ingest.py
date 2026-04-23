@@ -772,7 +772,8 @@ def _build_gsc_daily_aggregate(log_date: str, conn: duckdb.DuckDBPyConnection,
         COALESCE(l.bot_hits, 0) AS bot_hits,
         COALESCE(l.human_hits, 0) AS human_hits,
         CASE WHEN l.crawl_hits > 0 THEN TRUE ELSE FALSE END AS has_crawl_activity,
-        CASE WHEN g.impressions > 0 THEN TRUE ELSE FALSE END AS has_impressions
+        CASE WHEN g.impressions > 0 THEN TRUE ELSE FALSE END AS has_impressions,
+        CASE WHEN g.impressions > 0 OR g.position > 0 THEN TRUE ELSE FALSE END AS is_indexed
     FROM gsc_agg g
     FULL OUTER JOIN log_crawl l
         ON LOWER(RTRIM(REGEXP_REPLACE(g.page, '\?.*$', ''), '/')) = l.norm_path
@@ -781,6 +782,65 @@ def _build_gsc_daily_aggregate(log_date: str, conn: duckdb.DuckDBPyConnection,
     out_path = out_fn("gsc_daily")
     agg_write_one(conn, gsc_daily_sql, out_path)
     print(f"[agg] gsc_daily written for {log_date}", flush=True)
+
+    # ── gsc_bot_daily ──────────────────────────────────────────────────────
+    # Per-bot crawl join with GSC: lets us answer "of Googlebot's crawls,
+    # which hit indexed/ranking URLs (strategic) vs unknown pages (non-strategic)."
+    #
+    # strategic_class buckets:
+    #   strategic_top10           – crawled + GSC position ≤ 10 (ranking well)
+    #   strategic_indexed         – crawled + has impressions (visible in search)
+    #   strategic_ranked_low      – crawled + has position but no impressions yet
+    #   non_strategic_unindexed   – crawled, no GSC signal whatsoever
+    gsc_bot_daily_sql = r"""
+    WITH bot_crawl AS (
+        SELECT
+            date,
+            LOWER(RTRIM(path, '/')) AS norm_path,
+            COALESCE(bot_family, 'Unknown bot') AS bot_family,
+            COUNT(*) AS crawl_hits,
+            SUM(CASE WHEN status_class = 2 THEN 1 ELSE 0 END) AS ok_hits,
+            SUM(CASE WHEN status_class = 3 THEN 1 ELSE 0 END) AS redirect_hits,
+            SUM(CASE WHEN status_class IN (4,5) THEN 1 ELSE 0 END) AS err_hits,
+            SUM(CASE WHEN is_parameterized THEN 1 ELSE 0 END) AS param_hits,
+            SUM(CASE WHEN is_resource THEN 1 ELSE 0 END) AS resource_hits
+        FROM parsed
+        WHERE is_bot
+        GROUP BY date, LOWER(RTRIM(path, '/')), COALESCE(bot_family, 'Unknown bot')
+    )
+    SELECT
+        bc.date,
+        bc.bot_family,
+        bc.norm_path AS page,
+        bc.crawl_hits,
+        bc.ok_hits,
+        bc.redirect_hits,
+        bc.err_hits,
+        bc.param_hits,
+        bc.resource_hits,
+        COALESCE(g.clicks, 0) AS clicks,
+        COALESCE(g.impressions, 0) AS impressions,
+        COALESCE(g.ctr, 0.0) AS ctr,
+        g.position AS position,
+        CASE WHEN COALESCE(g.impressions, 0) > 0 THEN TRUE ELSE FALSE END AS has_impressions,
+        CASE WHEN COALESCE(g.impressions, 0) > 0 OR COALESCE(g.position, 0) > 0 THEN TRUE ELSE FALSE END AS is_indexed,
+        CASE
+            WHEN g.impressions > 0 AND g.position IS NOT NULL AND g.position > 0 AND g.position <= 10
+                THEN 'strategic_top10'
+            WHEN g.impressions > 0
+                THEN 'strategic_indexed'
+            WHEN g.position IS NOT NULL AND g.position > 0
+                THEN 'strategic_ranked_low'
+            ELSE 'non_strategic_unindexed'
+        END AS strategic_class
+    FROM bot_crawl bc
+    LEFT JOIN gsc_agg g
+        ON LOWER(RTRIM(REGEXP_REPLACE(g.page, '\?.*$', ''), '/')) = bc.norm_path
+        AND g.date = bc.date
+    """
+    out_path_bot = out_fn("gsc_bot_daily")
+    agg_write_one(conn, gsc_bot_daily_sql, out_path_bot)
+    print(f"[agg] gsc_bot_daily written for {log_date}", flush=True)
 
 
 def build_aggregates_for_date(log_date: str) -> None:

@@ -21,6 +21,7 @@ DATA_GSC = ROOT / "data" / "gsc"
 DATA_PARSED = ROOT / "data" / "parsed"
 DATA_AGG = ROOT / "data" / "aggregates"
 GSC_DAILY = DATA_AGG / "gsc_daily"
+GSC_BOT_DAILY = DATA_AGG / "gsc_bot_daily"
 
 
 def load_ingest_module():
@@ -45,8 +46,9 @@ def main() -> int:
 
     missing: list[str] = []
     for d in candidates:
-        agg = GSC_DAILY / f"date={d}" / "part.parquet"
-        if agg.exists():
+        gsc_daily_done = (GSC_DAILY / f"date={d}" / "part.parquet").exists()
+        gsc_bot_done = (GSC_BOT_DAILY / f"date={d}" / "part.parquet").exists()
+        if gsc_daily_done and gsc_bot_done:
             continue
         parsed = DATA_PARSED / f"date={d}" / "access.parquet"
         if not parsed.exists():
@@ -55,10 +57,10 @@ def main() -> int:
         missing.append(d)
 
     if not missing:
-        print("All gsc_daily aggregates already built.")
+        print("All gsc_daily + gsc_bot_daily aggregates already built.")
         return 0
 
-    print(f"Backfilling gsc_daily for {len(missing)} date(s): "
+    print(f"Backfilling gsc_daily + gsc_bot_daily for {len(missing)} date(s): "
           f"{missing[0]} -> {missing[-1]}")
 
     t0 = time.monotonic()

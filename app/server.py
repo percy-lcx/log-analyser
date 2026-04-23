@@ -3119,8 +3119,231 @@ def gsc_report(
     body += tabs
     body += tab_panel("performance", perf)
     body += tab_panel("efficiency", eff)
+    body += (
+        "<p style='margin-top:16px;font-size:13px;'>"
+        "Looking to split bot crawls into <strong>strategic vs non-strategic</strong>? "
+        f"See <a href='/reports/strategic-crawl?from={date_from or ''}&to={date_to or ''}'>"
+        "Strategic Crawl</a>."
+        "</p>"
+    )
     return _lv2_report_shell(
         title="Search Console", nav_key="reports",
+        date_from=date_from, date_to=date_to, avail=avail,
+        body=body,
+    )
+
+
+# ── /reports/strategic-crawl ─────────────────────────────────────────────
+# Joins per-bot crawl (from logs) with GSC performance data to classify each
+# crawl as strategic (toward an indexed/ranking URL) or non-strategic (crawl
+# budget spent on pages GSC has never seen ranking).
+#
+# Requires the gsc_bot_daily aggregate — produced by
+# scripts/ingest.py::_build_gsc_daily_aggregate. Dates without GSC data are
+# silently absent from the aggregate.
+
+_STRATEGIC_CLASS_LABELS = [
+    ("strategic_top10",          "Strategic · top 10"),
+    ("strategic_indexed",        "Strategic · indexed"),
+    ("strategic_ranked_low",     "Strategic · ranked, 0 impressions"),
+    ("non_strategic_unindexed",  "Non-strategic · no GSC signal"),
+]
+_STRATEGIC_CLASS_ORDER = {k: i for i, (k, _) in enumerate(_STRATEGIC_CLASS_LABELS)}
+
+
+@app.get("/reports/strategic-crawl", response_class=HTMLResponse)
+def strategic_crawl_report(
+    date_from: Optional[str] = Query(None, alias="from"),
+    date_to: Optional[str] = Query(None, alias="to"),
+    bot_family: str = Query("Googlebot"),
+    limit: int = 100,
+):
+    paths = list_partitions("gsc_bot_daily", date_from, date_to)
+    avail = available_dates()
+    date_from, date_to = _default_last_7(date_from, date_to, avail)
+    body = ""
+
+    if not paths:
+        body += (
+            "<div class='empty-state'>"
+            "<h3>Strategic Crawl</h3>"
+            "<p>This report requires the <code>gsc_bot_daily</code> aggregate, which "
+            "joins per-bot crawl data with Google Search Console performance.</p>"
+            "<p>To build it:</p>"
+            "<ol>"
+            "<li>Connect Google Search Console (see <a href='/settings/gsc'>Settings → Search Console</a>).</li>"
+            "<li>Run <code>python scripts/backfill_gsc_daily.py</code> to build the aggregate "
+            "for historical dates.</li>"
+            "</ol>"
+            "</div>"
+        )
+        return _lv2_report_shell(
+            title="Strategic Crawl", nav_key="reports",
+            date_from=date_from, date_to=date_to, avail=avail,
+            body=body,
+        )
+
+    # Bot selector – which bot_family to slice on.
+    _, bot_rows = run_query(
+        paths,
+        "SELECT bot_family, SUM(crawl_hits) AS hits FROM t GROUP BY bot_family ORDER BY hits DESC LIMIT 30",
+    )
+    bot_options = [str(r[0]) for r in bot_rows if r[0]]
+    if bot_family not in bot_options and bot_options:
+        # Fall back to Googlebot if present, else the bot with the most crawls.
+        bot_family = "Googlebot" if "Googlebot" in bot_options else bot_options[0]
+    esc_bot = sql_escape_string(bot_family)
+
+    body += (
+        "<form method='get' style='margin-bottom:12px;font-size:13px;'>"
+        f"<input type='hidden' name='from' value='{html_escape(date_from or '', quote=True)}'>"
+        f"<input type='hidden' name='to' value='{html_escape(date_to or '', quote=True)}'>"
+        "<label>Bot family "
+        "<select name='bot_family' onchange='this.form.submit()' "
+        "style='border:1px solid var(--border);border-radius:4px;padding:3px 6px;'>"
+    )
+    for b in bot_options:
+        sel = " selected" if b == bot_family else ""
+        body += f"<option value='{html_escape(b, quote=True)}'{sel}>{html_escape(b)}</option>"
+    body += "</select></label></form>"
+
+    bot_filter_sql = f"bot_family = '{esc_bot}'"
+
+    # KPI row: total crawls + counts by strategic_class.
+    kpi_sql = f"""
+    SELECT
+        SUM(crawl_hits) AS total_crawl,
+        SUM(CASE WHEN strategic_class IN ('strategic_top10','strategic_indexed','strategic_ranked_low') THEN crawl_hits ELSE 0 END) AS strategic_crawl,
+        SUM(CASE WHEN strategic_class = 'strategic_top10' THEN crawl_hits ELSE 0 END) AS top10_crawl,
+        SUM(CASE WHEN strategic_class = 'non_strategic_unindexed' THEN crawl_hits ELSE 0 END) AS non_strategic_crawl,
+        COUNT(DISTINCT page) AS unique_pages,
+        SUM(CASE WHEN is_indexed THEN crawl_hits ELSE 0 END) AS indexed_crawl
+    FROM t
+    WHERE {bot_filter_sql}
+    """
+    _, kpi_rows = run_query(paths, kpi_sql)
+    k = kpi_rows[0] if kpi_rows else (0, 0, 0, 0, 0, 0)
+    total = int(k[0] or 0)
+    strategic = int(k[1] or 0)
+    top10 = int(k[2] or 0)
+    non_strategic = int(k[3] or 0)
+    unique_pages = int(k[4] or 0)
+
+    def pct_of_total(n: int) -> str:
+        return f"{(100.0 * n / total):.1f}%" if total else "—"
+
+    body += "<div class='kpi-row'>"
+    body += kpi_card(f"Total {html_escape(bot_family)} crawls", total, None)
+    body += kpi_card(f"Strategic ({pct_of_total(strategic)})", strategic, None)
+    body += kpi_card(f"Top-10 ranking ({pct_of_total(top10)})", top10, None)
+    body += kpi_card(f"Non-strategic ({pct_of_total(non_strategic)})", non_strategic, None)
+    body += kpi_card("Unique pages crawled", unique_pages, None)
+    body += "</div>"
+
+    # Class breakdown bar chart.
+    class_sql = f"""
+    SELECT strategic_class, SUM(crawl_hits) AS hits, COUNT(DISTINCT page) AS pages
+    FROM t
+    WHERE {bot_filter_sql}
+    GROUP BY strategic_class
+    """
+    cols_c, rows_c = run_query(paths, class_sql)
+    # Relabel + order for display.
+    relabeled: List[Tuple[str, int, int]] = []
+    for r in rows_c:
+        key = str(r[0] or "non_strategic_unindexed")
+        label = dict(_STRATEGIC_CLASS_LABELS).get(key, key)
+        relabeled.append((label, int(r[1] or 0), int(r[2] or 0)))
+    relabeled.sort(key=lambda x: _STRATEGIC_CLASS_ORDER.get(
+        next((k for k, v in _STRATEGIC_CLASS_LABELS if v == x[0]), ""), 99
+    ))
+    body += "<h2>Crawl volume by strategic class</h2>"
+    if relabeled:
+        chart_rows = [[lab, hits] for lab, hits, _p in relabeled]
+        body += bar_chart(chart_rows, ["strategic_class", "crawl_hits"],
+                          x_col="strategic_class", y_col="crawl_hits",
+                          title=f"{bot_family} crawl hits by class")
+        body += html_table(
+            [[lab, f"{hits:,}", pct_of_total(hits), f"{pages:,}"] for lab, hits, pages in relabeled],
+            ["Class", "Crawl hits", "% of total", "Unique pages"],
+            max_rows=20,
+        )
+    else:
+        body += "<p class='no-data'>No classified crawls for this selection.</p>"
+
+    # Top non-strategic URLs — these are the pages burning crawl budget.
+    non_strat_sql = f"""
+    SELECT page, SUM(crawl_hits) AS crawl_hits, SUM(err_hits) AS err_hits,
+           SUM(param_hits) AS param_hits
+    FROM t
+    WHERE {bot_filter_sql} AND strategic_class = 'non_strategic_unindexed'
+    GROUP BY page
+    ORDER BY crawl_hits DESC
+    LIMIT {int(limit)}
+    """
+    cols_ns, rows_ns = run_query(paths, non_strat_sql)
+    body += "<h2>Top non-strategic URLs</h2>"
+    body += (
+        "<p style='font-size:13px;color:#64748b;margin-bottom:8px;'>"
+        f"URLs {html_escape(bot_family)} crawls most often that have no GSC impressions "
+        "and no GSC ranking position. Typical candidates for noindex / blocking / canonicalization.</p>"
+    )
+    if rows_ns:
+        body += html_table(rows_ns, cols_ns, max_rows=min(int(limit), 500))
+    else:
+        body += "<p class='no-data'>No non-strategic URLs in this range.</p>"
+
+    # Top strategic URLs — where crawl effort is paying off.
+    strat_sql = f"""
+    SELECT page, SUM(crawl_hits) AS crawl_hits, SUM(impressions) AS impressions,
+           SUM(clicks) AS clicks, AVG(position) AS avg_position
+    FROM t
+    WHERE {bot_filter_sql}
+      AND strategic_class IN ('strategic_top10', 'strategic_indexed')
+    GROUP BY page
+    ORDER BY crawl_hits DESC
+    LIMIT {int(limit)}
+    """
+    cols_s, rows_s = run_query(paths, strat_sql)
+    body += "<h2>Top strategic URLs</h2>"
+    body += (
+        "<p style='font-size:13px;color:#64748b;margin-bottom:8px;'>"
+        f"Most-crawled URLs that are indexed and/or ranking. Crawl budget well spent.</p>"
+    )
+    if rows_s:
+        body += html_table(rows_s, cols_s, max_rows=min(int(limit), 500))
+    else:
+        body += "<p class='no-data'>No strategic URLs in this range.</p>"
+
+    # Non-strategic crawl by path_segment_1 — which site areas are bleeding budget?
+    seg_sql = f"""
+    SELECT
+        COALESCE(list_filter(string_split(page, '/'), x -> x <> '')[1], '(root)') AS path_segment_1,
+        SUM(crawl_hits) AS crawl_hits,
+        COUNT(DISTINCT page) AS unique_pages
+    FROM t
+    WHERE {bot_filter_sql} AND strategic_class = 'non_strategic_unindexed'
+    GROUP BY 1
+    ORDER BY crawl_hits DESC
+    LIMIT 30
+    """
+    cols_seg, rows_seg = run_query(paths, seg_sql)
+    body += "<h2>Non-strategic crawl by path segment</h2>"
+    body += (
+        "<p style='font-size:13px;color:#64748b;margin-bottom:8px;'>"
+        "Which top-level site areas absorb the most non-strategic crawl. "
+        "Use this to prioritize cleanup.</p>"
+    )
+    if rows_seg:
+        body += bar_chart(rows_seg, cols_seg, x_col="path_segment_1",
+                          y_col="crawl_hits",
+                          title="Non-strategic crawl by segment 1")
+        body += html_table(rows_seg, cols_seg, max_rows=30)
+    else:
+        body += "<p class='no-data'>No non-strategic crawl to break down.</p>"
+
+    return _lv2_report_shell(
+        title="Strategic Crawl", nav_key="reports",
         date_from=date_from, date_to=date_to, avail=avail,
         body=body,
     )
@@ -3593,6 +3816,9 @@ def available_parsed_dates() -> List[str]:
 
 LOG_GROUP_BY_COLUMNS = [
     ("path", "Path"),
+    ("path_segment_1", "Path segment 1 (e.g. /en)"),
+    ("path_segment_2", "Path segment 2 (e.g. /en/products)"),
+    ("path_depth", "Path depth"),
     ("url_group", "URL group"),
     ("bot_family", "Bot family"),
     ("bot_category", "Bot category"),
@@ -3613,10 +3839,23 @@ LOG_STACK_BY_OPTIONS = [
     ("status_class", "Status class"),
     ("bot_family", "Bot family"),
     ("url_group", "URL group"),
+    ("path_segment_1", "Path segment 1"),
     ("method", "HTTP method"),
     ("referer_type", "Referer type"),
     ("country", "Country"),
 ]
+
+# SQL list of non-empty lowercased path segments, stripping query/fragment.
+# Used to derive path_segment_N and path_depth at query time.
+# e.g. "/en/products/widget?x=1" -> ['en', 'products', 'widget'].
+_PATH_SEG_LIST_SQL = (
+    "list_filter("
+    "string_split("
+    "LOWER(regexp_replace(COALESCE(path, ''), '[?#].*$', ''))"
+    ", '/'"
+    "), x -> x <> ''"
+    ")"
+)
 
 LOG_SORT_BY_OPTIONS = [
     ("hits", "Hits"),
@@ -3903,6 +4142,12 @@ def _group_col_expr(col: str, has_country_col: bool) -> str:
         return "COALESCE(CAST(status_class AS VARCHAR), '')"
     if col == "status":
         return "CAST(status AS VARCHAR)"
+    if col == "path_segment_1":
+        return f"COALESCE({_PATH_SEG_LIST_SQL}[1], '(root)')"
+    if col == "path_segment_2":
+        return f"COALESCE({_PATH_SEG_LIST_SQL}[2], '(none)')"
+    if col == "path_depth":
+        return f"CAST(len({_PATH_SEG_LIST_SQL}) AS VARCHAR)"
     # String-valued cols
     return f"COALESCE({col}, '(none)')"
 
@@ -4084,6 +4329,26 @@ LOG_PRESETS: Dict[str, Dict[str, str]] = {
     "bot-categories": {"mode": "group", "group_by": "bot_category", "is_bot": "true"},
     "crawl-waste": {"mode": "group", "group_by": "path", "is_bot": "true",
                     "sort_by": "waste_score"},
+    "googlebot-segments": {
+        "mode": "group", "group_by": "path_segment_1",
+        "is_bot": "true", "bot_family": "Googlebot",
+        "include_assets": "false",
+    },
+    "googlebot-subsegments": {
+        "mode": "group", "group_by": "path_segment_1",
+        "group_by_2": "path_segment_2",
+        "is_bot": "true", "bot_family": "Googlebot",
+        "include_assets": "false",
+    },
+    "googlebot-depth": {
+        "mode": "group", "group_by": "path_depth",
+        "is_bot": "true", "bot_family": "Googlebot",
+        "include_assets": "false",
+    },
+    "bot-segments": {
+        "mode": "group", "group_by": "path_segment_1",
+        "is_bot": "true", "include_assets": "false",
+    },
     "heavy-urls": {"mode": "group", "group_by": "path", "sort_by": "bytes",
                    "include_assets": "false"},
     "top-countries": {"mode": "group", "group_by": "country"},
@@ -4137,6 +4402,10 @@ LOG_PRESET_CHIP_GROUPS: List[Tuple[str, List[Tuple[str, str]]]] = [
         ("bot-categories", "Bot categories"),
         ("crawl-waste", "Crawl waste"),
         ("bot-families-over-time", "Bot families over time"),
+        ("googlebot-segments", "Googlebot top path segments"),
+        ("googlebot-subsegments", "Googlebot segment 1 × 2"),
+        ("googlebot-depth", "Googlebot by path depth"),
+        ("bot-segments", "All bots by path segment"),
     ]),
     ("Geo", [
         ("top-countries", "Top countries"),
@@ -4356,6 +4625,7 @@ def _lv2_topnav(active: str) -> str:
     reports_children = [
         ("Locales", "/reports/locales"),
         ("Search Console", "/reports/gsc"),
+        ("Strategic Crawl", "/reports/strategic-crawl"),
     ]
     reports_active = "active" if active == "reports" else ""
     reports_items = "".join(
