@@ -397,6 +397,122 @@ def _settings_page(title: str, body: str) -> HTMLResponse:
     return page(title, body)
 
 
+# ---------------------------------------------------------------------------
+# Shared settings shell: sidebar nav + content column + consolidated CSS.
+# All /settings/* subpages render their body through _settings_layout() so
+# the "← Back" link, button styles, card styles and layout are defined once.
+# ---------------------------------------------------------------------------
+
+SETTINGS_NAV: List[Tuple[str, str, str, str]] = [
+    # (id,             label,            url,                       description shown on hub)
+    ("hub",            "Overview",       "/settings",               ""),
+    ("profiles",       "Profiles",       "/settings/profiles",      "Create, clone, rename and activate site profiles"),
+    ("url-groups",     "URL Groups",     "/settings/url-groups",    "Edit URL grouping rules for the active profile"),
+    ("locales",        "Locales",        "/settings/locales",       "Manage locale whitelist and BCP 47 fallback"),
+    ("sections",       "Sections",       "/settings/sections",      "Define section mappings for content classification"),
+    ("logs",           "Log Files",      "/settings/logs",          "Browse log files, trigger ingestion and rebuild"),
+    ("gsc",            "Search Console", "/settings/gsc",           "Connect Google Search Console for search performance data"),
+]
+
+_SETTINGS_CSS = """
+<style>
+  /* Settings layout ---------------------------------------------------- */
+  .settings-layout { display: grid; grid-template-columns: 220px 1fr; gap: 28px; align-items: start; margin-top: 4px; }
+  @media (max-width: 860px) { .settings-layout { grid-template-columns: 1fr; } }
+  .settings-nav { position: sticky; top: 16px; padding: 10px 0; border-right: 1px solid #e2e8f0; }
+  @media (max-width: 860px) { .settings-nav { position: static; border-right: 0; border-bottom: 1px solid #e2e8f0; padding: 0 0 10px; margin-bottom: 6px; } }
+  .settings-nav .sn-lead { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #64748b; padding: 0 10px 6px; }
+  .settings-nav a { display: flex; align-items: center; gap: 8px; padding: 7px 10px; margin: 1px 6px 1px 0; border-radius: 6px; font-size: 13px; color: #334155; text-decoration: none; line-height: 1.25; }
+  .settings-nav a:hover { background: #f1f5f9; color: #0f172a; }
+  .settings-nav a.active { background: #eff6ff; color: #1d4ed8; font-weight: 600; box-shadow: inset 2px 0 0 #3b82f6; }
+  .settings-nav .sn-divider { height: 1px; background: #e2e8f0; margin: 8px 6px; }
+
+  .settings-content { min-width: 0; }
+  .settings-content h1.page-title { margin: 0 0 4px; font-size: 22px; font-weight: 700; color: #0f172a; }
+  .settings-content .page-subtitle { margin: 0 0 18px; font-size: 13px; color: #64748b; }
+
+  /* Shared form primitives used by subpages --------------------------- */
+  .settings-content .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px 18px; box-shadow: 0 1px 2px rgba(15,23,42,0.03); }
+  .settings-content .card + .card { margin-top: 14px; }
+  .settings-content .card h2 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: #0f172a; }
+  .settings-content .card p.help { font-size: 12px; color: #64748b; margin: 0 0 12px; }
+
+  .settings-content .btn-sm { padding: 5px 12px; border: 1px solid #cbd5e1; border-radius: 5px; font-size: 12px; cursor: pointer; background: #fff; color: #374151; }
+  .settings-content .btn-sm:hover { background: #f1f5f9; }
+  .settings-content .btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
+  .settings-content .btn-blue { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+  .settings-content .btn-blue:hover { background: #2563eb; }
+  .settings-content .btn-red { color: #dc2626; border-color: #fca5a5; }
+  .settings-content .btn-red:hover { background: #fef2f2; }
+
+  .settings-content .settings-input { padding: 7px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; background: #fff; }
+  .settings-content .settings-input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
+
+  .settings-content .profile-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: #f1f5f9; border: 1px solid #e2e8f0; font-size: 12px; color: #475569; }
+  .settings-content .profile-chip strong { color: #0f172a; font-weight: 600; }
+
+  /* Hub grid (cards on /settings) ------------------------------------- */
+  .settings-hub-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  .settings-hub-card { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; text-decoration: none; color: #0f172a; transition: border-color 0.12s, box-shadow 0.12s, transform 0.12s; }
+  .settings-hub-card:hover { border-color: #3b82f6; box-shadow: 0 4px 12px rgba(59,130,246,0.08); transform: translateY(-1px); }
+  .settings-hub-card .shc-title { font-size: 14px; font-weight: 600; color: #0f172a; }
+  .settings-hub-card .shc-desc { font-size: 12px; color: #64748b; line-height: 1.4; }
+</style>
+"""
+
+
+def _render_active_profile_chip() -> str:
+    """Small pill showing the currently-active profile — rendered above the
+    content title on subpages so context is obvious without a paragraph."""
+    try:
+        from profile_loader import get_active_profile_raw
+        p = get_active_profile_raw()
+        name = p["name"] if p else "(none)"
+    except Exception:
+        name = "(none)"
+    return (
+        f"<span class='profile-chip' title='Active site profile'>"
+        f"Active profile: <strong>{name}</strong></span>"
+    )
+
+
+def _settings_layout(
+    *,
+    active: str,
+    title: str,
+    subtitle: str = "",
+    body: str,
+    show_profile_chip: bool = True,
+) -> HTMLResponse:
+    """Render a settings page with the shared sidebar + content shell."""
+    nav_items: List[str] = ["<span class='sn-lead'>Settings</span>"]
+    for item_id, label, url, _desc in SETTINGS_NAV:
+        cls = "active" if item_id == active else ""
+        nav_items.append(f"<a href='{url}' class='{cls}'>{label}</a>")
+        if item_id == "hub":
+            nav_items.append("<div class='sn-divider'></div>")
+    sidebar = "<nav class='settings-nav'>" + "".join(nav_items) + "</nav>"
+
+    chip_html = _render_active_profile_chip() if (show_profile_chip and active != "hub") else ""
+    subtitle_html = f"<p class='page-subtitle'>{subtitle}</p>" if subtitle else ""
+    header = (
+        f"<div style='display:flex;align-items:center;gap:10px;margin-bottom:2px;'>"
+        f"<h1 class='page-title'>{title}</h1>"
+        f"{chip_html}"
+        f"</div>"
+        f"{subtitle_html}"
+    )
+
+    full = (
+        _SETTINGS_CSS
+        + "<div class='settings-layout'>"
+        + sidebar
+        + f"<div class='settings-content'>{header}{body}</div>"
+        + "</div>"
+    )
+    return _settings_page(title, full)
+
+
 def _fmt_bytes(n) -> str:
     try:
         n = float(n)
@@ -415,19 +531,24 @@ def _fmt_bytes(n) -> str:
 
 @router.get("/settings", response_class=HTMLResponse)
 def settings_hub():
-    cards = [
-        ("Profiles", "/settings/profiles", "Create, clone, rename and activate site profiles"),
-        ("URL Groups", "/settings/url-groups", "Edit URL grouping rules for the active profile"),
-        ("Locales", "/settings/locales", "Manage locale whitelist and BCP 47 fallback"),
-        ("Sections", "/settings/sections", "Define section mappings for content classification"),
-        ("Log Files", "/settings/logs", "Browse log files, trigger ingestion and rebuild"),
-        ("Search Console", "/settings/gsc", "Connect Google Search Console for search performance data"),
-    ]
-    html = "<div class='report-grid'>"
-    for name, url, desc in cards:
-        html += f"<a href='{url}' class='report-card'>{name}<small>{desc}</small></a>"
-    html += "</div>"
-    return _settings_page("Settings", html)
+    cards_html = ["<div class='settings-hub-grid'>"]
+    for item_id, label, url, desc in SETTINGS_NAV:
+        if item_id == "hub":
+            continue
+        cards_html.append(
+            f"<a href='{url}' class='settings-hub-card'>"
+            f"<span class='shc-title'>{label}</span>"
+            f"<span class='shc-desc'>{desc}</span>"
+            f"</a>"
+        )
+    cards_html.append("</div>")
+    return _settings_layout(
+        active="hub",
+        title="Settings",
+        subtitle="Configure profiles, URL grouping, locales and data ingestion.",
+        body="".join(cards_html),
+        show_profile_chip=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -460,11 +581,9 @@ def settings_profiles():
         </tr>"""
 
     body = f"""
-    <p style='margin-bottom:12px;'><a href='/settings' style='color:#3b82f6;text-decoration:none;font-size:13px;'>&larr; Back to Settings</a></p>
-
-    <div class='card' style='margin-bottom:16px;'>
+    <div class='card'>
         <div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;'>
-            <input id='newName' placeholder='New profile name' style='padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;min-width:180px;'>
+            <input id='newName' class='settings-input' placeholder='New profile name' style='min-width:200px;'>
             <button class='btn-sm btn-blue' onclick='createProfile()'>Create Blank</button>
             <span style='color:#94a3b8;font-size:12px;'>or clone from an existing profile using Clone button below</span>
         </div>
@@ -480,16 +599,6 @@ def settings_profiles():
             </table>
         </div>
     </div>
-
-    <style>
-    .btn-sm {{ padding:5px 12px; border:1px solid #cbd5e1; border-radius:5px; font-size:12px; cursor:pointer; background:#fff; color:#374151; }}
-    .btn-sm:hover {{ background:#f1f5f9; }}
-    .btn-sm:disabled {{ opacity:0.4; cursor:not-allowed; }}
-    .btn-blue {{ background:#3b82f6; color:#fff; border-color:#3b82f6; }}
-    .btn-blue:hover {{ background:#2563eb; }}
-    .btn-red {{ color:#dc2626; border-color:#fca5a5; }}
-    .btn-red:hover {{ background:#fef2f2; }}
-    </style>
 
     <script>
     async function apiCall(url, opts={{}}) {{
@@ -531,7 +640,12 @@ def settings_profiles():
     }}
     </script>
     """
-    return _settings_page("Site Profiles", body)
+    return _settings_layout(
+        active="profiles",
+        title="Site Profiles",
+        subtitle="Each profile is a self-contained set of rules. Only one is active at a time.",
+        body=body,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -546,15 +660,11 @@ def settings_url_groups():
     profile_name = p["name"] if p else "(none)"
 
     body = f"""
-    <p style='margin-bottom:12px;'><a href='/settings' style='color:#3b82f6;text-decoration:none;font-size:13px;'>&larr; Back to Settings</a></p>
-
-    <div id='warningBanner' class='card' style='display:none;background:#fffbeb;border-color:#fbbf24;margin-bottom:14px;'>
+    <div id='warningBanner' class='card' style='display:none;background:#fffbeb;border-color:#fbbf24;'>
         <span style='color:#92400e;font-size:13px;font-weight:600;'>Rules changed — rebuild aggregates to apply.</span>
     </div>
 
-    <p style='font-size:13px;color:#64748b;margin-bottom:14px;'>Active profile: <strong>{profile_name}</strong></p>
-
-    <div class='card' style='margin-bottom:16px;'>
+    <div class='card'>
         <h2 style='margin-bottom:12px;'>Live Preview</h2>
         <div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;'>
             <input id='previewPath' placeholder='Enter a sample path, e.g. /en/trading/forex' style='padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;flex:1;min-width:250px;'>
@@ -585,10 +695,6 @@ def settings_url_groups():
     </div>
 
     <style>
-    .btn-sm {{ padding:5px 12px; border:1px solid #cbd5e1; border-radius:5px; font-size:12px; cursor:pointer; background:#fff; color:#374151; }}
-    .btn-sm:hover {{ background:#f1f5f9; }}
-    .btn-blue {{ background:#3b82f6; color:#fff; border-color:#3b82f6; }}
-    .btn-blue:hover {{ background:#2563eb; }}
     #rulesTable td {{ padding:6px; border-bottom:1px solid #f1f5f9; vertical-align:middle; }}
     #rulesTable input, #rulesTable select {{
         padding:5px 8px; border:1px solid #cbd5e1; border-radius:4px; font-size:13px; width:100%;
@@ -709,7 +815,12 @@ def settings_url_groups():
     renderRules();
     </script>
     """
-    return _settings_page("URL Group Rules", body)
+    return _settings_layout(
+        active="url-groups",
+        title="URL Groups",
+        subtitle="Regex rules classify every request path into a named group. Rules are tried in order.",
+        body=body,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -725,10 +836,7 @@ def settings_locales():
     profile_name = p["name"] if p else "(none)"
 
     body = f"""
-    <p style='margin-bottom:12px;'><a href='/settings' style='color:#3b82f6;text-decoration:none;font-size:13px;'>&larr; Back to Settings</a></p>
-    <p style='font-size:13px;color:#64748b;margin-bottom:14px;'>Active profile: <strong>{profile_name}</strong></p>
-
-    <div class='card' style='margin-bottom:16px;'>
+    <div class='card'>
         <h2 style='margin-bottom:10px;'>Locale Whitelist</h2>
         <p style='font-size:12px;color:#64748b;margin-bottom:12px;'>
             Locale codes that appear as the first path segment (e.g. /en/, /zh-hans/).
@@ -736,13 +844,13 @@ def settings_locales():
         </p>
         <div id='localeTags' style='display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;'></div>
         <div style='display:flex;gap:8px;align-items:center;'>
-            <input id='localeInput' placeholder='Add locale code (e.g. en-gb)' style='padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;width:200px;'
+            <input id='localeInput' class='settings-input' placeholder='Add locale code (e.g. en-gb)' style='width:200px;'
                    onkeydown="if(event.key==='Enter'){{ event.preventDefault(); addLocale(); }}">
             <button class='btn-sm' onclick='addLocale()'>Add</button>
         </div>
     </div>
 
-    <div class='card' style='margin-bottom:16px;'>
+    <div class='card'>
         <label style='display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;'>
             <input type='checkbox' id='bcp47Toggle' {'checked' if bcp47 else ''}
                    style='width:16px;height:16px;accent-color:#3b82f6;'>
@@ -750,13 +858,11 @@ def settings_locales():
         </label>
     </div>
 
-    <button class='btn-sm btn-blue' onclick='saveLocales()' style='margin-bottom:16px;'>Save</button>
+    <div style='margin-top:14px;'>
+        <button class='btn-sm btn-blue' onclick='saveLocales()'>Save</button>
+    </div>
 
     <style>
-    .btn-sm {{ padding:5px 12px; border:1px solid #cbd5e1; border-radius:5px; font-size:12px; cursor:pointer; background:#fff; color:#374151; }}
-    .btn-sm:hover {{ background:#f1f5f9; }}
-    .btn-blue {{ background:#3b82f6; color:#fff; border-color:#3b82f6; }}
-    .btn-blue:hover {{ background:#2563eb; }}
     .locale-tag {{
         display:inline-flex; align-items:center; gap:4px;
         padding:4px 10px; background:#eff6ff; border:1px solid #bfdbfe;
@@ -810,7 +916,12 @@ def settings_locales():
     renderLocales();
     </script>
     """
-    return _settings_page("Locale Whitelist", body)
+    return _settings_layout(
+        active="locales",
+        title="Locale Whitelist",
+        subtitle="Whitelisted first-path-segment locales. Requests outside the list fall back to BCP 47 matching if enabled.",
+        body=body,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -825,9 +936,6 @@ def settings_sections():
     profile_name = p["name"] if p else "(none)"
 
     body = f"""
-    <p style='margin-bottom:12px;'><a href='/settings' style='color:#3b82f6;text-decoration:none;font-size:13px;'>&larr; Back to Settings</a></p>
-    <p style='font-size:13px;color:#64748b;margin-bottom:14px;'>Active profile: <strong>{profile_name}</strong></p>
-
     <div class='card'>
         <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;'>
             <h2 style='margin:0;'>Section Mappings</h2>
@@ -853,10 +961,6 @@ def settings_sections():
     </div>
 
     <style>
-    .btn-sm {{ padding:5px 12px; border:1px solid #cbd5e1; border-radius:5px; font-size:12px; cursor:pointer; background:#fff; color:#374151; }}
-    .btn-sm:hover {{ background:#f1f5f9; }}
-    .btn-blue {{ background:#3b82f6; color:#fff; border-color:#3b82f6; }}
-    .btn-blue:hover {{ background:#2563eb; }}
     #sectionsTable td {{ padding:6px; border-bottom:1px solid #f1f5f9; }}
     #sectionsTable input {{
         padding:5px 8px; border:1px solid #cbd5e1; border-radius:4px; font-size:13px; width:100%;
@@ -913,7 +1017,12 @@ def settings_sections():
     renderSections();
     </script>
     """
-    return _settings_page("Section Mappings", body)
+    return _settings_layout(
+        active="sections",
+        title="Sections",
+        subtitle="Map path segments (or segment/subsegment pairs) to human-readable section labels.",
+        body=body,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -937,9 +1046,7 @@ def settings_logs():
         </tr>"""
 
     body = f"""
-    <p style='margin-bottom:12px;'><a href='/settings' style='color:#3b82f6;text-decoration:none;font-size:13px;'>&larr; Back to Settings</a></p>
-
-    <div class='card' style='margin-bottom:16px;'>
+    <div class='card'>
         <h2 style='margin-bottom:12px;'>Log Files</h2>
         <div class='table-wrapper' style='max-height:500px;'>
             <table class='sortable' style='width:100%;'>
@@ -952,7 +1059,7 @@ def settings_logs():
         </div>
     </div>
 
-    <div class='card' style='margin-bottom:16px;'>
+    <div class='card'>
         <h2 style='margin-bottom:10px;'>Ingestion</h2>
         <div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;'>
             <button class='btn-sm btn-blue' id='btnIngestSelected' onclick='runIngest("selected")'>Ingest Selected</button>
@@ -976,14 +1083,6 @@ def settings_logs():
         </div>
         <div id='rebuildProgress' style='font-size:13px;color:#64748b;'></div>
     </div>
-
-    <style>
-    .btn-sm {{ padding:5px 12px; border:1px solid #cbd5e1; border-radius:5px; font-size:12px; cursor:pointer; background:#fff; color:#374151; }}
-    .btn-sm:hover {{ background:#f1f5f9; }}
-    .btn-sm:disabled {{ opacity:0.4; cursor:not-allowed; }}
-    .btn-blue {{ background:#3b82f6; color:#fff; border-color:#3b82f6; }}
-    .btn-blue:hover {{ background:#2563eb; }}
-    </style>
 
     <script>
     // Select-all checkbox
@@ -1104,7 +1203,13 @@ def settings_logs():
     }}
     </script>
     """
-    return _settings_page("Log File Manager", body)
+    return _settings_layout(
+        active="logs",
+        title="Log Files",
+        subtitle="Browse ingested log files, trigger ingestion, and rebuild aggregates for a date range.",
+        body=body,
+        show_profile_chip=False,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1372,14 +1477,12 @@ def api_gsc_auth_url():
 @router.get("/settings/gsc", response_class=HTMLResponse)
 def settings_gsc():
     body = f"""
-    <p style='margin-bottom:12px;'><a href='/settings' style='color:#3b82f6;text-decoration:none;font-size:13px;'>&larr; Back to Settings</a></p>
-
-    <div id='gscStatus' class='card' style='margin-bottom:16px;'>
+    <div id='gscStatus' class='card'>
         <h2 style='margin-bottom:12px;'>Connection Status</h2>
         <div id='statusContent'>Loading...</div>
     </div>
 
-    <div id='setupSection' class='card' style='margin-bottom:16px;display:none;'>
+    <div id='setupSection' class='card' style='display:none;'>
         <h2 style='margin-bottom:12px;'>Connect Google Search Console</h2>
         <div style='font-size:13px;color:#64748b;line-height:1.6;margin-bottom:16px;'>
             <p style='margin-bottom:8px;'><strong>Setup instructions:</strong></p>
@@ -1411,7 +1514,7 @@ def settings_gsc():
     </div>
 
     <div id='connectedSection' style='display:none;'>
-        <div class='card' style='margin-bottom:16px;'>
+        <div class='card'>
             <h2 style='margin-bottom:12px;'>Sync Controls</h2>
             <div style='display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;'>
                 <button class='btn-sm btn-blue' onclick='triggerSync("daily")' id='btnDaily'>Sync Now (Last 3 Days)</button>
@@ -1425,7 +1528,7 @@ def settings_gsc():
             <div id='syncOutput' style='font-size:13px;color:#64748b;'></div>
         </div>
 
-        <div class='card' style='margin-bottom:16px;'>
+        <div class='card'>
             <h2 style='margin-bottom:12px;'>Recent Sync Log</h2>
             <div id='syncLog' class='table-wrapper'><p style='color:#94a3b8;font-size:13px;'>Loading...</p></div>
         </div>
@@ -1436,13 +1539,6 @@ def settings_gsc():
     </div>
 
     <style>
-    .btn-sm {{ padding:5px 12px; border:1px solid #cbd5e1; border-radius:5px; font-size:12px; cursor:pointer; background:#fff; color:#374151; }}
-    .btn-sm:hover {{ background:#f1f5f9; }}
-    .btn-sm:disabled {{ opacity:0.4; cursor:not-allowed; }}
-    .btn-blue {{ background:#3b82f6; color:#fff; border-color:#3b82f6; }}
-    .btn-blue:hover {{ background:#2563eb; }}
-    .btn-red {{ color:#dc2626; border-color:#fca5a5; }}
-    .btn-red:hover {{ background:#fef2f2; }}
     .prop-btn {{ display:block; width:100%; text-align:left; padding:8px 12px; margin-bottom:6px;
                  border:1px solid #e2e8f0; border-radius:6px; background:#fff; cursor:pointer; font-size:13px; }}
     .prop-btn:hover {{ background:#eff6ff; border-color:#3b82f6; }}
@@ -1641,4 +1737,10 @@ def settings_gsc():
     loadStatus();
     </script>
     """
-    return _settings_page("Search Console", body)
+    return _settings_layout(
+        active="gsc",
+        title="Search Console",
+        subtitle="Connect Google Search Console to join search performance data with server-log crawl activity.",
+        body=body,
+        show_profile_chip=False,
+    )
