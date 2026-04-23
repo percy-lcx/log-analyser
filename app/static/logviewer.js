@@ -458,6 +458,48 @@
   }
   window.closeDrawer = closeDrawer; // reachable from inline onclick in fragment
 
+  // Helpers for the drawer's quick-filter buttons. We can't put `new URL(...)`
+  // inside the inline `onclick` because inline-handler scope chains through
+  // `document` — `URL` resolves to the `document.URL` string property and
+  // throws "URL is not a constructor". Calling these via `window.lv…(…)` works
+  // because property access bypasses the shadowed identifier lookup.
+  window.lvApplyFilter = function (field, value) {
+    if (value == null) return;
+    var u = new URL(window.location.href);
+    u.searchParams.set('search', field + ':' + value);
+    u.searchParams.delete('page');
+    if (window.htmx) {
+      window.htmx.ajax('GET', u.pathname + u.search, { target: '#results', swap: 'innerHTML' });
+      window.history.pushState({}, '', u.toString());
+    } else {
+      window.location.href = u.toString();
+    }
+    closeDrawer();
+  };
+
+  window.lvCopyText = function (text, btn) {
+    if (text == null) return;
+    function ok() { if (btn) { btn.textContent = 'Copied'; } }
+    function fail() { if (btn) { btn.textContent = 'Copy failed'; } }
+    if (window.navigator && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(String(text)).then(ok, fail);
+      return;
+    }
+    // Fallback for non-secure contexts: hidden textarea + execCommand
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = String(text);
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'absolute';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      var success = document.execCommand && document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (success) ok(); else fail();
+    } catch (e) { fail(); }
+  };
+
   // When an htmx swap targets #drawer, open the drawer and highlight the row.
   document.body.addEventListener('htmx:afterSwap', function (evt) {
     closeAllPopovers();

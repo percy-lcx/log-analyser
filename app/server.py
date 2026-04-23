@@ -26,6 +26,7 @@ import functools
 import io
 import itertools
 from html import escape as html_escape
+from urllib.parse import quote as url_quote
 
 import yaml
 
@@ -4957,13 +4958,23 @@ def _lv2_results_card(
         ts_raw = r[col_idx["ts_utc"]] if "ts_utc" in col_idx else None
         ts_str = str(ts_raw) if ts_raw is not None else ""
         date_str = ts_str[:10] if ts_str else ""
+        path_raw = r[col_idx["path"]] if "path" in col_idx else None
+        ip_raw = r[col_idx["edge_ip"]] if "edge_ip" in col_idx else None
         row_attrs = ""
         if ts_str and date_str:
-            href = f"/logs/detail?date={html_escape(date_str, quote=True)}&ts={html_escape(ts_str, quote=True)}"
+            qs_parts = [
+                f"date={url_quote(date_str, safe='')}",
+                f"ts={url_quote(ts_str, safe='')}",
+            ]
+            if path_raw is not None:
+                qs_parts.append(f"path={url_quote(str(path_raw), safe='')}")
+            if ip_raw is not None:
+                qs_parts.append(f"ip={url_quote(str(ip_raw), safe='')}")
+            href = "/logs/detail?" + "&".join(qs_parts)
             row_attrs = (
                 f" data-row-ts='{html_escape(ts_str, quote=True)}' "
                 f"data-row-date='{html_escape(date_str, quote=True)}' "
-                f"hx-get='{href}' hx-target='#drawer' hx-swap='innerHTML' "
+                f"hx-get='{html_escape(href, quote=True)}' hx-target='#drawer' hx-swap='innerHTML' "
                 "hx-trigger='click' role='button' tabindex='0'"
             )
         for c in visible_cols:
@@ -5721,11 +5732,13 @@ def log_viewer(
             if name == "country":
                 return "CAST(country AS VARCHAR) AS country"
             return name
-        # Always fetch ts_utc so rows expose a stable key to the drawer, even
-        # when the user has hidden the Timestamp column.
+        # Always fetch ts_utc + path + edge_ip so rows expose a stable key to
+        # the drawer (ts_utc alone is second-precision, so multiple requests
+        # share it; path/ip disambiguate them).
         fetch_cols = list(visible_cols)
-        if "ts_utc" in schema_cols and "ts_utc" not in fetch_cols:
-            fetch_cols = ["ts_utc"] + fetch_cols
+        for needed in ("ts_utc", "path", "edge_ip"):
+            if needed in schema_cols and needed not in fetch_cols:
+                fetch_cols = [needed] + fetch_cols
         select_list = ", ".join(_col_select(c) for c in fetch_cols)
         data_sql = f"""
         SELECT {select_list}
@@ -5912,38 +5925,37 @@ def _lv2_drawer_fragment(entry: Any, cols: List[str], date: str, row_num: Option
         if kvs:
             body_sections.append(f"<h4>{html_escape(section_title)}</h4>" + "".join(kvs))
 
-    # Quick filter buttons (path + ip)
+    # Quick filter buttons (path + ip). Inline `onclick` handlers run with
+    # `document` in the scope chain, so `URL` resolves to `document.URL` (a
+    # string) and `new URL(...)` throws "URL is not a constructor". Route
+    # through helpers exposed on `window` from logviewer.js, and pass the
+    # value via `data-qf-value` so we don't have to JS-escape it inline.
     path_val = get("path")
     ip_val = get("edge_ip")
     quick_filters: List[str] = []
+
     if path_val:
-        esc = html_escape(f"path:{path_val}", quote=True)
         quick_filters.append(
-            f"<button type='button' class='qf' "
-            f"onclick=\"var u=new URL(window.location.href);u.searchParams.set('search','{esc}');"
-            "u.searchParams.delete('page');"
-            "if(window.htmx){window.htmx.ajax('GET',u.pathname+u.search,{target:'#results',swap:'innerHTML'});"
-            "window.history.pushState({},'',u.toString());}else{window.location.href=u.toString();}"
-            "closeDrawer&&closeDrawer();\">"
+            "<button type='button' class='qf' "
+            f"data-qf-value='{html_escape(str(path_val), quote=True)}' "
+            "onclick=\"window.lvApplyFilter&amp;&amp;window.lvApplyFilter('path',this.dataset.qfValue)\">"
             "<span class='qf-icon'>+</span>Filter path</button>"
         )
     if ip_val:
-        esc = html_escape(f"edge_ip:{ip_val}", quote=True)
         quick_filters.append(
-            f"<button type='button' class='qf' "
-            f"onclick=\"var u=new URL(window.location.href);u.searchParams.set('search','{esc}');"
-            "u.searchParams.delete('page');"
-            "if(window.htmx){window.htmx.ajax('GET',u.pathname+u.search,{target:'#results',swap:'innerHTML'});"
-            "window.history.pushState({},'',u.toString());}else{window.location.href=u.toString();}"
-            "closeDrawer&&closeDrawer();\">"
+            "<button type='button' class='qf' "
+            f"data-qf-value='{html_escape(str(ip_val), quote=True)}' "
+            "onclick=\"window.lvApplyFilter&amp;&amp;window.lvApplyFilter('edge_ip',this.dataset.qfValue)\">"
             "<span class='qf-icon'>+</span>Filter this IP</button>"
         )
     if ua_val:
-        esc = html_escape(str(ua_val), quote=True)
         quick_filters.append(
-            f"<button type='button' class='qf' onclick=\"navigator.clipboard&&navigator.clipboard.writeText('{esc}');this.textContent='Copied';\">"
+            "<button type='button' class='qf' "
+            f"data-qf-value='{html_escape(str(ua_val), quote=True)}' "
+            "onclick=\"window.lvCopyText&amp;&amp;window.lvCopyText(this.dataset.qfValue,this)\">"
             "<span class='qf-icon'>⧉</span>Copy UA</button>"
         )
+
     quick_filters_html = (
         f"<div class='quick-filters'>{''.join(quick_filters)}</div>" if quick_filters else ""
     )
@@ -5988,6 +6000,8 @@ def log_detail(
     date: str = Query(...),
     row: Optional[int] = Query(None),
     ts: Optional[str] = Query(None),
+    path: Optional[str] = Query(None),
+    ip: Optional[str] = Query(None),
 ):
     """Show all fields for a single log entry, keyed by `ts` (preferred) or `row`.
 
@@ -6028,11 +6042,17 @@ def log_detail(
     select_list = ", ".join(_detail_col(c) for c in detail_schema_cols)
     if ts:
         esc_ts = sql_escape_string(ts)
+        extra_where = ""
+        if path is not None and "path" in detail_schema_cols:
+            extra_where += f" AND path = '{sql_escape_string(path)}'"
+        if ip is not None and "edge_ip" in detail_schema_cols:
+            extra_where += f" AND edge_ip = '{sql_escape_string(ip)}'"
         sql = f"""
         SELECT {select_list}
         FROM t
-        WHERE CAST(ts_utc AS VARCHAR) = '{esc_ts}'
-           OR CAST(ts_utc AS VARCHAR) LIKE '{esc_ts}%'
+        WHERE (CAST(ts_utc AS VARCHAR) = '{esc_ts}'
+               OR CAST(ts_utc AS VARCHAR) LIKE '{esc_ts}%')
+              {extra_where}
         ORDER BY ts_utc
         LIMIT 1;
         """
