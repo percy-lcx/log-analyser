@@ -628,12 +628,25 @@
     } catch (e) { fail(); }
   };
 
+  // Keep the Rows/Group/Timeseries segmented control in sync with the URL.
+  // The control lives outside #results, so it isn't re-rendered on swap — we
+  // re-apply the .active class from the current location.
+  function syncModeSeg() {
+    var seg = document.querySelector('[data-mode-seg]');
+    if (!seg) return;
+    var mode = new URLSearchParams(window.location.search).get('mode') || 'rows';
+    seg.querySelectorAll('a[data-mode-val]').forEach(function (a) {
+      a.classList.toggle('active', a.getAttribute('data-mode-val') === mode);
+    });
+  }
+
   // When an htmx swap targets #drawer, open the drawer and highlight the row.
   document.body.addEventListener('htmx:afterSwap', function (evt) {
     closeAllPopovers();
     if (evt.target && evt.target.id === 'drawer') {
       openDrawer();
     }
+    syncModeSeg();
   });
 
   // Close clicks: data-drawer-close button, or backdrop click
@@ -698,15 +711,29 @@
     }
   });
 
+  // ── Chart metric dropdown: change → navigate to the option's data-href ──
+  document.addEventListener('change', function (e) {
+    var sel = e.target && e.target.closest && e.target.closest('[data-chart-metric-sel]');
+    if (!sel) return;
+    var opt = sel.options[sel.selectedIndex];
+    if (!opt) return;
+    var href = opt.getAttribute('data-href');
+    if (href) navigate(href);
+  });
+
   // ── Chart hover tooltip: mouse over .chart-svg hitboxes → show details ──
   (function wireChartHover() {
-    var SERIES = [
-      { key: 's2', label: '2xx', fill: '#b7d1b5' },
-      { key: 's3', label: '3xx', fill: '#a9bfde' },
-      { key: 's4', label: '4xx', fill: '#e6c888' },
-      { key: 's5', label: '5xx', fill: '#d6a4a4' },
-    ];
     function fmtNum(n) { return (n || 0).toLocaleString(); }
+    function fmtBytes(n) {
+      n = Number(n || 0);
+      if (n <= 0) return '0 B';
+      var units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+      var i = 0;
+      while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+      if (n >= 100 || i === 0) return Math.round(n) + ' ' + units[i];
+      if (n >= 10) return n.toFixed(1) + ' ' + units[i];
+      return n.toFixed(2) + ' ' + units[i];
+    }
     function fmtRange(t0, t1) {
       var d0 = new Date(t0);
       var d1 = new Date(t1);
@@ -758,21 +785,62 @@
       if (!tip) return;
       var t0 = parseInt(hit.getAttribute('data-t0') || '0', 10);
       var t1 = parseInt(hit.getAttribute('data-t1') || '0', 10);
-      var counts = {};
-      var total = 0;
-      SERIES.forEach(function (s) {
-        counts[s.key] = parseInt(hit.getAttribute('data-' + s.key) || '0', 10);
-        total += counts[s.key];
-      });
-      var rows = SERIES.map(function (s) {
-        return '<div class="tt-row"><span class="tt-label"><span class="tt-sw" style="background:' +
-          s.fill + '"></span>' + s.label + '</span>' +
-          '<span class="tt-val">' + fmtNum(counts[s.key]) + '</span></div>';
-      }).join('');
-      tip.innerHTML =
-        '<div class="tt-time">' + fmtRange(t0, t1) + '</div>' +
-        rows +
-        '<div class="tt-total"><span>Total</span><span>' + fmtNum(total) + '</span></div>';
+      var metric = card.getAttribute('data-metric') || 'requests';
+      var body = '';
+      if (metric === 'bytes') {
+        var v = parseInt(hit.getAttribute('data-v') || '0', 10);
+        body =
+          '<div class="tt-row"><span class="tt-label"><span class="tt-sw" style="background:#c9c4b0"></span>Bytes sent</span>' +
+          '<span class="tt-val">' + fmtBytes(v) + '</span></div>';
+      } else if (metric === 'status') {
+        var STATUS_SERIES = [
+          { key: 's2', label: '2xx', fill: '#b7d1b5' },
+          { key: 's3', label: '3xx', fill: '#a9bfde' },
+          { key: 's4', label: '4xx', fill: '#e6c888' },
+          { key: 's5', label: '5xx', fill: '#d6a4a4' },
+        ];
+        var counts = {};
+        var total = 0;
+        STATUS_SERIES.forEach(function (s) {
+          counts[s.key] = parseInt(hit.getAttribute('data-' + s.key) || '0', 10);
+          total += counts[s.key];
+        });
+        var rows = STATUS_SERIES.map(function (s) {
+          return '<div class="tt-row"><span class="tt-label"><span class="tt-sw" style="background:' +
+            s.fill + '"></span>' + s.label + '</span>' +
+            '<span class="tt-val">' + fmtNum(counts[s.key]) + '</span></div>';
+        }).join('');
+        body = rows + '<div class="tt-total"><span>Total</span><span>' + fmtNum(total) + '</span></div>';
+      } else if (metric === 'bots') {
+        var human = parseInt(hit.getAttribute('data-human') || '0', 10);
+        var bot = parseInt(hit.getAttribute('data-bot') || '0', 10);
+        var tot = human + bot;
+        var botPct = tot > 0 ? (bot * 100 / tot) : 0;
+        body =
+          '<div class="tt-row"><span class="tt-label"><span class="tt-sw" style="background:#b7d1b5"></span>Humans</span>' +
+          '<span class="tt-val">' + fmtNum(human) + '</span></div>' +
+          '<div class="tt-row"><span class="tt-label"><span class="tt-sw" style="background:#a9bfde"></span>Bots</span>' +
+          '<span class="tt-val">' + fmtNum(bot) + '</span></div>' +
+          '<div class="tt-total"><span>Bot share</span><span>' + botPct.toFixed(1) + '%</span></div>';
+      } else if (metric === 'errors') {
+        var pct = parseFloat(hit.getAttribute('data-pct') || '0');
+        var err = parseInt(hit.getAttribute('data-err') || '0', 10);
+        var den = parseInt(hit.getAttribute('data-den') || '0', 10);
+        if (den <= 0) {
+          body = '<div class="tt-row"><span class="tt-label">No requests</span><span class="tt-val">—</span></div>';
+        } else {
+          body =
+            '<div class="tt-row"><span class="tt-label"><span class="tt-sw" style="background:#e6c2c2"></span>Error rate</span>' +
+            '<span class="tt-val">' + pct.toFixed(1) + '%</span></div>' +
+            '<div class="tt-total"><span>Errors / total</span><span>' + fmtNum(err) + ' / ' + fmtNum(den) + '</span></div>';
+        }
+      } else {
+        var n = parseInt(hit.getAttribute('data-v') || '0', 10);
+        body =
+          '<div class="tt-row"><span class="tt-label"><span class="tt-sw" style="background:#b7d1b5"></span>Requests</span>' +
+          '<span class="tt-val">' + fmtNum(n) + '</span></div>';
+      }
+      tip.innerHTML = '<div class="tt-time">' + fmtRange(t0, t1) + '</div>' + body;
 
       // Position tooltip relative to card, centered on bucket.
       var cardRect = card.getBoundingClientRect();

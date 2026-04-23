@@ -3622,6 +3622,8 @@ LOG_STACK_BY_OPTIONS = [
     ("bot_family", "Bot family"),
     ("url_group", "URL group"),
     ("method", "HTTP method"),
+    ("referer_type", "Referer type"),
+    ("country", "Country"),
 ]
 
 LOG_SORT_BY_OPTIONS = [
@@ -4074,6 +4076,7 @@ def _render_log_timeseries_mode(
 # the preset expands to. Dates passed by the caller win over preset dates
 # (so bookmarks retain the user's chosen range).
 LOG_PRESETS: Dict[str, Dict[str, str]] = {
+    # ── Group presets ─────────────────────────────────────────────────────
     "top-4xx": {"mode": "group", "group_by": "path", "status_class": "4",
                 "sort_by": "hits", "include_assets": "false"},
     "top-5xx": {"mode": "group", "group_by": "path", "status_class": "5",
@@ -4085,17 +4088,33 @@ LOG_PRESETS: Dict[str, Dict[str, str]] = {
     "top-urls": {"mode": "group", "group_by": "path", "is_bot": "false",
                  "include_assets": "false"},
     "url-groups": {"mode": "group", "group_by": "url_group"},
-    "traffic": {"mode": "timeseries", "bucket": "day", "stack_by": "is_bot"},
-    "status-over-time": {"mode": "timeseries", "bucket": "day",
-                          "stack_by": "status_class"},
     "bot-families": {"mode": "group", "group_by": "bot_family", "is_bot": "true"},
     "bot-categories": {"mode": "group", "group_by": "bot_category", "is_bot": "true"},
     "crawl-waste": {"mode": "group", "group_by": "path", "is_bot": "true",
                     "sort_by": "waste_score"},
+    "heavy-urls": {"mode": "group", "group_by": "path", "sort_by": "bytes",
+                   "include_assets": "false"},
+    "top-countries": {"mode": "group", "group_by": "country"},
+    "top-locales": {"mode": "group", "group_by": "locale"},
     "utm-sources": {"mode": "group", "group_by": "utm_source_norm"},
     "internal-nav": {"mode": "group", "group_by": "referer_path",
                      "group_by_2": "path", "referer_type": "Internal"},
     "referer-types": {"mode": "group", "group_by": "referer_type"},
+    # ── Timeseries presets ────────────────────────────────────────────────
+    "traffic": {"mode": "timeseries", "bucket": "day", "stack_by": "is_bot"},
+    "hourly-traffic": {"mode": "timeseries", "bucket": "hour", "stack_by": "is_bot"},
+    "status-over-time": {"mode": "timeseries", "bucket": "day",
+                          "stack_by": "status_class"},
+    "errors-over-time": {"mode": "timeseries", "bucket": "day",
+                          "stack_by": "status_class", "status_class": "4,5"},
+    "methods-over-time": {"mode": "timeseries", "bucket": "day", "stack_by": "method"},
+    "url-groups-over-time": {"mode": "timeseries", "bucket": "day",
+                              "stack_by": "url_group"},
+    "bot-families-over-time": {"mode": "timeseries", "bucket": "day",
+                                "stack_by": "bot_family", "is_bot": "true"},
+    "countries-over-time": {"mode": "timeseries", "bucket": "day", "stack_by": "country"},
+    "referers-over-time": {"mode": "timeseries", "bucket": "day",
+                            "stack_by": "referer_type"},
 }
 
 
@@ -4104,27 +4123,39 @@ LOG_PRESETS: Dict[str, Dict[str, str]] = {
 LOG_PRESET_CHIP_GROUPS: List[Tuple[str, List[Tuple[str, str]]]] = [
     ("Traffic", [
         ("traffic", "Daily traffic"),
+        ("hourly-traffic", "Hourly traffic"),
         ("status-over-time", "Status over time"),
+        ("methods-over-time", "Methods over time"),
     ]),
     ("Errors", [
         ("top-4xx", "Top 4xx"),
         ("top-5xx", "Top 5xx"),
         ("top-404", "Top 404"),
         ("top-3xx", "Top 3xx"),
+        ("errors-over-time", "Errors over time"),
     ]),
     ("URLs", [
         ("top-urls", "Top content URLs"),
         ("url-groups", "URL groups"),
+        ("heavy-urls", "Heaviest URLs"),
+        ("url-groups-over-time", "URL groups over time"),
     ]),
     ("Bots", [
         ("bot-families", "Bot families"),
         ("bot-categories", "Bot categories"),
         ("crawl-waste", "Crawl waste"),
+        ("bot-families-over-time", "Bot families over time"),
+    ]),
+    ("Geo", [
+        ("top-countries", "Top countries"),
+        ("top-locales", "Top locales"),
+        ("countries-over-time", "Countries over time"),
     ]),
     ("Acquisition", [
         ("utm-sources", "UTM sources"),
         ("referer-types", "Referer types"),
         ("internal-nav", "Internal nav"),
+        ("referers-over-time", "Referers over time"),
     ]),
 ]
 
@@ -4356,7 +4387,7 @@ def _lv2_kb_help() -> str:
 def _lv2_page_head(title: str, count_text: str, mode: str, params: Dict[str, Any]) -> str:
     modes = [("rows", "Rows"), ("group", "Group"), ("timeseries", "Timeseries")]
     seg_links = "".join(
-        f"<a class='{'active' if mode == mv else ''}' "
+        f"<a data-mode-val='{mv}' class='{'active' if mode == mv else ''}' "
         f"href='/logs?{_lv2_build_qs(params, mode=mv, page=None)}' "
         f"hx-get='/logs?{_lv2_build_qs(params, mode=mv, page=None)}' "
         f"hx-target='#results' hx-push-url='true' hx-swap='innerHTML'>{html_escape(ml)}</a>"
@@ -4367,11 +4398,37 @@ def _lv2_page_head(title: str, count_text: str, mode: str, params: Dict[str, Any
         "<div class='page-head'>"
         f"<div><div class='page-title'>{html_escape(title)} <small>{count_text}</small></div></div>"
         "<div class='page-actions'>"
-        f"<div class='seg' role='tablist'>{seg_links}</div>"
+        f"<div class='seg' role='tablist' data-mode-seg>{seg_links}</div>"
         f"<a class='btn btn-sm' href='/export/logs?{export_qs}' title='Export'>{_lv2_icon('download')}<span>Export</span></a>"
         "</div>"
         "</div>"
     )
+
+
+def _lv2_presets_strip(date_from: Optional[str], date_to: Optional[str]) -> str:
+    """Preset chip strip: one-click shortcuts to Group / Timeseries views.
+
+    Sits below the Saved Views strip on the /logs page. Each chip redirects
+    via /logs?preset=<key>, which _resolve_log_preset expands into the full
+    filter/mode params. The user's current date range is preserved so the
+    preset reuses the chosen window.
+    """
+    date_qs = ""
+    if date_from:
+        date_qs += f"&from={html_escape(date_from, quote=True)}"
+    if date_to:
+        date_qs += f"&to={html_escape(date_to, quote=True)}"
+
+    parts: List[str] = ["<div class='presets-strip'>", "<span class='presets-label'>Presets</span>"]
+    for cat_idx, (category, chips) in enumerate(LOG_PRESET_CHIP_GROUPS):
+        if cat_idx > 0:
+            parts.append("<span class='presets-divider' aria-hidden='true'></span>")
+        parts.append(f"<span class='presets-cat'>{html_escape(category)}</span>")
+        for preset_key, label in chips:
+            href = f"/logs?preset={html_escape(preset_key, quote=True)}{date_qs}"
+            parts.append(f"<a class='preset-chip' href='{html_escape(href, quote=True)}'>{html_escape(label)}</a>")
+    parts.append("</div>")
+    return "".join(parts)
 
 
 def _lv2_views_strip(active_view: Optional[str], date_from: Optional[str], date_to: Optional[str]) -> str:
@@ -5217,9 +5274,36 @@ def _lv2_report_shell(
 
 
 # ── Phase 3 chart emitter ────────────────────────────────────────────────
-# Stacked area SVG by status class (2xx/3xx/4xx/5xx). The card exposes t0/t1
-# (epoch ms of the rendered range) on the root div so the JS island can
-# translate pointer-x into a timestamp for brushing.
+# Area SVG over time for one of several metrics (requests / bytes / bots /
+# error-rate). The card exposes t0/t1 (epoch ms of the rendered range) and
+# the active metric on the root div so the JS island can translate pointer-x
+# into a timestamp for brushing and format the hover tooltip.
+_CHART_METRIC_OPTIONS: List[Tuple[str, str]] = [
+    ("requests", "Requests"),
+    ("status", "Status class"),
+    ("bytes", "Bytes sent"),
+    ("bots", "Humans vs bots"),
+    ("errors", "Error rate"),
+]
+
+
+def _fmt_bytes_short(n: float) -> str:
+    """Human-friendly byte label (1.2 KB / 3.4 MB / …). 0 → '0 B'."""
+    n = float(n or 0)
+    if n <= 0:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    i = 0
+    while n >= 1024 and i < len(units) - 1:
+        n /= 1024.0
+        i += 1
+    if n >= 100 or i == 0:
+        return f"{int(round(n))} {units[i]}"
+    if n >= 10:
+        return f"{n:.1f} {units[i]}"
+    return f"{n:.2f} {units[i]}"
+
+
 def _lv2_chart_card(
     *,
     paths: List[str],
@@ -5229,6 +5313,7 @@ def _lv2_chart_card(
     bt0: Optional[int],
     bt1: Optional[int],
     params: Dict[str, Any],
+    metric: str = "requests",
 ) -> str:
     # Compute range endpoints as unix ms. Partitions are keyed by local date
     # but ts_utc can span wider; querying MIN/MAX of the filtered data gives a
@@ -5262,12 +5347,37 @@ def _lv2_chart_card(
     # brushed region against the full chart. We reuse the same WHERE clauses
     # passed in, but remove any brush clause the caller included.
     chart_where = where  # already excludes brush because caller builds WHERE from brush-aware clauses
+
+    # Per-metric SQL. Each variant returns one row per bucket; the `select_cols`
+    # text names the value columns the renderer expects below.
+    bucket_expr = f"CAST(FLOOR((EPOCH_MS(ts_utc) - {t0_ms}) / {bucket_ms:.6f}) AS BIGINT) AS bucket"
+    if metric == "bytes":
+        select_cols = f"{bucket_expr}, SUM(COALESCE(bytes_sent, 0)) AS v"
+    elif metric == "status":
+        select_cols = (
+            f"{bucket_expr}, "
+            "COUNT(*) FILTER (WHERE status >= 200 AND status < 300) AS s2xx, "
+            "COUNT(*) FILTER (WHERE status >= 300 AND status < 400) AS s3xx, "
+            "COUNT(*) FILTER (WHERE status >= 400 AND status < 500) AS s4xx, "
+            "COUNT(*) FILTER (WHERE status >= 500 AND status < 600) AS s5xx"
+        )
+    elif metric == "bots":
+        select_cols = (
+            f"{bucket_expr}, "
+            "COUNT(*) FILTER (WHERE is_bot = true) AS v_bot, "
+            "COUNT(*) FILTER (WHERE is_bot IS NOT TRUE) AS v_human"
+        )
+    elif metric == "errors":
+        select_cols = (
+            f"{bucket_expr}, "
+            "COUNT(*) FILTER (WHERE status >= 400 AND status < 600) AS err, "
+            "COUNT(*) AS tot"
+        )
+    else:  # "requests"
+        select_cols = f"{bucket_expr}, COUNT(*) AS v"
+
     chart_sql = f"""
-    SELECT CAST(FLOOR((EPOCH_MS(ts_utc) - {t0_ms}) / {bucket_ms:.6f}) AS BIGINT) AS bucket,
-           COUNT(*) FILTER (WHERE status >= 200 AND status < 300) AS s2xx,
-           COUNT(*) FILTER (WHERE status >= 300 AND status < 400) AS s3xx,
-           COUNT(*) FILTER (WHERE status >= 400 AND status < 500) AS s4xx,
-           COUNT(*) FILTER (WHERE status >= 500 AND status < 600) AS s5xx
+    SELECT {select_cols}
     FROM t {chart_where}
     GROUP BY bucket
     HAVING bucket >= 0 AND bucket < {N_BUCKETS}
@@ -5278,18 +5388,84 @@ def _lv2_chart_card(
     except Exception:
         return ""
 
-    buckets = [[0, 0, 0, 0] for _ in range(N_BUCKETS)]  # s2xx/s3xx/s4xx/s5xx
-    for br, s2, s3, s4, s5 in rows:
-        i = max(0, min(N_BUCKETS - 1, int(br)))
-        buckets[i] = [int(s2 or 0), int(s3 or 0), int(s4 or 0), int(s5 or 0)]
+    # Normalise query results into a list of layers per bucket. Layers stack
+    # bottom-up so index 0 is the bottom area.
+    # layer_info: list of (label, fill, stroke)
+    if metric == "bytes":
+        layer_info = [("Bytes", "#c9c4b0", "#857f67")]
+        buckets: List[List[float]] = [[0.0] for _ in range(N_BUCKETS)]
+        for br, v in rows:
+            i = max(0, min(N_BUCKETS - 1, int(br)))
+            buckets[i] = [float(v or 0)]
+        # errors_den holds raw denominators for tooltip context; unused here.
+        errors_den = [0] * N_BUCKETS
+    elif metric == "status":
+        layer_info = [
+            ("2xx", "#b7d1b5", "#3d7048"),
+            ("3xx", "#a9bfde", "#3a5a86"),
+            ("4xx", "#e6c888", "#8a6824"),
+            ("5xx", "#d6a4a4", "#8a3a3a"),
+        ]
+        buckets = [[0.0, 0.0, 0.0, 0.0] for _ in range(N_BUCKETS)]
+        for br, s2, s3, s4, s5 in rows:
+            i = max(0, min(N_BUCKETS - 1, int(br)))
+            buckets[i] = [float(s2 or 0), float(s3 or 0), float(s4 or 0), float(s5 or 0)]
+        errors_den = [0] * N_BUCKETS
+    elif metric == "bots":
+        layer_info = [
+            ("Humans", "#b7d1b5", "#3d7048"),
+            ("Bots", "#a9bfde", "#3a5a86"),
+        ]
+        buckets = [[0.0, 0.0] for _ in range(N_BUCKETS)]
+        for br, v_bot, v_human in rows:
+            i = max(0, min(N_BUCKETS - 1, int(br)))
+            buckets[i] = [float(v_human or 0), float(v_bot or 0)]
+        errors_den = [0] * N_BUCKETS
+    elif metric == "errors":
+        layer_info = [("Error rate", "#e6c2c2", "#8a3a3a")]
+        buckets = [[0.0] for _ in range(N_BUCKETS)]
+        errors_den = [0] * N_BUCKETS
+        for br, err, tot in rows:
+            i = max(0, min(N_BUCKETS - 1, int(br)))
+            t = int(tot or 0)
+            e = int(err or 0)
+            pct = (e * 100.0 / t) if t > 0 else 0.0
+            buckets[i] = [pct]
+            errors_den[i] = t
+    else:  # "requests"
+        layer_info = [("Requests", "#b7d1b5", "#3d7048")]
+        buckets = [[0.0] for _ in range(N_BUCKETS)]
+        for br, v in rows:
+            i = max(0, min(N_BUCKETS - 1, int(br)))
+            buckets[i] = [float(v or 0)]
+        errors_den = [0] * N_BUCKETS
 
     totals = [sum(b) for b in buckets]
-    y_max = max(totals) if totals else 0
-    if y_max <= 0:
+    if metric == "errors":
+        # Fixed 0–100% scale so "27%" means the same across time ranges.
+        y_max = 100.0
+        has_data = any(d > 0 for d in errors_den)
+    else:
+        y_max = max(totals) if totals else 0
+        has_data = y_max > 0
+
+    metric_title = {
+        "requests": "Requests over time",
+        "status": "Status class over time",
+        "bytes": "Bytes sent over time",
+        "bots": "Humans vs bots over time",
+        "errors": "Error rate over time",
+    }.get(metric, "Requests over time")
+
+    if not has_data:
+        dropdown_empty = _lv2_chart_metric_dropdown(params, metric)
         return (
             "<div class='chart-card'>"
-            "<div class='chart-head'><div class='chart-title'><h3>Requests over time</h3>"
-            "<span class='ch-total'>0 requests</span></div></div>"
+            "<div class='chart-head'>"
+            f"<div class='chart-title'><h3>{html_escape(metric_title)}</h3>"
+            "<span class='ch-total'>no data</span></div>"
+            f"{dropdown_empty}"
+            "</div>"
             "<div class='empty' style='padding:40px;'>No data in range.</div>"
             "</div>"
         )
@@ -5306,19 +5482,17 @@ def _lv2_chart_card(
     def y_at(v: float) -> float:
         return T + (1 - v / y_max) * plot_h
 
-    # Colors for stacked areas (2xx/3xx/4xx/5xx)
-    area_fills = ["#b7d1b5", "#a9bfde", "#e6c888", "#d6a4a4"]
-    area_strokes = ["#3d7048", "#3a5a86", "#8a6824", "#8a3a3a"]
-    legend_labels = ["2xx", "3xx", "4xx", "5xx"]
+    n_layers = len(layer_info)
+    area_fills = [li[1] for li in layer_info]
+    area_strokes = [li[2] for li in layer_info]
+    legend_labels = [li[0] for li in layer_info]
 
     # Stacked cumulative: for each bucket, cumulative totals from the bottom.
-    # Areas drawn bottom-up, so layer 0 (2xx) is at the bottom and layer 3
-    # (5xx) at the top.
+    # Areas drawn bottom-up, so layer 0 is at the bottom.
     lower = [0.0] * N_BUCKETS
     paths_svg: List[str] = []
-    for layer in range(4):
+    for layer in range(n_layers):
         upper = [lower[i] + buckets[i][layer] for i in range(N_BUCKETS)]
-        # Upper boundary left-to-right, lower boundary right-to-left.
         pts_top = [f"{x_at(i):.2f},{y_at(upper[i]):.2f}" for i in range(N_BUCKETS)]
         pts_bot = [f"{x_at(i):.2f},{y_at(lower[i]):.2f}" for i in reversed(range(N_BUCKETS))]
         d = "M" + " L".join(pts_top + pts_bot) + " Z"
@@ -5328,14 +5502,21 @@ def _lv2_chart_card(
         )
         lower = upper
 
-    # Y-axis grid lines at 25/50/75/100% of y_max
+    # Y-axis grid lines at 25/50/75/100% of y_max. Label formatting follows
+    # the metric (counts, bytes, or percentage).
+    def _fmt_axis(v: float) -> str:
+        if metric == "bytes":
+            return _fmt_bytes_short(v)
+        if metric == "errors":
+            return f"{int(round(v))}%"
+        return f"{int(round(v)):,}"
+
     grid_html: List[str] = []
     for frac in (0.25, 0.5, 0.75, 1.0):
         yv = y_max * frac
         y = y_at(yv)
         grid_html.append(f"<line x1='{L}' x2='{W - R}' y1='{y:.2f}' y2='{y:.2f}' stroke='#ecebe7' stroke-dasharray='2,2'/>")
-        label = int(round(yv))
-        grid_html.append(f"<text x='{L - 6}' y='{y + 3:.2f}' font-size='10' fill='#97938d' text-anchor='end'>{label}</text>")
+        grid_html.append(f"<text x='{L - 6}' y='{y + 3:.2f}' font-size='10' fill='#97938d' text-anchor='end'>{html_escape(_fmt_axis(yv))}</text>")
 
     # Brush overlay — rectangle showing the currently-brushed window
     brush_html = ""
@@ -5366,32 +5547,82 @@ def _lv2_chart_card(
         tick_labels.append(label)
     xaxis_html = "".join(f"<span>{html_escape(lbl)}</span>" for lbl in tick_labels)
 
-    # Legend with totals
-    series_totals = [sum(b[layer] for b in buckets) for layer in range(4)]
-    legend_html = "".join(
-        f"<span><span class='lg-swatch' style='background:{area_fills[i]};outline:1px solid {area_strokes[i]}33;'></span>"
-        f"{legend_labels[i]} <strong style='color:var(--ink-1);margin-left:2px;'>{series_totals[i]:,}</strong></span>"
-        for i in range(4)
-    )
+    # Legend with per-series totals. For error-rate the "total" concept is
+    # a weighted average, not a sum — show error count / total requests instead.
+    def _fmt_legend_val(layer: int, val: float) -> str:
+        if metric == "bytes":
+            return _fmt_bytes_short(val)
+        return f"{int(round(val)):,}"
 
-    # Per-bucket invisible hitboxes so the client can show a hover tooltip.
+    if metric == "errors":
+        err_sum = sum(b[0] * errors_den[i] / 100.0 for i, b in enumerate(buckets))
+        den_sum = sum(errors_den)
+        avg_pct = (err_sum * 100.0 / den_sum) if den_sum > 0 else 0.0
+        legend_html = (
+            f"<span><span class='lg-swatch' style='background:{area_fills[0]};outline:1px solid {area_strokes[0]}33;'></span>"
+            f"{html_escape(legend_labels[0])} "
+            f"<strong style='color:var(--ink-1);margin-left:2px;'>{avg_pct:.1f}%</strong> "
+            f"<span style='color:var(--ink-4);margin-left:2px;'>({int(round(err_sum)):,} of {den_sum:,})</span>"
+            "</span>"
+        )
+    else:
+        series_totals = [sum(b[layer] for b in buckets) for layer in range(n_layers)]
+        legend_html = "".join(
+            f"<span><span class='lg-swatch' style='background:{area_fills[i]};outline:1px solid {area_strokes[i]}33;'></span>"
+            f"{html_escape(legend_labels[i])} <strong style='color:var(--ink-1);margin-left:2px;'>{html_escape(_fmt_legend_val(i, series_totals[i]))}</strong></span>"
+            for i in range(n_layers)
+        )
+
+    # Per-bucket invisible hitboxes. Attribute names vary by metric so the
+    # client can render the right tooltip payload.
     hit_w = plot_w / N_BUCKETS
     hitbox_html: List[str] = []
     for i in range(N_BUCKETS):
         hx = L + i * hit_w
         b0 = int(round(t0_ms + i * bucket_ms))
         b1 = int(round(t0_ms + (i + 1) * bucket_ms))
-        s2, s3, s4, s5 = buckets[i]
         cx = x_at(i)
+        if metric == "bots":
+            v_human, v_bot = buckets[i]
+            extra = f"data-human='{int(round(v_human))}' data-bot='{int(round(v_bot))}'"
+        elif metric == "status":
+            s2, s3, s4, s5 = buckets[i]
+            extra = (
+                f"data-s2='{int(round(s2))}' data-s3='{int(round(s3))}' "
+                f"data-s4='{int(round(s4))}' data-s5='{int(round(s5))}'"
+            )
+        elif metric == "errors":
+            pct = buckets[i][0]
+            den = errors_den[i]
+            num = int(round(pct * den / 100.0))
+            extra = f"data-pct='{pct:.2f}' data-err='{num}' data-den='{den}'"
+        elif metric == "bytes":
+            extra = f"data-v='{int(round(buckets[i][0]))}'"
+        else:  # requests
+            extra = f"data-v='{int(round(buckets[i][0]))}'"
         hitbox_html.append(
             f"<rect data-chart-hitbox x='{hx:.2f}' y='{T}' "
             f"width='{hit_w:.4f}' height='{plot_h:.2f}' "
             f"data-idx='{i}' data-cx='{cx:.2f}' "
-            f"data-t0='{b0}' data-t1='{b1}' "
-            f"data-s2='{s2}' data-s3='{s3}' data-s4='{s4}' data-s5='{s5}'/>"
+            f"data-t0='{b0}' data-t1='{b1}' {extra}/>"
         )
 
-    total_requests = sum(totals)
+    # Header summary text under the title. Counts for count-like metrics,
+    # total bytes for bytes, weighted average for error rate.
+    if metric == "bytes":
+        total_val = sum(b[0] for b in buckets)
+        summary_html = f"<strong>{html_escape(_fmt_bytes_short(total_val))}</strong> sent · {N_BUCKETS} buckets"
+    elif metric == "bots":
+        tot = int(sum(totals))
+        summary_html = f"<strong>{tot:,}</strong> requests · {N_BUCKETS} buckets"
+    elif metric == "errors":
+        den_sum = sum(errors_den)
+        err_sum = int(round(sum(b[0] * errors_den[i] / 100.0 for i, b in enumerate(buckets))))
+        avg_pct = (err_sum * 100.0 / den_sum) if den_sum > 0 else 0.0
+        summary_html = f"<strong>{avg_pct:.1f}%</strong> avg · {err_sum:,} of {den_sum:,}"
+    else:
+        tot = int(sum(totals))
+        summary_html = f"<strong>{tot:,}</strong> requests · {N_BUCKETS} buckets"
 
     # Clear-brush chip when active
     brush_chip = ""
@@ -5404,18 +5635,22 @@ def _lv2_chart_card(
             "</span>"
         )
 
+    dropdown_html = _lv2_chart_metric_dropdown(params, metric)
+
     return (
         "<div class='chart-card' data-lv2-chart "
+        f"data-metric='{html_escape(metric, quote=True)}' "
         f"data-t0='{t0_ms}' data-t1='{t1_ms}' "
         f"data-bt0='{bt0 if bt0 is not None else ''}' data-bt1='{bt1 if bt1 is not None else ''}' "
         f"data-plot-l='{L}' data-plot-r='{R}' data-plot-t='{T}' data-plot-h='{plot_h}'>"
         "<div class='chart-head'>"
         "<div class='chart-title'>"
-        "<h3>Requests over time</h3>"
-        f"<span class='ch-total'><strong>{total_requests:,}</strong> requests · {N_BUCKETS} buckets</span>"
+        f"<h3>{html_escape(metric_title)}</h3>"
+        f"<span class='ch-total'>{summary_html}</span>"
         f"{brush_chip}"
         "</div>"
         f"<div class='chart-legend'>{legend_html}</div>"
+        f"{dropdown_html}"
         "</div>"
         f"<svg class='chart-svg' viewBox='0 0 {W} {H}' preserveAspectRatio='none'>"
         f"{''.join(grid_html)}"
@@ -5427,6 +5662,26 @@ def _lv2_chart_card(
         f"<div class='chart-xaxis' style='padding-left:{L}px;padding-right:{R}px;'>{xaxis_html}</div>"
         "<div class='chart-tooltip' data-chart-tooltip aria-hidden='true'></div>"
         "</div>"
+    )
+
+
+def _lv2_chart_metric_dropdown(params: Dict[str, Any], current: str) -> str:
+    """Right-aligned <select> in the chart header. Each option pre-builds the
+    target URL with chart_metric swapped; JS reads data-href on change and
+    navigates via htmx (falls back to full reload)."""
+    options = []
+    for key, label in _CHART_METRIC_OPTIONS:
+        qs_val = None if key == "requests" else key
+        href = "/logs?" + _lv2_build_qs(params, chart_metric=qs_val, page=None)
+        selected = " selected" if key == current else ""
+        options.append(
+            f"<option value='{key}' data-href='{html_escape(href, quote=True)}'{selected}>{html_escape(label)}</option>"
+        )
+    return (
+        "<label class='chart-metric' style='display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink-3);'>"
+        "<span>Metric</span>"
+        f"<select data-chart-metric-sel class='chart-metric-sel'>{''.join(options)}</select>"
+        "</label>"
     )
 
 
@@ -5497,6 +5752,7 @@ def log_viewer(
     view: Optional[str] = Query(None),
     bt0: Optional[int] = Query(None),
     bt1: Optional[int] = Query(None),
+    chart_metric: Optional[str] = Query(None),
 ):
     if preset:
         return _resolve_log_preset(
@@ -5529,6 +5785,9 @@ def log_viewer(
     referer_types = _parse_csv_param(referer_type)
     utm_sources = _parse_csv_param(utm_source)
     show_chart = chart == "1"
+    chart_metric = (chart_metric or "requests").lower()
+    if chart_metric not in {"requests", "status", "bytes", "bots", "errors"}:
+        chart_metric = "requests"
     if search_mode not in LOG_SEARCH_MODE_VALUES:
         search_mode = "contains"
     if search_field not in LOG_SEARCH_FIELD_COLS:
@@ -5652,6 +5911,7 @@ def log_viewer(
     if content_only: ui_params["content_only"] = "true"
     if mode != "rows": ui_params["mode"] = mode
     if show_chart: ui_params["chart"] = "1"
+    if show_chart and chart_metric != "requests": ui_params["chart_metric"] = chart_metric
     if sort and sort != "ts_utc": ui_params["sort"] = sort
     if order and order != "desc": ui_params["order"] = order
     if per_page != 100: ui_params["per_page"] = str(per_page)
@@ -5663,6 +5923,7 @@ def log_viewer(
     chrome_html = (
         _lv2_page_head("Logs", "", mode, ui_params)
         + _lv2_views_strip(view, date_from, date_to)
+        + _lv2_presets_strip(date_from, date_to)
         + _lv2_filter_bar(
             search=search,
             date_from=date_from,
@@ -5780,6 +6041,7 @@ def log_viewer(
                 paths=paths, where=chart_where,
                 date_from=date_from, date_to=date_to,
                 bt0=bt0, bt1=bt1, params=ui_params,
+                metric=chart_metric,
             )
 
         # Validate sort column against the live schema.
@@ -5846,6 +6108,7 @@ def log_viewer(
     chrome_html = (
         _lv2_page_head("Logs", count_text, mode, ui_params)
         + _lv2_views_strip(view, date_from, date_to)
+        + _lv2_presets_strip(date_from, date_to)
         + _lv2_filter_bar(
             search=search,
             date_from=date_from,
