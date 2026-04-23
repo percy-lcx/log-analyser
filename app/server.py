@@ -5346,6 +5346,23 @@ def _lv2_chart_card(
         for i in range(4)
     )
 
+    # Per-bucket invisible hitboxes so the client can show a hover tooltip.
+    hit_w = plot_w / N_BUCKETS
+    hitbox_html: List[str] = []
+    for i in range(N_BUCKETS):
+        hx = L + i * hit_w
+        b0 = int(round(t0_ms + i * bucket_ms))
+        b1 = int(round(t0_ms + (i + 1) * bucket_ms))
+        s2, s3, s4, s5 = buckets[i]
+        cx = x_at(i)
+        hitbox_html.append(
+            f"<rect data-chart-hitbox x='{hx:.2f}' y='{T}' "
+            f"width='{hit_w:.4f}' height='{plot_h:.2f}' "
+            f"data-idx='{i}' data-cx='{cx:.2f}' "
+            f"data-t0='{b0}' data-t1='{b1}' "
+            f"data-s2='{s2}' data-s3='{s3}' data-s4='{s4}' data-s5='{s5}'/>"
+        )
+
     total_requests = sum(totals)
 
     # Clear-brush chip when active
@@ -5363,7 +5380,7 @@ def _lv2_chart_card(
         "<div class='chart-card' data-lv2-chart "
         f"data-t0='{t0_ms}' data-t1='{t1_ms}' "
         f"data-bt0='{bt0 if bt0 is not None else ''}' data-bt1='{bt1 if bt1 is not None else ''}' "
-        f"data-plot-l='{L}' data-plot-r='{R}'>"
+        f"data-plot-l='{L}' data-plot-r='{R}' data-plot-t='{T}' data-plot-h='{plot_h}'>"
         "<div class='chart-head'>"
         "<div class='chart-title'>"
         "<h3>Requests over time</h3>"
@@ -5372,13 +5389,15 @@ def _lv2_chart_card(
         "</div>"
         f"<div class='chart-legend'>{legend_html}</div>"
         "</div>"
-        "<div class='chart-brush-hint'>Drag to filter range</div>"
         f"<svg class='chart-svg' viewBox='0 0 {W} {H}' preserveAspectRatio='none'>"
         f"{''.join(grid_html)}"
         f"{''.join(paths_svg)}"
         f"{brush_html}"
+        f"<line data-chart-hover-line x1='0' x2='0' y1='{T}' y2='{T + plot_h}'/>"
+        f"{''.join(hitbox_html)}"
         "</svg>"
         f"<div class='chart-xaxis' style='padding-left:{L}px;padding-right:{R}px;'>{xaxis_html}</div>"
+        "<div class='chart-tooltip' data-chart-tooltip aria-hidden='true'></div>"
         "</div>"
     )
 

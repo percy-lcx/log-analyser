@@ -1051,3 +1051,66 @@ body[data-app="logviewer-v2"] form.filter-bar input[type='checkbox']{ accent-col
 }
 .drawer-body .quick-filters .qf:hover{ border-color: var(--accent); color: var(--accent);}
 .drawer-body .quick-filters .qf .qf-icon{ color: var(--ink-4);}
+
+/* ── Chart card ── */
+.chart-card{
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px 10px;
+  margin-bottom: 10px;
+  box-shadow: var(--shadow-sm);
+  position: relative;
+}
+.chart-head{
+  display:flex; align-items:center; justify-content:space-between;
+  gap: 16px; flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.chart-title{ display:flex; align-items: baseline; gap: 10px; flex-wrap: wrap;}
+.chart-title h3{ font-size: 13px; font-weight: 600; color: var(--ink-1); margin: 0;}
+.chart-title .ch-total{ font-size: 12px; color: var(--ink-3); font-weight: 500;}
+.chart-title .ch-total strong{ color: var(--ink-1); font-weight: 600; font-variant-numeric: tabular-nums;}
+.chart-legend{ display:flex; gap: 14px; align-items:center; font-size: 11.5px; color: var(--ink-3); flex-wrap: wrap;}
+.chart-legend > span{ display:inline-flex; align-items:center; white-space: nowrap;}
+.chart-legend .lg-swatch{ width:8px; height:8px; border-radius:2px; display:inline-block; margin-right: 6px;}
+.chart-legend strong{ margin-left: 4px; font-variant-numeric: tabular-nums;}
+.chart-svg{ width: 100%; height: 160px; display: block; user-select: none;}
+.chart-xaxis{ display:flex; justify-content: space-between; padding: 0 8px; font-size: 10.5px; color: var(--ink-4); font-variant-numeric: tabular-nums; margin-top: 2px;}
+.chart-selection{
+  display:inline-flex; align-items:center; gap: 8px;
+  font-size: 12px; color: var(--accent-ink); background: var(--accent-soft);
+  padding: 3px 4px 3px 10px; border-radius: 999px; font-weight: 500;
+  margin-left: 12px;
+}
+.chart-selection a{ color: var(--accent-ink); opacity:.7; padding: 0 4px; text-decoration: none;}
+.chart-selection a:hover{ opacity: 1;}
+
+/* Hover indicator + tooltip */
+.chart-svg [data-chart-hitbox]{ fill: transparent; cursor: default;}
+.chart-svg [data-chart-hover-line]{ stroke: var(--ink-3); stroke-width: 1; stroke-dasharray: 2,2; opacity: 0; pointer-events: none;}
+.chart-svg.is-hovering [data-chart-hover-line]{ opacity: .6;}
+.chart-tooltip{
+  position: absolute; z-index: 5; pointer-events: none;
+  background: var(--ink-1); color: #fff;
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 11.5px; line-height: 1.45;
+  box-shadow: var(--shadow-md);
+  opacity: 0; transform: translate(-50%, -100%) translateY(-8px);
+  transition: opacity .08s ease-out;
+  min-width: 160px;
+  font-variant-numeric: tabular-nums;
+}
+.chart-tooltip.is-visible{ opacity: 1;}
+.chart-tooltip .tt-time{ color: #f5f5f4; font-weight: 600; margin-bottom: 4px;}
+.chart-tooltip .tt-row{ display:flex; align-items:center; justify-content: space-between; gap: 12px;}
+.chart-tooltip .tt-row .tt-label{ display:inline-flex; align-items:center; gap: 6px; color: #d6d3ce;}
+.chart-tooltip .tt-row .tt-sw{ width:8px; height:8px; border-radius: 2px; display:inline-block;}
+.chart-tooltip .tt-row .tt-val{ color: #fff; font-weight: 500;}
+.chart-tooltip .tt-total{
+  margin-top: 4px; padding-top: 4px;
+  border-top: 1px solid rgba(255,255,255,.15);
+  display:flex; justify-content: space-between; gap: 12px;
+  color: #fff; font-weight: 600;
+}

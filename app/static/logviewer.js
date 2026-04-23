@@ -599,83 +599,132 @@
     }
   });
 
-  // ── Chart brush: pointer drag over .chart-svg → bt0/bt1 URL params ────
-  (function wireBrush() {
-    document.addEventListener('pointerdown', function (e) {
+  // ── Chart hover tooltip: mouse over .chart-svg hitboxes → show details ──
+  (function wireChartHover() {
+    var SERIES = [
+      { key: 's2', label: '2xx', fill: '#b7d1b5' },
+      { key: 's3', label: '3xx', fill: '#a9bfde' },
+      { key: 's4', label: '4xx', fill: '#e6c888' },
+      { key: 's5', label: '5xx', fill: '#d6a4a4' },
+    ];
+    function fmtNum(n) { return (n || 0).toLocaleString(); }
+    function fmtRange(t0, t1) {
+      var d0 = new Date(t0);
+      var d1 = new Date(t1);
+      var spanMin = (t1 - t0) / 60000;
+      var opts = spanMin >= 1440
+        ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }
+        : { hour: '2-digit', minute: '2-digit' };
+      var head = spanMin >= 1440
+        ? ''
+        : d0.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' · ';
+      return head +
+        d0.toLocaleTimeString(undefined, opts).replace(',', '') +
+        ' – ' +
+        d1.toLocaleTimeString(undefined, opts).replace(',', '');
+    }
+    function findHit(e) {
       var svg = e.target.closest('.chart-svg');
-      if (!svg) return;
+      if (!svg) return null;
       var card = svg.closest('[data-lv2-chart]');
-      if (!card) return;
-      var t0 = parseInt(card.getAttribute('data-t0') || '0', 10);
-      var t1 = parseInt(card.getAttribute('data-t1') || '0', 10);
-      if (!t0 || !t1 || t1 <= t0) return;
-      var L = parseFloat(card.getAttribute('data-plot-l') || '34');
-      var R = parseFloat(card.getAttribute('data-plot-r') || '12');
-      var vb = svg.viewBox.baseVal; // { x, y, width, height }
-      var plotW = vb.width - L - R;
-
-      function pxToMs(clientX) {
+      if (!card) return null;
+      var hit = e.target.closest('[data-chart-hitbox]');
+      if (!hit) {
+        // Mouse may be over the area paths — resolve bucket by x position.
+        var vb = svg.viewBox.baseVal;
         var rect = svg.getBoundingClientRect();
         var ratio = vb.width / rect.width;
-        var x = (clientX - rect.left) * ratio;
-        var frac = Math.max(0, Math.min(1, (x - L) / plotW));
-        return Math.round(t0 + frac * (t1 - t0));
-      }
-
-      e.preventDefault();
-      svg.setPointerCapture(e.pointerId);
-      var startClientX = e.clientX;
-      var startMs = pxToMs(e.clientX);
-
-      // Create (or reuse) a drag-preview rect
-      var ns = 'http://www.w3.org/2000/svg';
-      var preview = svg.querySelector('[data-brush-preview]');
-      if (!preview) {
-        preview = document.createElementNS(ns, 'rect');
-        preview.setAttribute('data-brush-preview', '');
-        preview.setAttribute('y', '10');
-        preview.setAttribute('height', String(vb.height - 10 - 22));
-        preview.setAttribute('fill', 'rgba(47,92,197,0.12)');
-        preview.setAttribute('stroke', '#2f5cc5');
-        preview.setAttribute('stroke-width', '1');
-        svg.appendChild(preview);
-      }
-
-      function rectFrom(clientStartX, clientNowX) {
-        var rect = svg.getBoundingClientRect();
-        var ratio = vb.width / rect.width;
-        var xa = (clientStartX - rect.left) * ratio;
-        var xb = (clientNowX   - rect.left) * ratio;
-        var lo = Math.max(L, Math.min(xa, xb));
-        var hi = Math.min(vb.width - R, Math.max(xa, xb));
-        preview.setAttribute('x', String(lo));
-        preview.setAttribute('width', String(Math.max(0.5, hi - lo)));
-      }
-      rectFrom(startClientX, startClientX);
-
-      function onMove(ev) { rectFrom(startClientX, ev.clientX); }
-      function onUp(ev) {
-        svg.removeEventListener('pointermove', onMove);
-        svg.removeEventListener('pointerup', onUp);
-        try { svg.releasePointerCapture(e.pointerId); } catch (_) {}
-        var endMs = pxToMs(ev.clientX);
-        if (Math.abs(endMs - startMs) < 1000) {
-          // treat tiny drag as a click — drop the preview without navigating
-          if (preview && preview.parentNode) preview.parentNode.removeChild(preview);
-          return;
+        var x = (e.clientX - rect.left) * ratio;
+        var hits = svg.querySelectorAll('[data-chart-hitbox]');
+        if (!hits.length) return null;
+        var best = null, bestDx = Infinity;
+        for (var i = 0; i < hits.length; i++) {
+          var hx = parseFloat(hits[i].getAttribute('x'));
+          var hw = parseFloat(hits[i].getAttribute('width'));
+          var mid = hx + hw / 2;
+          var dx = Math.abs(mid - x);
+          if (dx < bestDx) { bestDx = dx; best = hits[i]; }
         }
-        var lo = Math.min(startMs, endMs);
-        var hi = Math.max(startMs, endMs);
-        var url = new URL(window.location.href);
-        url.searchParams.set('bt0', String(lo));
-        url.searchParams.set('bt1', String(hi));
-        url.searchParams.delete('page');
-        // Ensure chart stays visible so the overlay renders
-        url.searchParams.set('chart', '1');
-        navigate(url.pathname + url.search);
+        hit = best;
       }
-      svg.addEventListener('pointermove', onMove);
-      svg.addEventListener('pointerup', onUp);
+      if (!hit) return null;
+      return { svg: svg, card: card, hit: hit };
+    }
+    function showTooltip(ctx, clientX) {
+      var card = ctx.card;
+      var svg = ctx.svg;
+      var hit = ctx.hit;
+      var tip = card.querySelector('[data-chart-tooltip]');
+      var line = svg.querySelector('[data-chart-hover-line]');
+      if (!tip) return;
+      var t0 = parseInt(hit.getAttribute('data-t0') || '0', 10);
+      var t1 = parseInt(hit.getAttribute('data-t1') || '0', 10);
+      var counts = {};
+      var total = 0;
+      SERIES.forEach(function (s) {
+        counts[s.key] = parseInt(hit.getAttribute('data-' + s.key) || '0', 10);
+        total += counts[s.key];
+      });
+      var rows = SERIES.map(function (s) {
+        return '<div class="tt-row"><span class="tt-label"><span class="tt-sw" style="background:' +
+          s.fill + '"></span>' + s.label + '</span>' +
+          '<span class="tt-val">' + fmtNum(counts[s.key]) + '</span></div>';
+      }).join('');
+      tip.innerHTML =
+        '<div class="tt-time">' + fmtRange(t0, t1) + '</div>' +
+        rows +
+        '<div class="tt-total"><span>Total</span><span>' + fmtNum(total) + '</span></div>';
+
+      // Position tooltip relative to card, centered on bucket.
+      var cardRect = card.getBoundingClientRect();
+      var svgRect = svg.getBoundingClientRect();
+      var vb = svg.viewBox.baseVal;
+      var ratio = svgRect.width / vb.width;
+      var cx = parseFloat(hit.getAttribute('data-cx') || '0') * ratio;
+      var leftInCard = (svgRect.left - cardRect.left) + cx;
+      // Clamp so tooltip stays inside card.
+      var tipW = tip.offsetWidth || 180;
+      var minL = tipW / 2 + 4;
+      var maxL = cardRect.width - tipW / 2 - 4;
+      leftInCard = Math.max(minL, Math.min(maxL, leftInCard));
+      var topInCard = (svgRect.top - cardRect.top) + parseFloat(card.getAttribute('data-plot-t') || '10');
+      tip.style.left = leftInCard + 'px';
+      tip.style.top = topInCard + 'px';
+      tip.classList.add('is-visible');
+      tip.setAttribute('aria-hidden', 'false');
+
+      // Move vertical hover line to bucket center.
+      if (line) {
+        var cxSvg = parseFloat(hit.getAttribute('data-cx') || '0');
+        line.setAttribute('x1', String(cxSvg));
+        line.setAttribute('x2', String(cxSvg));
+        svg.classList.add('is-hovering');
+      }
+    }
+    function hideTooltip(card) {
+      if (!card) return;
+      var tip = card.querySelector('[data-chart-tooltip]');
+      if (tip) {
+        tip.classList.remove('is-visible');
+        tip.setAttribute('aria-hidden', 'true');
+      }
+      var svg = card.querySelector('.chart-svg');
+      if (svg) svg.classList.remove('is-hovering');
+    }
+    document.addEventListener('mousemove', function (e) {
+      var ctx = findHit(e);
+      if (!ctx) return;
+      showTooltip(ctx, e.clientX);
+    });
+    document.addEventListener('mouseleave', function (e) {
+      var card = e.target && e.target.closest && e.target.closest('[data-lv2-chart]');
+      if (card) hideTooltip(card);
+    }, true);
+    document.addEventListener('mouseout', function (e) {
+      var card = e.target.closest('[data-lv2-chart]');
+      if (!card) return;
+      var to = e.relatedTarget;
+      if (!to || !card.contains(to)) hideTooltip(card);
     });
   })();
 
