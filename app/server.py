@@ -2580,6 +2580,123 @@ def clear_report_cache():
 
 
 # ---------------------------------------------------------------------------
+# Saved /logs views (per-profile)
+# ---------------------------------------------------------------------------
+
+def _saved_filter_active_profile_id() -> Optional[int]:
+    from profile_loader import get_active_profile_raw
+    p = get_active_profile_raw()
+    return int(p["id"]) if p else None
+
+
+def _saved_filter_to_payload(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "params": row.get("params", {}),
+        "lines": _humanize_view_params(row.get("params", {})),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+@app.get("/api/saved-filters")
+def api_list_saved_filters():
+    import saved_filters as sf
+    profile_id = _saved_filter_active_profile_id()
+    if profile_id is None:
+        return JSONResponse({"error": "No active profile"}, status_code=400)
+    rows = sf.list_for_profile(profile_id)
+    return {"items": [_saved_filter_to_payload(r) for r in rows]}
+
+
+@app.post("/api/saved-filters")
+async def api_create_saved_filter(request: Request):
+    import sqlite3 as _sqlite3
+    import saved_filters as sf
+    profile_id = _saved_filter_active_profile_id()
+    if profile_id is None:
+        return JSONResponse({"error": "No active profile"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    name = (body.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "Name is required"}, status_code=400)
+    if len(name) > 80:
+        return JSONResponse({"error": "Name is too long (max 80 chars)"}, status_code=400)
+    raw_params = body.get("params") or {}
+    if not isinstance(raw_params, dict):
+        return JSONResponse({"error": "params must be an object"}, status_code=400)
+    cleaned: Dict[str, Any] = {}
+    for k in _SF_CAPTURE_PARAMS:
+        if k not in raw_params:
+            continue
+        v = raw_params[k]
+        if v is None:
+            continue
+        if isinstance(v, list):
+            kept = [str(x) for x in v if x not in (None, "")]
+            if kept:
+                cleaned[k] = kept
+        elif isinstance(v, (str, int, float, bool)):
+            sv = str(v)
+            if sv != "":
+                cleaned[k] = sv
+    try:
+        new_id = sf.create(profile_id, name, cleaned)
+    except _sqlite3.IntegrityError:
+        return JSONResponse(
+            {"error": f"A saved view named “{name}” already exists"},
+            status_code=409,
+        )
+    row = sf.get_by_id(new_id, profile_id)
+    return JSONResponse(_saved_filter_to_payload(row), status_code=201)
+
+
+@app.patch("/api/saved-filters/{filter_id}")
+async def api_rename_saved_filter(filter_id: int, request: Request):
+    import sqlite3 as _sqlite3
+    import saved_filters as sf
+    profile_id = _saved_filter_active_profile_id()
+    if profile_id is None:
+        return JSONResponse({"error": "No active profile"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    name = (body.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "Name is required"}, status_code=400)
+    if len(name) > 80:
+        return JSONResponse({"error": "Name is too long (max 80 chars)"}, status_code=400)
+    try:
+        ok = sf.rename(filter_id, profile_id, name)
+    except _sqlite3.IntegrityError:
+        return JSONResponse(
+            {"error": f"A saved view named “{name}” already exists"},
+            status_code=409,
+        )
+    if not ok:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    row = sf.get_by_id(filter_id, profile_id)
+    return JSONResponse(_saved_filter_to_payload(row), status_code=200)
+
+
+@app.delete("/api/saved-filters/{filter_id}")
+def api_delete_saved_filter(filter_id: int):
+    import saved_filters as sf
+    profile_id = _saved_filter_active_profile_id()
+    if profile_id is None:
+        return JSONResponse({"error": "No active profile"}, status_code=400)
+    ok = sf.delete(filter_id, profile_id)
+    if not ok:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # Consolidated reports (Phase 4)
 # ---------------------------------------------------------------------------
 
@@ -2633,9 +2750,13 @@ def locales(
     locale: Optional[str] = None,
     url_group: Optional[str] = None,
     content_only: bool = False,
-    limit: str = "999",
+    limit: str = "5000",
 ):
-    limit = _parse_int(limit, 999)
+    # `limit` caps the (locale × url_group) cell count returned for the
+    # heatmap. Default 5000 is well above the realistic max (~50 locales × ~10
+    # groups). No longer exposed in the UI — the input was confusing because
+    # cells silently dropped when it bit; URL hacking still works.
+    limit = _parse_int(limit, 5000)
     locales_sel = _parse_csv_param(locale)
     url_groups = _parse_csv_param(url_group)
     locale_param = _fmt_filter_param(locales_sel)
@@ -2720,17 +2841,122 @@ def locales(
 
         locale_options = distinct_values("locale_daily", "locale", date_from, date_to)
         group_options = distinct_values("group_daily", "url_group", date_from, date_to)
+        active_count = len(locales_sel) + len(url_groups) + (1 if content_only else 0)
+        clear_qs_parts = [f"from={date_from or ''}", f"to={date_to or ''}", "tab=heatmap"]
+        clear_href = "?" + "&".join(clear_qs_parts)
+        clear_link = (
+            f"<a class='hm-trigger-clear' href='{clear_href}'>Clear all</a>"
+        ) if active_count else ""
+        trigger_count_badge = (
+            f"<span class='hm-trigger-badge'>{active_count}</span>"
+        ) if active_count else ""
+
+        # Flat checklist (port of `_lv2_more_filters_popover.checklist` at
+        # app/server.py around line 5330). Search input only when >6 options.
+        def _hm_pop_checklist(field: str, options: List[str], selected_vals: List[str], ph_label: str) -> str:
+            sel_set = set(selected_vals)
+            # No URL filter for this field → the heatmap is showing every value;
+            # reflect that honestly by pre-checking everything. The JS Apply
+            # handler treats "all checked" as "no filter" so the URL stays clean.
+            treat_as_all = not sel_set
+            items = []
+            for opt in options:
+                opt_safe = html_escape(str(opt), quote=True)
+                opt_text = html_escape(str(opt))
+                checked = " checked" if (treat_as_all or opt in sel_set) else ""
+                items.append(
+                    f"<label><input type='checkbox' data-pop-field='{field}' "
+                    f"value='{opt_safe}'{checked}> <span>{opt_text}</span></label>"
+                )
+            list_html = f"<div class='pop-checklist' data-pop-checklist data-pop-field-list='{field}'>{''.join(items)}</div>"
+            search_html = ""
+            if len(options) > 6:
+                search_html = (
+                    f"<input type='text' class='pop-checklist-search' "
+                    f"placeholder='Filter {html_escape(ph_label, quote=True)}…' "
+                    "autocomplete='off' spellcheck='false'>"
+                )
+            return (
+                "<div class='pop-checklist-wrap'>"
+                f"{search_html}"
+                f"{list_html}"
+                "<div class='pop-checklist-meta' data-pop-checklist-meta></div>"
+                "</div>"
+            )
+
+        def _hm_section_head(label: str, field: str) -> str:
+            """Section label + Select all / Clear actions on the right."""
+            return (
+                "<div class='hm-pop-section-head'>"
+                f"<div class='hm-pop-section-label'>{html_escape(label)}</div>"
+                "<div class='hm-pop-section-actions'>"
+                f"<button type='button' class='hm-pop-mini' data-hm-select-all data-pop-field='{field}'>Select all</button>"
+                f"<button type='button' class='hm-pop-mini' data-hm-clear-field data-pop-field='{field}'>Clear</button>"
+                "</div>"
+                "</div>"
+            )
+
+        locale_section = _hm_pop_checklist("locale", locale_options, locales_sel, "locale")
+        group_section = _hm_pop_checklist("url_group", group_options, url_groups, "URL group")
+        locale_head = _hm_section_head("Locale", "locale")
+        group_head = _hm_section_head("URL group", "url_group")
+        content_checked = " checked" if content_only else ""
+
         heatmap_content += f"""
-        <form method="get" class="filter-bar">
-        <input type="hidden" name="from" value="{date_from or ''}">
-        <input type="hidden" name="to" value="{date_to or ''}">
-        <input type="hidden" name="tab" value="heatmap">
-        {multi_select_html("locale", locale_options, locales_sel, "Locale")}
-        {multi_select_html("url_group", group_options, url_groups, "URL group")}
-        <label>Limit: <input name="limit" value="{limit}" size="6"></label>
-        <label style="margin-left:1em"><input type="checkbox" name="content_only" value="true"{"checked" if content_only else ""}> Content only (heatmap)</label>
-        <button type="submit">Apply</button>
+        <div class='hm-filter-row'>
+          <button type='button' class='hm-popover-trigger' data-hm-trigger
+                  aria-haspopup='dialog' aria-expanded='false'>
+            <span>All filters</span>{trigger_count_badge}
+            <span class='hm-trigger-caret'>▾</span>
+          </button>
+          {clear_link}
+        </div>
+
+        <form method='get' class='hm-form' data-hm-form>
+          <input type='hidden' name='from' value='{date_from or ''}'>
+          <input type='hidden' name='to' value='{date_to or ''}'>
+          <input type='hidden' name='tab' value='heatmap'>
+          <input type='hidden' name='locale' value='{html_escape(locale_param, quote=True)}' data-hm-input='locale'>
+          <input type='hidden' name='url_group' value='{html_escape(url_group_param, quote=True)}' data-hm-input='url_group'>
+          <input type='hidden' name='content_only' value='{("true" if content_only else "")}' data-hm-input='content_only'>
         </form>
+
+        <div class='popover-backdrop' data-hm-backdrop></div>
+        <div class='popover hm-popover' data-hm-popover role='dialog' aria-label='Heatmap filters'>
+          <div class='hm-pop-head'>
+            <div>
+              <h4>Heatmap filters</h4>
+              <p>Tick what you want, then click Apply.</p>
+            </div>
+            <button type='button' class='hm-pop-close' data-hm-close aria-label='Close'>×</button>
+          </div>
+          <div class='hm-pop-body'>
+            <div class='hm-pop-section'>
+              {locale_head}
+              {locale_section}
+            </div>
+            <div class='hm-pop-section'>
+              {group_head}
+              {group_section}
+            </div>
+            <div class='hm-pop-section'>
+              <div class='hm-pop-section-head'>
+                <div class='hm-pop-section-label'>Display</div>
+              </div>
+              <label class='hm-pop-toggle'>
+                <input type='checkbox' data-pop-field='content_only' value='true'{content_checked}>
+                <span>Content URL groups only</span>
+              </label>
+            </div>
+          </div>
+          <div class='hm-pop-foot'>
+            <div class='hm-pop-foot-right'>
+              <button type='button' class='hm-pop-clear-btn' data-hm-clear-all>Clear</button>
+              <span class='hm-pop-active'><span data-hm-active-count>{active_count}</span> active</span>
+              <button type='button' class='hm-pop-apply' data-hm-apply>Apply</button>
+            </div>
+          </div>
+        </div>
         """
         heatmap_content += export_link("locale-groups", date_from, date_to,
                                        extra=f"&locale={locale_param}&url_group={url_group_param}&limit={limit}")
@@ -3635,8 +3861,15 @@ def export_logs(
     bucket: Optional[str] = Query(None),
     stack_by: str = Query(""),
     limit: int = Query(10000),
+    pf: List[str] = Query(default_factory=list),
+    pf_join: str = Query("and"),
 ):
-    """CSV export for Rows / Group / Timeseries modes of /logs."""
+    """CSV export for Rows / Group / Timeseries modes of /logs.
+
+    Mirrors the /logs filter pipeline so the export reflects exactly what's on
+    screen: search-bar operators (`status:404`, `path:/api`, `is:bot`, …) and
+    the path-filter rule-builder (`pf=op:value` + `pf_join`) both apply.
+    """
     status_codes = _parse_status_list(status)
     status_classes = [int(c) for c in _parse_csv_param(status_class) if c.isdigit()]
     methods = _parse_csv_param(method)
@@ -3668,14 +3901,80 @@ def export_logs(
     if mode == "group" and sort_by == "waste_score":
         is_bot = "true"
 
+    # Mirror /logs: split search-bar operators out of the free text, merge their
+    # values into the URL-supplied filter lists, then carry path operators and
+    # rule-builder rules through to the WHERE builder.
+    cleaned_free_text, op_includes, op_excludes, forced_mode = _parse_search_operators(search or "")
+    if forced_mode:
+        search_mode = forced_mode
+
+    def _merge_ints(url_list, key):
+        extra = [int(v) for v in op_includes.get(key, []) if str(v).isdigit()]
+        seen = set(url_list)
+        out = list(url_list)
+        for v in extra:
+            if v not in seen:
+                seen.add(v); out.append(v)
+        return out
+
+    def _merge_strs(url_list, key):
+        extra = op_includes.get(key, [])
+        seen = set(url_list)
+        out = list(url_list)
+        for v in extra:
+            if v not in seen:
+                seen.add(v); out.append(v)
+        return out
+
+    status_codes = _merge_ints(status_codes, "status")
+    status_classes = _merge_ints(status_classes, "status_class")
+    methods = _merge_strs(methods, "method")
+    bot_families = _merge_strs(bot_families, "bot_family")
+    bot_categories = _merge_strs(bot_categories, "bot_category")
+    url_groups = _merge_strs(url_groups, "url_group")
+    locales_sel = _merge_strs(locales_sel, "locale")
+    countries = _merge_strs(countries, "country")
+    referer_types = _merge_strs(referer_types, "referer_type")
+    utm_sources = _merge_strs(utm_sources, "utm_source")
+    if not is_bot and op_includes.get("is_bot"):
+        is_bot = op_includes["is_bot"][0]
+    paths_include = list(op_includes.get("path", []))
+    paths_exclude = list(op_excludes.get("path", []))
+
+    # Path rule-builder: same validation rules as /logs (drop unknown ops,
+    # empty values, oversized regex, or regex that won't compile).
+    _PF_OPS = {"contains", "not_contains", "regex"}
+    _PF_REGEX_MAX = 200
+    path_rules: List[Tuple[str, str]] = []
+    for entry in (pf or []):
+        if not entry:
+            continue
+        op_part, sep, val_part = entry.partition(":")
+        if not sep:
+            continue
+        op_norm = op_part.strip().lower()
+        if op_norm not in _PF_OPS or not val_part:
+            continue
+        if op_norm == "regex":
+            if len(val_part) > _PF_REGEX_MAX:
+                continue
+            try:
+                re.compile(val_part)
+            except re.error:
+                continue
+        path_rules.append((op_norm, val_part))
+    pf_join_norm = "or" if (pf_join or "").lower() == "or" else "and"
+
     clauses = _build_log_where_clauses(
         status_codes=status_codes, status_classes=status_classes, methods=methods,
         bot_families=bot_families, bot_categories=bot_categories,
         url_groups=url_groups, locales=locales_sel, countries=countries,
         referer_types=referer_types, utm_sources=utm_sources,
         is_bot=is_bot, include_assets=include_assets, content_only=content_only,
-        search=search, search_mode=search_mode, search_field=search_field,
+        search=cleaned_free_text, search_mode=search_mode, search_field=search_field,
         has_country_col=has_country_col,
+        paths_include=paths_include, paths_exclude=paths_exclude,
+        path_rules=path_rules, path_rules_join=pf_join_norm,
     )
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
@@ -4650,6 +4949,207 @@ def _lv2_build_qs(params: Dict[str, Any], **overrides: Any) -> str:
     return "&".join(parts)
 
 
+# ── Saved-filter humanizer ─────────────────────────────────────────────────
+# Translates a captured /logs query-param dict into reader-friendly lines so a
+# saved view can be inspected at a glance ("Apr 18 – Apr 25, 2026 · Bots only
+# · Path contains '/admin'") without decoding the raw URL.
+
+_SF_MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+_SF_SORT_FRIENDLY = {
+    "ts_utc": "time", "status": "status", "method": "method", "path": "path",
+    "url_group": "URL group", "bytes_sent": "bytes sent",
+    "bot_family": "bot family", "locale": "locale", "country": "country",
+    "referer_type": "referer type", "utm_source_norm": "UTM source",
+    "hits": "hits",
+}
+
+_SF_PF_OP_LABEL = {
+    "contains": "contains",
+    "not_contains": "does not contain",
+    "regex": "matches regex",
+}
+
+_SF_SEARCH_MODE_WORD = {
+    "contains": "containing",
+    "exact": "exactly matching",
+    "regex": "matching regex",
+    "starts": "starting with",
+    "ends": "ending with",
+}
+
+_SF_CHART_METRIC_LABEL = {
+    "requests": "requests", "status": "status class", "bytes": "bytes sent",
+    "bots": "humans vs bots", "errors": "error rate",
+}
+
+
+def _sf_fmt_date(iso: str) -> str:
+    try:
+        d = datetime.fromisoformat(iso).date()
+    except (TypeError, ValueError):
+        return iso
+    return f"{_SF_MONTH_ABBR[d.month - 1]} {d.day}, {d.year}"
+
+
+def _sf_fmt_date_range(frm: Optional[str], to: Optional[str]) -> Optional[str]:
+    if not frm and not to:
+        return None
+    if frm and to:
+        try:
+            f = datetime.fromisoformat(frm).date()
+            t = datetime.fromisoformat(to).date()
+        except (TypeError, ValueError):
+            return f"{frm} → {to}"
+        if f == t:
+            return _sf_fmt_date(frm)
+        if f.year == t.year:
+            return (f"{_SF_MONTH_ABBR[f.month - 1]} {f.day} – "
+                    f"{_SF_MONTH_ABBR[t.month - 1]} {t.day}, {t.year}")
+        return f"{_sf_fmt_date(frm)} – {_sf_fmt_date(to)}"
+    if frm:
+        return f"From {_sf_fmt_date(frm)}"
+    return f"Up to {_sf_fmt_date(to)}"
+
+
+def _sf_csv(v: Any) -> List[str]:
+    if v in (None, ""):
+        return []
+    if isinstance(v, list):
+        return [str(x) for x in v if x not in (None, "")]
+    return [s.strip() for s in str(v).split(",") if s.strip()]
+
+
+def _humanize_view_params(params: Dict[str, Any]) -> List[str]:
+    """Reader-friendly description of a saved /logs view, one line per facet."""
+    p = params or {}
+    lines: List[str] = []
+
+    dr = _sf_fmt_date_range(p.get("from"), p.get("to"))
+    if dr:
+        lines.append(dr)
+
+    sv = p.get("search")
+    if sv:
+        mode = (p.get("search_mode") or "contains").lower()
+        field = (p.get("search_field") or "any").lower()
+        mode_word = _SF_SEARCH_MODE_WORD.get(mode, mode)
+        field_word = "any field" if field == "any" else field
+        lines.append(f"Search: {field_word} {mode_word} “{sv}”")
+
+    statuses = _sf_csv(p.get("status"))
+    if statuses:
+        lines.append("Status " + ", ".join(statuses))
+    classes = _sf_csv(p.get("status_class"))
+    if classes:
+        lines.append("Status class " + ", ".join(f"{c}xx" for c in classes))
+    methods = _sf_csv(p.get("method"))
+    if methods:
+        lines.append("Method " + ", ".join(m.upper() for m in methods))
+
+    is_bot = p.get("is_bot")
+    if is_bot in ("true", "1", True, 1, "yes", "bot"):
+        lines.append("Bots only")
+    elif is_bot in ("false", "0", False, 0, "no", "human"):
+        lines.append("Humans only")
+
+    for key, label in (
+        ("bot_family", "Bot family"),
+        ("bot_category", "Bot category"),
+        ("url_group", "URL group"),
+        ("locale", "Locale"),
+        ("country", "Country"),
+        ("referer_type", "Referer type"),
+        ("utm_source", "UTM source"),
+    ):
+        vals = _sf_csv(p.get(key))
+        if vals:
+            lines.append(f"{label}: " + ", ".join(vals))
+
+    if p.get("include_assets") in ("false", "False", False, "0", 0):
+        lines.append("Excluding asset requests")
+    if p.get("content_only") in ("true", "True", True, "1", 1):
+        lines.append("Content URLs only")
+
+    pf_raw = p.get("pf") or []
+    if isinstance(pf_raw, str):
+        pf_raw = [pf_raw]
+    pf_parsed: List[Tuple[str, str]] = []
+    for entry in pf_raw:
+        if not isinstance(entry, str) or ":" not in entry:
+            continue
+        op, _, val = entry.partition(":")
+        if op in _SF_PF_OP_LABEL and val:
+            pf_parsed.append((op, val))
+    if pf_parsed:
+        join_word = " OR " if str(p.get("pf_join", "and")).lower() == "or" else " AND "
+        rule_strs = [f"{_SF_PF_OP_LABEL[op]} “{val}”" for op, val in pf_parsed]
+        lines.append("Path " + join_word.join(rule_strs))
+
+    mode = (p.get("mode") or "rows").lower()
+    if mode == "group":
+        gb = p.get("group_by")
+        gb2 = p.get("group_by_2")
+        sort_by = _SF_SORT_FRIENDLY.get(p.get("sort_by") or "hits", p.get("sort_by") or "hits")
+        if gb and gb2:
+            lines.append(f"Grouped by {gb}, then {gb2} (sorted by {sort_by})")
+        elif gb:
+            lines.append(f"Grouped by {gb} (sorted by {sort_by})")
+        else:
+            lines.append("Grouped view")
+    elif mode == "timeseries":
+        bucket = p.get("bucket") or "1h"
+        stack = p.get("stack_by")
+        s = f"Timeseries (bucket {bucket})"
+        if stack:
+            s += f", stacked by {stack}"
+        lines.append(s)
+    else:
+        sort_col = p.get("sort") or "ts_utc"
+        order = (p.get("order") or "desc").lower()
+        sort_label = _SF_SORT_FRIENDLY.get(sort_col, sort_col)
+        if sort_col == "ts_utc":
+            order_label = "newest first" if order == "desc" else "oldest first"
+        else:
+            order_label = "descending" if order == "desc" else "ascending"
+        lines.append(f"Sorted by {sort_label}, {order_label}")
+
+    cols = p.get("columns")
+    if cols:
+        col_list = [c.strip() for c in str(cols).split(",") if c.strip()]
+        if col_list:
+            n = len(col_list)
+            lines.append(f"{n} column{'s' if n != 1 else ''}: {', '.join(col_list)}")
+
+    if str(p.get("chart") or "") == "1":
+        metric = p.get("chart_metric") or "requests"
+        metric_label = _SF_CHART_METRIC_LABEL.get(metric, metric)
+        lines.append(f"Chart on ({metric_label})")
+
+    per_page = p.get("per_page")
+    if per_page and str(per_page) not in ("", "100"):
+        lines.append(f"{per_page} rows per page")
+
+    return lines
+
+
+# Params we capture into a saved view. Excludes pagination position and
+# transient UI hints; keeps everything that defines the result set + display.
+_SF_CAPTURE_PARAMS = (
+    "from", "to", "search", "search_mode", "search_field",
+    "status", "status_class", "method",
+    "is_bot", "bot_family", "bot_category",
+    "url_group", "locale", "country", "referer_type", "utm_source",
+    "include_assets", "content_only",
+    "sort", "order", "mode",
+    "group_by", "group_by_2", "sort_by", "bucket", "stack_by", "limit",
+    "columns", "view", "bt0", "bt1",
+    "chart", "chart_metric", "per_page",
+    "pf", "pf_join",
+)
+
+
 def _lv2_apply_view(view_id: Optional[str], current: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]:
     """Merge a saved view's defaults onto the current filter dict (URL overrides win)."""
     if not view_id:
@@ -4872,9 +5372,36 @@ def _lv2_more_filters_popover(
         for label, field, options, selected_vals in fields:
             if not options:
                 continue
+            extra_html = ""
+            # Status code: prepend wildcard chips (1xx/2xx/3xx/4xx/5xx) bound
+            # to the `status_class` URL param so users can pick whole bands
+            # without ticking every individual code.
+            if field == "status":
+                classes_present = sorted({
+                    str(s)[0] for s in options
+                    if str(s)[:1] in ("1", "2", "3", "4", "5")
+                })
+                if classes_present:
+                    sc_selected = set(filter_selected.get("status_class", []) or [])
+                    chip_btns = []
+                    for c in classes_present:
+                        checked_attr = " checked" if c in sc_selected else ""
+                        chip_btns.append(
+                            f"<label class='sc-chip' data-sc-class='{c}'>"
+                            f"<input type='checkbox' data-mfp-field='status_class' "
+                            f"data-filter-value='{c}'{checked_attr}>"
+                            f"<span>{c}xx</span>"
+                            "</label>"
+                        )
+                    extra_html = (
+                        "<div class='sc-chip-row' role='group' aria-label='Status class'>"
+                        f"{''.join(chip_btns)}"
+                        "</div>"
+                    )
             sections.append(
                 "<div style='margin-bottom:14px;'>"
                 f"<div style='font-size:11px;text-transform:uppercase;font-weight:600;color:var(--ink-3);margin-bottom:6px;'>{html_escape(label)}</div>"
+                + extra_html
                 + checklist(field, options, selected_vals) +
                 "</div>"
             )
@@ -5202,6 +5729,8 @@ def _lv2_filter_bar(
         "</div>"
     )
 
+    saved_views_html = _render_saved_views_box(params)
+
     return (
         "<div class='filter-bar'>"
         f"{search_html}"
@@ -5211,6 +5740,86 @@ def _lv2_filter_bar(
         f"{chart_toggle}"
         "</div>"
         f"{path_filter_html}"
+        f"{saved_views_html}"
+    )
+
+
+def _render_saved_views_item(item: Dict[str, Any]) -> str:
+    """One row in the saved-views dropdown — name + Apply/Delete + spelled-out lines."""
+    params = item.get("params") or {}
+    lines = _humanize_view_params(params)
+    qs = _lv2_build_qs(params)
+    lines_html = "".join(
+        f"<li>{html_escape(line)}</li>" for line in lines
+    ) or "<li class='sv-line-empty'>(no filters — defaults)</li>"
+    name_safe = html_escape(item.get("name") or "")
+    return (
+        f"<li class='sv-item' data-sv-id='{int(item['id'])}' "
+        f"data-sv-href='/logs?{html_escape(qs, quote=True)}'>"
+        "<div class='sv-row-top'>"
+        f"<span class='sv-name' data-sv-name>{name_safe}</span>"
+        "<form class='sv-rename-form' data-sv-rename-form hidden>"
+        f"<input type='text' data-sv-rename-input value='{html_escape(item.get('name') or '', quote=True)}' "
+        "maxlength='80' required>"
+        "<button type='submit' class='filter-chip-btn solid'>Save</button>"
+        "<button type='button' class='filter-chip-btn' data-sv-rename-cancel>Cancel</button>"
+        "<span class='sv-rename-msg' data-sv-rename-msg></span>"
+        "</form>"
+        "<div class='sv-actions'>"
+        "<button type='button' class='filter-chip-btn solid' data-sv-apply>Apply</button>"
+        "<button type='button' class='filter-chip-btn' data-sv-rename>Rename</button>"
+        "<button type='button' class='filter-chip-btn' data-sv-delete>Delete</button>"
+        "</div>"
+        "</div>"
+        f"<ul class='sv-lines'>{lines_html}</ul>"
+        "</li>"
+    )
+
+
+def _render_saved_views_box(_params: Dict[str, Any]) -> str:
+    """Render the saved-views row that lives below the path-filter row.
+
+    The list is server-rendered for the active profile so the user sees their
+    saves on first paint. JS handles save/apply/delete and re-renders the list
+    via the /api/saved-filters endpoints.
+    """
+    items: List[Dict[str, Any]] = []
+    try:
+        from profile_loader import get_active_profile_raw
+        import saved_filters as sf
+        prof = get_active_profile_raw()
+        if prof:
+            items = sf.list_for_profile(int(prof["id"]))
+    except Exception:
+        items = []
+
+    items_html = "".join(_render_saved_views_item(it) for it in items)
+    if not items_html:
+        items_html = "<li class='sv-empty'>No saved views yet — click “Save current view” to add one.</li>"
+
+    count_badge = (
+        "<span class='count' style='background:var(--accent);color:#fff;border-radius:999px;"
+        f"padding:0 6px;font-size:10px;min-width:16px;text-align:center;margin-left:4px;'>{len(items)}</span>"
+        if items else ""
+    )
+
+    return (
+        "<div class='saved-views' data-saved-views>"
+        "<div class='saved-views-head'>"
+        "<button type='button' class='filter-chip-btn' data-sv-toggle aria-expanded='false'>"
+        f"Saved views{count_badge}<span style='margin-left:4px;'>▾</span></button>"
+        "<button type='button' class='filter-chip-btn solid' data-sv-save-open>Save current view</button>"
+        "<form class='sv-save-form' data-sv-save-form hidden>"
+        "<input type='text' data-sv-name placeholder='Name this view' maxlength='80' required>"
+        "<button type='submit' class='filter-chip-btn solid'>Save</button>"
+        "<button type='button' class='filter-chip-btn' data-sv-save-cancel>Cancel</button>"
+        "<span class='sv-save-msg' data-sv-save-msg></span>"
+        "</form>"
+        "</div>"
+        "<div class='saved-views-body' data-sv-body hidden>"
+        f"<ul class='sv-list' data-sv-list>{items_html}</ul>"
+        "</div>"
+        "</div>"
     )
 
 
@@ -6411,6 +7020,7 @@ def log_viewer(
             },
             filter_selected={
                 "status":       [str(c) for c in status_codes],
+                "status_class": [str(c) for c in status_classes],
                 "method":       list(methods),
                 "bot_family":   list(bot_families),
                 "bot_category": list(bot_categories),
@@ -6603,6 +7213,7 @@ def log_viewer(
             },
             filter_selected={
                 "status":       [str(c) for c in status_codes],
+                "status_class": [str(c) for c in status_classes],
                 "method":       list(methods),
                 "bot_family":   list(bot_families),
                 "bot_category": list(bot_categories),

@@ -1172,6 +1172,457 @@
     }
   })();
 
+  // ── Saved views (per-profile saved /logs query state) ────────────────
+  // Capture set must mirror server-side _SF_CAPTURE_PARAMS in app/server.py.
+  var SV_CAPTURE = [
+    'from','to','search','search_mode','search_field',
+    'status','status_class','method',
+    'is_bot','bot_family','bot_category',
+    'url_group','locale','country','referer_type','utm_source',
+    'include_assets','content_only',
+    'sort','order','mode',
+    'group_by','group_by_2','sort_by','bucket','stack_by','limit',
+    'columns','view','bt0','bt1',
+    'chart','chart_metric','per_page',
+    'pf','pf_join'
+  ];
+
+  function svRoot() { return document.querySelector('[data-saved-views]'); }
+
+  function svCaptureCurrentParams() {
+    var u = new URL(window.location.href);
+    var out = {};
+    SV_CAPTURE.forEach(function (k) {
+      var vals = u.searchParams.getAll(k);
+      if (!vals.length) return;
+      // Multi-value keys (currently `pf`) become arrays; everything else is scalar.
+      if (k === 'pf') out[k] = vals;
+      else            out[k] = vals[0];
+    });
+    return out;
+  }
+
+  function svBuildHrefFromParams(params) {
+    var u = new URL('/logs', window.location.origin);
+    Object.keys(params || {}).forEach(function (k) {
+      var v = params[k];
+      if (v === null || v === undefined || v === '') return;
+      if (Array.isArray(v)) {
+        v.forEach(function (item) {
+          if (item === null || item === undefined || item === '') return;
+          u.searchParams.append(k, String(item));
+        });
+      } else {
+        u.searchParams.set(k, String(v));
+      }
+    });
+    return u.pathname + u.search;
+  }
+
+  function svEscapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    });
+  }
+
+  function svRenderItem(item) {
+    var lines = item.lines && item.lines.length
+      ? item.lines.map(function (l) { return '<li>' + svEscapeHtml(l) + '</li>'; }).join('')
+      : "<li class='sv-line-empty'>(no filters — defaults)</li>";
+    var href = svBuildHrefFromParams(item.params || {});
+    var name = item.name || '';
+    return (
+      "<li class='sv-item' data-sv-id='" + Number(item.id) + "' " +
+      "data-sv-href='" + svEscapeHtml(href) + "'>" +
+        "<div class='sv-row-top'>" +
+          "<span class='sv-name' data-sv-name>" + svEscapeHtml(name) + "</span>" +
+          "<form class='sv-rename-form' data-sv-rename-form hidden>" +
+            "<input type='text' data-sv-rename-input value='" + svEscapeHtml(name) + "' maxlength='80' required>" +
+            "<button type='submit' class='filter-chip-btn solid'>Save</button>" +
+            "<button type='button' class='filter-chip-btn' data-sv-rename-cancel>Cancel</button>" +
+            "<span class='sv-rename-msg' data-sv-rename-msg></span>" +
+          "</form>" +
+          "<div class='sv-actions'>" +
+            "<button type='button' class='filter-chip-btn solid' data-sv-apply>Apply</button>" +
+            "<button type='button' class='filter-chip-btn' data-sv-rename>Rename</button>" +
+            "<button type='button' class='filter-chip-btn' data-sv-delete>Delete</button>" +
+          "</div>" +
+        "</div>" +
+        "<ul class='sv-lines'>" + lines + "</ul>" +
+      "</li>"
+    );
+  }
+
+  function svRenderList(items) {
+    var root = svRoot();
+    if (!root) return;
+    var listEl = root.querySelector('[data-sv-list]');
+    if (!listEl) return;
+    if (!items || !items.length) {
+      listEl.innerHTML = "<li class='sv-empty'>No saved views yet — click “Save current view” to add one.</li>";
+    } else {
+      listEl.innerHTML = items.map(svRenderItem).join('');
+    }
+    // Update the count badge in the toggle button.
+    var toggle = root.querySelector('[data-sv-toggle]');
+    if (toggle) {
+      var existing = toggle.querySelector('.count');
+      if (existing) existing.remove();
+      if (items && items.length) {
+        var badge = document.createElement('span');
+        badge.className = 'count';
+        badge.style.cssText = 'background:var(--accent);color:#fff;border-radius:999px;padding:0 6px;font-size:10px;min-width:16px;text-align:center;margin-left:4px;display:inline-block;';
+        badge.textContent = String(items.length);
+        // Insert before the trailing chevron span.
+        var chevron = toggle.querySelector('span:last-child');
+        if (chevron) toggle.insertBefore(badge, chevron);
+        else toggle.appendChild(badge);
+      }
+    }
+  }
+
+  function svRefreshList() {
+    return fetch('/api/saved-filters', { headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.ok ? r.json() : { items: [] }; })
+      .then(function (j) { svRenderList(j.items || []); })
+      .catch(function () { /* leave existing render in place */ });
+  }
+
+  function svSetSaveMsg(text, isError) {
+    var root = svRoot();
+    if (!root) return;
+    var el = root.querySelector('[data-sv-save-msg]');
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('is-error', !!isError);
+  }
+
+  document.addEventListener('click', function (e) {
+    var root = svRoot();
+    if (!root) return;
+
+    var toggle = e.target.closest('[data-sv-toggle]');
+    if (toggle && root.contains(toggle)) {
+      e.preventDefault();
+      var body = root.querySelector('[data-sv-body]');
+      if (!body) return;
+      var open = !body.hasAttribute('hidden');
+      if (open) {
+        body.setAttribute('hidden', '');
+        toggle.setAttribute('aria-expanded', 'false');
+      } else {
+        body.removeAttribute('hidden');
+        toggle.setAttribute('aria-expanded', 'true');
+      }
+      return;
+    }
+
+    var openSave = e.target.closest('[data-sv-save-open]');
+    if (openSave && root.contains(openSave)) {
+      e.preventDefault();
+      var form = root.querySelector('[data-sv-save-form]');
+      if (!form) return;
+      form.removeAttribute('hidden');
+      svSetSaveMsg('', false);
+      var nameInp = form.querySelector('[data-sv-name]');
+      if (nameInp) { nameInp.value = ''; nameInp.focus(); }
+      return;
+    }
+
+    var cancelSave = e.target.closest('[data-sv-save-cancel]');
+    if (cancelSave && root.contains(cancelSave)) {
+      e.preventDefault();
+      var form2 = root.querySelector('[data-sv-save-form]');
+      if (form2) form2.setAttribute('hidden', '');
+      svSetSaveMsg('', false);
+      return;
+    }
+
+    var applyBtn = e.target.closest('[data-sv-apply]');
+    if (applyBtn && root.contains(applyBtn)) {
+      e.preventDefault();
+      var item = applyBtn.closest('[data-sv-id]');
+      if (!item) return;
+      var href = item.getAttribute('data-sv-href') || '/logs';
+      navigate(href);
+      return;
+    }
+
+    var renameBtn = e.target.closest('[data-sv-rename]');
+    if (renameBtn && root.contains(renameBtn)) {
+      e.preventDefault();
+      var item0 = renameBtn.closest('[data-sv-id]');
+      if (!item0) return;
+      var form0 = item0.querySelector('[data-sv-rename-form]');
+      var nameSpan0 = item0.querySelector('[data-sv-name]');
+      var actions0 = item0.querySelector('.sv-actions');
+      if (!form0) return;
+      form0.removeAttribute('hidden');
+      if (nameSpan0) nameSpan0.setAttribute('hidden', '');
+      if (actions0) actions0.setAttribute('hidden', '');
+      var msg0 = form0.querySelector('[data-sv-rename-msg]');
+      if (msg0) { msg0.textContent = ''; msg0.classList.remove('is-error'); }
+      var inp0 = form0.querySelector('[data-sv-rename-input]');
+      if (inp0) { inp0.focus(); inp0.select(); }
+      return;
+    }
+
+    var renameCancel = e.target.closest('[data-sv-rename-cancel]');
+    if (renameCancel && root.contains(renameCancel)) {
+      e.preventDefault();
+      var item1 = renameCancel.closest('[data-sv-id]');
+      if (!item1) return;
+      var form1 = item1.querySelector('[data-sv-rename-form]');
+      var nameSpan1 = item1.querySelector('[data-sv-name]');
+      var actions1 = item1.querySelector('.sv-actions');
+      if (form1) form1.setAttribute('hidden', '');
+      if (nameSpan1) nameSpan1.removeAttribute('hidden');
+      if (actions1) actions1.removeAttribute('hidden');
+      // Reset input value to the current name in case the user typed.
+      var inp1 = form1 && form1.querySelector('[data-sv-rename-input]');
+      if (inp1 && nameSpan1) inp1.value = nameSpan1.textContent || '';
+      return;
+    }
+
+    var delBtn = e.target.closest('[data-sv-delete]');
+    if (delBtn && root.contains(delBtn)) {
+      e.preventDefault();
+      var item2 = delBtn.closest('[data-sv-id]');
+      if (!item2) return;
+      var name = (item2.querySelector('.sv-name') || {}).textContent || 'this view';
+      if (!window.confirm('Delete saved view “' + name + '”?')) return;
+      var id = item2.getAttribute('data-sv-id');
+      fetch('/api/saved-filters/' + encodeURIComponent(id), { method: 'DELETE' })
+        .then(function (r) {
+          if (r.ok) svRefreshList();
+          else      window.alert('Failed to delete saved view.');
+        });
+      return;
+    }
+  });
+
+  document.addEventListener('submit', function (e) {
+    // Rename form (per-item)
+    var renameForm = e.target.closest('[data-sv-rename-form]');
+    if (renameForm) {
+      e.preventDefault();
+      var renameItem = renameForm.closest('[data-sv-id]');
+      if (!renameItem) return;
+      var renameInp = renameForm.querySelector('[data-sv-rename-input]');
+      var renameMsg = renameForm.querySelector('[data-sv-rename-msg]');
+      var newName = renameInp ? (renameInp.value || '').trim() : '';
+      function setRenameMsg(t, isErr) {
+        if (!renameMsg) return;
+        renameMsg.textContent = t || '';
+        renameMsg.classList.toggle('is-error', !!isErr);
+      }
+      if (!newName) {
+        setRenameMsg('Name is required', true);
+        if (renameInp) renameInp.focus();
+        return;
+      }
+      var renameId = renameItem.getAttribute('data-sv-id');
+      setRenameMsg('Saving…', false);
+      fetch('/api/saved-filters/' + encodeURIComponent(renameId), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ name: newName })
+      }).then(function (r) {
+        return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; });
+      }).then(function (res) {
+        if (!res.ok) {
+          setRenameMsg((res.body && res.body.error) || 'Rename failed', true);
+          return;
+        }
+        svRefreshList();
+      }).catch(function () {
+        setRenameMsg('Network error', true);
+      });
+      return;
+    }
+
+    // Save (new view) form
+    var form = e.target.closest('[data-sv-save-form]');
+    if (!form) return;
+    e.preventDefault();
+    var root = svRoot();
+    if (!root) return;
+    var nameInp = form.querySelector('[data-sv-name]');
+    var name = nameInp ? (nameInp.value || '').trim() : '';
+    if (!name) {
+      svSetSaveMsg('Name is required', true);
+      if (nameInp) nameInp.focus();
+      return;
+    }
+    var params = svCaptureCurrentParams();
+    svSetSaveMsg('Saving…', false);
+    fetch('/api/saved-filters', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({ name: name, params: params })
+    }).then(function (r) {
+      return r.json().then(function (j) { return { ok: r.ok, status: r.status, body: j }; });
+    }).then(function (res) {
+      if (!res.ok) {
+        svSetSaveMsg((res.body && res.body.error) || 'Save failed', true);
+        return;
+      }
+      svSetSaveMsg('Saved.', false);
+      form.setAttribute('hidden', '');
+      // Open the dropdown so the user sees their new entry.
+      var body = root.querySelector('[data-sv-body]');
+      if (body) body.removeAttribute('hidden');
+      var toggle = root.querySelector('[data-sv-toggle]');
+      if (toggle) toggle.setAttribute('aria-expanded', 'true');
+      svRefreshList();
+    }).catch(function () {
+      svSetSaveMsg('Network error', true);
+    });
+  });
+
+  // ── Heatmap filter popover (/reports/locales heatmap tab) ─────────────
+  // Self-contained. Trigger toggles the modal + a backdrop. Apply collects
+  // checked values per data-pop-field, writes them into the hidden form's
+  // data-hm-input mirrors, and submits the form (plain GET — no htmx here).
+  (function () {
+    var trigger  = document.querySelector('[data-hm-trigger]');
+    var popover  = document.querySelector('[data-hm-popover]');
+    var backdrop = document.querySelector('[data-hm-backdrop]');
+    var form     = document.querySelector('[data-hm-form]');
+    if (!trigger || !popover || !backdrop || !form) return;
+
+    function setOpen(open) {
+      popover.classList.toggle('is-open', open);
+      backdrop.classList.toggle('is-open', open);
+      trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) {
+        var firstSearch = popover.querySelector('.pop-checklist-search');
+        if (firstSearch) firstSearch.focus();
+      }
+    }
+
+    trigger.addEventListener('click', function (e) {
+      e.preventDefault();
+      // Stop bubbling so the global "outside-click closes popovers" handler
+      // (logviewer.js click delegate) doesn't immediately re-close us. That
+      // delegate only spares clicks inside `.popover` or `[data-popover-trigger]`,
+      // and our trigger uses neither.
+      e.stopPropagation();
+      setOpen(!popover.classList.contains('is-open'));
+    });
+
+    popover.querySelectorAll('[data-hm-close]').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        setOpen(false);
+      });
+    });
+
+    backdrop.addEventListener('click', function () { setOpen(false); });
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && popover.classList.contains('is-open')) {
+        setOpen(false);
+      }
+    });
+
+    // Type-to-filter — debounced 120ms, mirrors the .ms-wrap pattern.
+    popover.querySelectorAll('.pop-checklist-wrap').forEach(function (wrap) {
+      var search = wrap.querySelector('.pop-checklist-search');
+      var list   = wrap.querySelector('[data-pop-checklist]');
+      var meta   = wrap.querySelector('[data-pop-checklist-meta]');
+      if (!search || !list) return;
+      var labels = Array.from(list.querySelectorAll('label'));
+      var total  = labels.length;
+      function applyFilter(q) {
+        q = (q || '').trim().toLowerCase();
+        var shown = 0;
+        labels.forEach(function (lbl) {
+          var match = !q || lbl.textContent.trim().toLowerCase().indexOf(q) !== -1;
+          lbl.classList.toggle('ms-hidden', !match);
+          if (match) shown++;
+        });
+        if (meta) meta.textContent = q ? (shown + ' of ' + total + ' shown') : '';
+      }
+      var timer = null;
+      search.addEventListener('input', function () {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(function () { applyFilter(search.value); }, 120);
+      });
+    });
+
+    // Per-field Select all (respects current type-filter — only ticks visible
+    // labels) and Clear (un-ticks every checkbox in the field).
+    popover.querySelectorAll('[data-hm-select-all]').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        var field = btn.getAttribute('data-pop-field');
+        var list = popover.querySelector('[data-pop-field-list="' + field + '"]');
+        if (!list) return;
+        list.querySelectorAll('label').forEach(function (lbl) {
+          if (lbl.classList.contains('ms-hidden')) return;
+          var cb = lbl.querySelector('input[type=checkbox]');
+          if (cb) cb.checked = true;
+        });
+      });
+    });
+    popover.querySelectorAll('[data-hm-clear-field]').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        var field = btn.getAttribute('data-pop-field');
+        popover.querySelectorAll('[data-pop-field="' + field + '"]').forEach(function (cb) {
+          cb.checked = false;
+        });
+      });
+    });
+
+    // Footer "Clear" — un-ticks every checkbox in the popover (all fields).
+    var clearAllBtn = popover.querySelector('[data-hm-clear-all]');
+    if (clearAllBtn) {
+      clearAllBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        popover.querySelectorAll('[data-pop-field]').forEach(function (cb) {
+          cb.checked = false;
+        });
+      });
+    }
+
+    // Apply: read checked state per data-pop-field, set hidden inputs, submit.
+    var applyBtn = popover.querySelector('[data-hm-apply]');
+    if (applyBtn) {
+      applyBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        var fields = new Set();
+        popover.querySelectorAll('[data-pop-field]').forEach(function (cb) {
+          fields.add(cb.getAttribute('data-pop-field'));
+        });
+        fields.forEach(function (field) {
+          var inp = form.querySelector('[data-hm-input="' + field + '"]');
+          if (!inp) return;
+          var checked = popover.querySelectorAll(
+            '[data-pop-field="' + field + '"]:checked'
+          );
+          var value = '';
+          if (field === 'content_only') {
+            value = checked.length ? 'true' : '';
+          } else {
+            var total = popover.querySelectorAll(
+              '[data-pop-field="' + field + '"]'
+            ).length;
+            // 0 OR all checked → no narrowing.
+            if (checked.length > 0 && checked.length < total) {
+              value = Array.from(checked).map(function (cb) { return cb.value; }).join(',');
+            }
+          }
+          inp.value = value;
+          // Skip the input entirely when empty so the URL stays clean.
+          inp.disabled = (value === '');
+        });
+        form.submit();
+      });
+    }
+  })();
+
   // Re-run htmx process on drawer inserts (it happens via hx-swap on tr)
   document.body.addEventListener('htmx:beforeRequest', function () {
     // no-op placeholder — kept for future hooks
