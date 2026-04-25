@@ -386,6 +386,59 @@ body[data-app="logviewer-v2"] textarea{ font:inherit; color:inherit; }
 }
 .chips-row .clear-all:hover{ background: var(--surface-alt); color: var(--ink-1); text-decoration:none;}
 
+/* Path filter rule-builder (inline expansion under the search input) */
+.path-filter{
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 8px 12px;
+  margin-top: -4px;
+  margin-bottom: 10px;
+  box-shadow: var(--shadow-sm);
+}
+.path-filter-head{
+  display:flex; align-items:center; flex-wrap:wrap; gap:6px;
+}
+.path-filter:not([data-pf-open]) .path-filter-body{ display:none; }
+.path-filter[data-pf-open] .path-filter-body{
+  display:flex; flex-direction:column; gap:6px; padding-top:8px;
+}
+.pf-label{
+  font-size:10px; text-transform:uppercase; letter-spacing:.08em;
+  color: var(--ink-4); font-weight:600;
+}
+.pf-join-seg{
+  display:inline-flex; border:1px solid var(--border); border-radius: var(--radius); overflow:hidden;
+}
+.pf-join-seg button{
+  font: inherit; font-size: 11px; padding:4px 10px; border:none;
+  background: transparent; color: var(--ink-3); cursor:pointer;
+}
+.pf-join-seg button.active{
+  background: var(--accent-soft); color: var(--accent-ink); font-weight:600;
+}
+.pf-rules{ display:flex; flex-direction:column; gap:6px; }
+.pf-row{ display:flex; gap:6px; align-items:center; }
+.pf-row select,
+.pf-row input{
+  height: 30px; padding: 0 8px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface-alt); color: var(--ink-1);
+  font: inherit; font-size: 12.5px;
+}
+.pf-row select{ flex: 0 0 160px; }
+.pf-row input{ flex: 1 1 200px; min-width: 120px; font-family: var(--font-mono); }
+.pf-row .pf-remove{
+  background: transparent; border: none; color: var(--ink-3);
+  cursor: pointer; padding: 0 6px; font-size: 16px; line-height: 1;
+}
+.pf-row .pf-remove:hover{ color: var(--ink-1); }
+@media (max-width: 640px){
+  .pf-row{ flex-wrap: wrap; }
+  .pf-row select{ flex: 1 1 100%; }
+  .pf-row input{ flex: 1 1 calc(100% - 36px); }
+}
+
 /* Saved views strip */
 .views-strip{
   display:flex; align-items:center; gap:6px; flex-wrap: wrap;

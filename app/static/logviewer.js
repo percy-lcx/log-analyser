@@ -249,6 +249,9 @@
   document.addEventListener('DOMContentLoaded', syncDateRangeUi);
 
   // ── Columns popover checkbox sync ─────────────────────────────────────
+  // Keep the columns popover open across the htmx swap so the user can toggle
+  // multiple columns without re-opening it.
+  var keepColumnsPopoverOpen = false;
   document.addEventListener('change', function (e) {
     var cb = e.target.closest('[data-col-checkbox]');
     if (!cb) return;
@@ -259,7 +262,113 @@
     if (cols.length) url.searchParams.set('columns', cols.join(','));
     else             url.searchParams.delete('columns');
     url.searchParams.delete('page');
+    keepColumnsPopoverOpen = true;
     navigate(url.pathname + url.search);
+  });
+
+  // ── Path filter rule-builder ──────────────────────────────────────────
+  // Inline disclosure under the search input. Add/remove rule rows locally;
+  // Apply collects state, rewrites the URL, and routes through navigate().
+  function pfRoot() { return document.querySelector('.path-filter'); }
+
+  document.addEventListener('click', function (e) {
+    var root = pfRoot();
+    if (!root) return;
+
+    var toggle = e.target.closest('[data-pf-toggle]');
+    if (toggle && root.contains(toggle)) {
+      var open = root.hasAttribute('data-pf-open');
+      if (open) {
+        root.removeAttribute('data-pf-open');
+        toggle.setAttribute('aria-expanded', 'false');
+      } else {
+        root.setAttribute('data-pf-open', '');
+        toggle.setAttribute('aria-expanded', 'true');
+      }
+      return;
+    }
+
+    var joinBtn = e.target.closest('[data-pf-join]');
+    if (joinBtn && root.contains(joinBtn)) {
+      e.preventDefault();
+      root.querySelectorAll('[data-pf-join]').forEach(function (b) {
+        var on = b === joinBtn;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+      return;
+    }
+
+    if (e.target.closest('[data-pf-add]')) {
+      e.preventDefault();
+      var tmpl = root.getAttribute('data-pf-template') || '';
+      var rules = root.querySelector('[data-pf-rules]');
+      if (!tmpl || !rules) return;
+      var holder = document.createElement('div');
+      holder.innerHTML = tmpl;
+      var row = holder.firstElementChild;
+      if (row) {
+        rules.appendChild(row);
+        var inp = row.querySelector('[data-pf-val]');
+        if (inp) inp.focus();
+      }
+      return;
+    }
+
+    var rm = e.target.closest('[data-pf-remove]');
+    if (rm && root.contains(rm)) {
+      e.preventDefault();
+      var row = rm.closest('[data-pf-row]');
+      if (row) row.remove();
+      return;
+    }
+
+    if (e.target.closest('[data-pf-clear]')) {
+      e.preventDefault();
+      var url = new URL(window.location.href);
+      url.searchParams.delete('pf');
+      url.searchParams.delete('pf_join');
+      url.searchParams.delete('page');
+      navigate(url.pathname + url.search);
+      return;
+    }
+
+    if (e.target.closest('[data-pf-apply]')) {
+      e.preventDefault();
+      var u = new URL(window.location.href);
+      u.searchParams.delete('pf');
+      u.searchParams.delete('pf_join');
+      u.searchParams.delete('page');
+      var rows = root.querySelectorAll('[data-pf-row]');
+      var added = 0;
+      rows.forEach(function (r) {
+        var op = (r.querySelector('[data-pf-op]') || {}).value || '';
+        var val = (r.querySelector('[data-pf-val]') || {}).value || '';
+        val = val.trim();
+        if (!val) return;
+        if (op !== 'contains' && op !== 'not_contains' && op !== 'regex') return;
+        u.searchParams.append('pf', op + ':' + val);
+        added++;
+      });
+      var join = (root.querySelector('[data-pf-join].active') || {}).getAttribute
+        ? root.querySelector('[data-pf-join].active').getAttribute('data-pf-join')
+        : 'and';
+      if (join === 'or' && added > 1) u.searchParams.set('pf_join', 'or');
+      navigate(u.pathname + u.search);
+      return;
+    }
+  });
+
+  // Enter key inside a rule's value input → Apply
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter') return;
+    var inp = e.target && e.target.closest && e.target.closest('[data-pf-val]');
+    if (!inp) return;
+    var root = pfRoot();
+    if (!root) return;
+    e.preventDefault();
+    var apply = root.querySelector('[data-pf-apply]');
+    if (apply) apply.click();
   });
 
   // ── More filters: pane switching (category nav) ───────────────────────
@@ -672,7 +781,17 @@
 
   // When an htmx swap targets #drawer, open the drawer and highlight the row.
   document.body.addEventListener('htmx:afterSwap', function (evt) {
-    closeAllPopovers();
+    if (keepColumnsPopoverOpen) {
+      // Close every popover except the columns popover so the user can keep
+      // toggling visible columns without re-opening it.
+      document.querySelectorAll('.popover.is-open').forEach(function (p) {
+        if (p.id !== 'pop-columns') p.classList.remove('is-open');
+      });
+      setPopoverBackdrop(false);
+      keepColumnsPopoverOpen = false;
+    } else {
+      closeAllPopovers();
+    }
     if (evt.target && evt.target.id === 'drawer') {
       openDrawer();
     }

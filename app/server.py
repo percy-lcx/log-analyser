@@ -588,6 +588,12 @@ def sql_escape_string(s: str) -> str:
     return s.replace("'", "''")
 
 
+def sql_escape_like(s: str) -> str:
+    # Escape LIKE/ILIKE wildcards so user input matches literally. Pair with
+    # `ESCAPE '\'` on the SQL side. Order matters: backslash first.
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_").replace("'", "''")
+
+
 def distinct_values(table: str, column: str, date_from: Optional[str], date_to: Optional[str]) -> List[str]:
     paths = list_partitions(table, date_from, date_to)
     if not paths:
@@ -4012,6 +4018,9 @@ def _build_log_where_clauses(
     excludes: Optional[Dict[str, List[str]]] = None,
     paths_include: Optional[List[str]] = None,
     paths_exclude: Optional[List[str]] = None,
+    # ── Inline path rule-builder (contains / not_contains / regex, AND or OR) ──
+    path_rules: Optional[List[Tuple[str, str]]] = None,
+    path_rules_join: str = "and",
 ) -> List[str]:
     clauses: List[str] = []
     if status_codes:
@@ -4063,6 +4072,29 @@ def _build_log_where_clauses(
     for p in (paths_exclude or []):
         esc = sql_escape_string(p)
         clauses.append(f"path NOT LIKE '{esc}%'")
+
+    # ── Inline path rule-builder ──
+    # Per-rule path-only fragments combined with AND or OR. Wraps in parens so
+    # the join scope is *only* over the builder rows; the rest of the WHERE
+    # stays AND-joined (prefix filters above remain AND-applied).
+    if path_rules:
+        rule_parts: List[str] = []
+        for op, value in path_rules:
+            if not value:
+                continue
+            if op == "contains":
+                like_esc = sql_escape_like(value)
+                rule_parts.append(f"path ILIKE '%{like_esc}%' ESCAPE '\\'")
+            elif op == "not_contains":
+                like_esc = sql_escape_like(value)
+                rule_parts.append(f"(path IS NULL OR path NOT ILIKE '%{like_esc}%' ESCAPE '\\')")
+            elif op == "regex":
+                pat = value if value.startswith("(?") else f"(?i){value}"
+                pat_esc = sql_escape_string(pat)
+                rule_parts.append(f"regexp_matches(path, '{pat_esc}')")
+        if rule_parts:
+            joiner = " OR " if path_rules_join == "or" else " AND "
+            clauses.append("(" + joiner.join(rule_parts) + ")")
 
     # ── Negation (exclude_*) clauses from search operators / popover ──
     if excludes:
@@ -4591,7 +4623,11 @@ def _lv2_icon(name: str, cls: str = "") -> str:
 
 
 def _lv2_build_qs(params: Dict[str, Any], **overrides: Any) -> str:
-    """Build a query string from params dict, applying overrides (None drops)."""
+    """Build a query string from params dict, applying overrides (None drops).
+
+    List/tuple values emit one `k=v` pair per element so repeated query params
+    (e.g. `pf=contains:/api&pf=regex:^v\\d`) roundtrip without collapsing.
+    """
     merged = dict(params)
     for k, v in overrides.items():
         if v is None:
@@ -4602,7 +4638,15 @@ def _lv2_build_qs(params: Dict[str, Any], **overrides: Any) -> str:
     for k, v in merged.items():
         if v is None or v == "":
             continue
-        parts.append(f"{k}={html_escape(str(v), quote=True)}")
+        if isinstance(v, (list, tuple)):
+            for item in v:
+                if item is None or item == "":
+                    continue
+                # URL-encode list items so reserved chars (&, +, ?, #) survive
+                # the query-string round trip. `:` and `/` left readable.
+                parts.append(f"{k}={url_quote(str(item), safe=':/')}")
+        else:
+            parts.append(f"{k}={html_escape(str(v), quote=True)}")
     return "&".join(parts)
 
 
@@ -4896,9 +4940,17 @@ def _lv2_filter_bar(
     for hk, hv in params.items():
         if hk in ("search", "page") or hv in (None, ""):
             continue
-        hidden_kvs.append(
-            f"<input type='hidden' name='{html_escape(hk)}' value='{html_escape(str(hv), quote=True)}'>"
-        )
+        if isinstance(hv, (list, tuple)):
+            for item in hv:
+                if item in (None, ""):
+                    continue
+                hidden_kvs.append(
+                    f"<input type='hidden' name='{html_escape(hk)}' value='{html_escape(str(item), quote=True)}'>"
+                )
+        else:
+            hidden_kvs.append(
+                f"<input type='hidden' name='{html_escape(hk)}' value='{html_escape(str(hv), quote=True)}'>"
+            )
     hidden_inputs_html = "".join(hidden_kvs)
     search_html = (
         "<div class='search-input'>"
@@ -4979,9 +5031,17 @@ def _lv2_filter_bar(
     for hk, hv in params.items():
         if hk in ("from", "to", "page") or hv in (None, ""):
             continue
-        dr_hidden_parts.append(
-            f"<input type='hidden' name='{html_escape(hk)}' value='{html_escape(str(hv), quote=True)}'>"
-        )
+        if isinstance(hv, (list, tuple)):
+            for item in hv:
+                if item in (None, ""):
+                    continue
+                dr_hidden_parts.append(
+                    f"<input type='hidden' name='{html_escape(hk)}' value='{html_escape(str(item), quote=True)}'>"
+                )
+        else:
+            dr_hidden_parts.append(
+                f"<input type='hidden' name='{html_escape(hk)}' value='{html_escape(str(hv), quote=True)}'>"
+            )
     dr_hidden_html = "".join(dr_hidden_parts)
     if avail_from and avail_to:
         dr_clear_qs = _lv2_build_qs(
@@ -5073,6 +5133,75 @@ def _lv2_filter_bar(
         "style='pointer-events:none;margin:0;'> Chart</a>"
     )
 
+    # Path filter rule-builder (inline disclosure under the search row)
+    pf_entries_raw = params.get("pf") or []
+    if isinstance(pf_entries_raw, str):
+        pf_entries_raw = [pf_entries_raw]
+    pf_join_val = "or" if str(params.get("pf_join", "")).lower() == "or" else "and"
+    pf_open = bool(pf_entries_raw)
+
+    def _pf_row_html(op: str = "contains", val: str = "") -> str:
+        op_safe = op if op in ("contains", "not_contains", "regex") else "contains"
+        opts = [
+            ("contains", "Contains"),
+            ("not_contains", "Does not contain"),
+            ("regex", "Regex"),
+        ]
+        opt_html = "".join(
+            f"<option value='{ov}'{' selected' if ov == op_safe else ''}>{ol}</option>"
+            for ov, ol in opts
+        )
+        return (
+            "<div class='pf-row' data-pf-row>"
+            f"<select aria-label='Operator' data-pf-op>{opt_html}</select>"
+            f"<input type='text' aria-label='Value' data-pf-val placeholder='value or regex' "
+            f"value='{html_escape(val, quote=True)}' spellcheck='false' autocomplete='off'>"
+            "<button type='button' class='pf-remove' data-pf-remove aria-label='Remove rule'>×</button>"
+            "</div>"
+        )
+
+    pf_rows_html = ""
+    for entry in pf_entries_raw:
+        if not isinstance(entry, str) or ":" not in entry:
+            continue
+        op_part, _, val_part = entry.partition(":")
+        if op_part not in ("contains", "not_contains", "regex") or not val_part:
+            continue
+        pf_rows_html += _pf_row_html(op_part, val_part)
+    if not pf_rows_html:
+        pf_rows_html = _pf_row_html()
+
+    pf_count = len(pf_entries_raw)
+    pf_count_badge = (
+        f"<span class='count' style='background:var(--accent);color:#fff;border-radius:999px;"
+        f"padding:0 6px;font-size:10px;min-width:16px;text-align:center;margin-left:4px;'>{pf_count}</span>"
+        if pf_count else ""
+    )
+    pf_open_attr = " data-pf-open" if pf_open else ""
+    pf_template_row = _pf_row_html().replace("'", "&#39;")
+    path_filter_html = (
+        f"<div class='path-filter'{pf_open_attr} data-pf-template='{pf_template_row}'>"
+        "<div class='path-filter-head'>"
+        "<button type='button' class='filter-chip-btn' data-pf-toggle aria-expanded='"
+        f"{'true' if pf_open else 'false'}'>"
+        f"Path filter{pf_count_badge}<span style='margin-left:4px;'>▾</span></button>"
+        "<span class='pf-label' style='margin-left:8px;'>Match</span>"
+        "<div class='pf-join-seg' role='radiogroup' aria-label='Match mode'>"
+        f"<button type='button' data-pf-join='and' class='{'active' if pf_join_val == 'and' else ''}' "
+        f"aria-pressed='{'true' if pf_join_val == 'and' else 'false'}'>ALL</button>"
+        f"<button type='button' data-pf-join='or' class='{'active' if pf_join_val == 'or' else ''}' "
+        f"aria-pressed='{'true' if pf_join_val == 'or' else 'false'}'>ANY</button>"
+        "</div>"
+        "<button type='button' class='filter-chip-btn' data-pf-add>+ Add rule</button>"
+        "<button type='button' class='filter-chip-btn solid' data-pf-apply>Apply</button>"
+        "<button type='button' class='filter-chip-btn' data-pf-clear>Clear</button>"
+        "</div>"
+        "<div class='path-filter-body'>"
+        f"<div class='pf-rules' data-pf-rules>{pf_rows_html}</div>"
+        "</div>"
+        "</div>"
+    )
+
     return (
         "<div class='filter-bar'>"
         f"{search_html}"
@@ -5081,6 +5210,7 @@ def _lv2_filter_bar(
         f"{columns_popover}"
         f"{chart_toggle}"
         "</div>"
+        f"{path_filter_html}"
     )
 
 
@@ -5222,6 +5352,32 @@ def _lv2_active_chips(
             remove_qs = _lv2_build_qs(remove_params, page=None)
             display_val = "bot" if field == "is_bot" and v == "true" else ("human" if field == "is_bot" and v == "false" else v)
             _append_chip(label, display_val, "≠", remove_qs, v)
+
+    # ── Path rule-builder chips (pf=<op>:<value>) ──
+    pf_entries = params.get("pf")
+    if pf_entries:
+        if not isinstance(pf_entries, (list, tuple)):
+            pf_entries = [pf_entries]
+        _PF_SEP = {"contains": "~", "not_contains": "!~", "regex": "re"}
+        for idx, entry in enumerate(pf_entries):
+            if not isinstance(entry, str) or ":" not in entry:
+                continue
+            op_part, _, val_part = entry.partition(":")
+            sep = _PF_SEP.get(op_part)
+            if not sep or not val_part:
+                continue
+            # Remove only this index from the list (preserves duplicates).
+            remaining = [e for i, e in enumerate(pf_entries) if i != idx]
+            remove_params = dict(params)
+            if remaining:
+                remove_params["pf"] = remaining
+                if len(remaining) <= 1:
+                    remove_params.pop("pf_join", None)
+            else:
+                remove_params.pop("pf", None)
+                remove_params.pop("pf_join", None)
+            remove_qs = _lv2_build_qs(remove_params, page=None)
+            _append_chip("path", val_part, sep, remove_qs, val_part)
 
     if not chips:
         return ""
@@ -6030,6 +6186,8 @@ def log_viewer(
     bt1: Optional[int] = Query(None),
     chart_metric: Optional[str] = Query(None),
     active_preset: Optional[str] = Query(None),
+    pf: List[str] = Query(default_factory=list),
+    pf_join: str = Query("and"),
 ):
     if preset:
         return _resolve_log_preset(
@@ -6164,6 +6322,33 @@ def log_viewer(
     # `search` passed to the SQL builder is the free-text leftover only.
     effective_search = cleaned_free_text
 
+    # ── Parse path rule-builder params (pf=<op>:<value>, pf_join=and|or) ──
+    # Rules with an unknown op, empty value, oversized regex, or invalid regex
+    # are dropped silently; the cleaned list is what re-enters ui_params.
+    _PF_OPS = {"contains", "not_contains", "regex"}
+    _PF_REGEX_MAX = 200
+    path_rules: List[Tuple[str, str]] = []
+    pf_clean: List[str] = []
+    for entry in (pf or []):
+        if not entry:
+            continue
+        op_part, sep, val_part = entry.partition(":")
+        if not sep:
+            continue
+        op_norm = op_part.strip().lower()
+        if op_norm not in _PF_OPS or not val_part:
+            continue
+        if op_norm == "regex":
+            if len(val_part) > _PF_REGEX_MAX:
+                continue
+            try:
+                re.compile(val_part)
+            except re.error:
+                continue
+        path_rules.append((op_norm, val_part))
+        pf_clean.append(f"{op_norm}:{val_part}")
+    pf_join_norm = "or" if (pf_join or "").lower() == "or" else "and"
+
     # ── Build canonical ui_params dict (single source of truth for URLs) ──
     show_chart = chart == "1"
     ui_params: Dict[str, Any] = {}
@@ -6193,6 +6378,10 @@ def log_viewer(
     if sort and sort != "ts_utc": ui_params["sort"] = sort
     if order and order != "desc": ui_params["order"] = order
     if per_page != 100: ui_params["per_page"] = str(per_page)
+    if pf_clean:
+        ui_params["pf"] = pf_clean
+        if pf_join_norm == "or" and len(pf_clean) > 1:
+            ui_params["pf_join"] = "or"
     default_col_set = {c for c in LOG_DEFAULT_COLUMNS if c in schema_cols}
     if visible_cols and set(visible_cols) != default_col_set:
         ui_params["columns"] = ",".join(visible_cols)
@@ -6275,6 +6464,8 @@ def log_viewer(
         excludes=op_excludes,
         paths_include=paths_include,
         paths_exclude=paths_exclude,
+        path_rules=path_rules,
+        path_rules_join=pf_join_norm,
     )
     # Chart WHERE (no brush — chart shows the full requested range with a brush
     # overlay), vs. results WHERE (brush narrows to the selected window).
