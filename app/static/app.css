@@ -378,6 +378,24 @@ textarea{ font:inherit; color:inherit; }
 .date-range .dr-presets a.active,
 .date-range .dr-presets button.active{ background: var(--accent-soft); color: var(--accent-ink);}
 
+.popover .dr-presets-row{
+  display:flex; gap: 4px; flex-wrap: wrap;
+  padding: 2px 6px 8px;
+  margin: 0 0 8px;
+  border-bottom: 1px solid var(--border);
+}
+.popover .dr-presets-row a{
+  padding: 3px 9px;
+  font-size: 12px;
+  color: var(--ink-3);
+  border-radius: 4px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+}
+.popover .dr-presets-row a:hover{ background: var(--surface-alt); color: var(--ink-1); text-decoration: none;}
+.popover .dr-presets-row a.active{ background: var(--accent-soft); color: var(--accent-ink);}
+
 /* Filter-chip buttons (Add filter, Columns, Chart toggle) */
 .filter-chip-btn{
   display:inline-flex; align-items:center; gap:6px;

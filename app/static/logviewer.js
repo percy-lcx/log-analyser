@@ -83,6 +83,12 @@
     if (!e.target.closest('.popover') && !e.target.closest('[data-popover-trigger]')) {
       closeAllPopovers();
     }
+    // Anchor inside a popover (e.g., date-range presets / "All time"): let the
+    // link's own action fire (full-nav or htmx swap), then close the popover —
+    // chrome lives outside #results, so htmx swaps won't unmount it for us.
+    if (e.target.closest('.popover a')) {
+      setTimeout(closeAllPopovers, 0);
+    }
   });
 
   // ── Escape: close any open overlays ───────────────────────────────────

@@ -345,25 +345,26 @@ def date_range_popover(
     avail_from: Optional[str] = None,
     avail_to: Optional[str] = None,
     hidden_inputs_html: str = "",
-    clear_href: str = "",
-    clear_label: str = "All time",
     form_action: str = "",
     extra_styles: str = "",
+    presets_html: str = "",
 ) -> str:
-    """The standard custom date-range popover. Mounted via data-popover-trigger."""
+    """The standard custom date-range popover. Mounted via data-popover-trigger.
+
+    `presets_html` is a flat string of preset anchors (e.g., 24h/3d/.../All time)
+    rendered as a single row at the top. The form below holds custom from/to and
+    a lone Apply on its own row.
+    """
     fmin = f" min='{_esc(avail_from, quote=True)}'" if avail_from else ""
     fmax = f" max='{_esc(avail_to, quote=True)}'" if avail_to else ""
     style_attr = f" style='{extra_styles}'" if extra_styles else ""
     action_attr = f" action='{_esc(form_action, quote=True)}'" if form_action else ""
-    clear_button = ""
-    if clear_href:
-        clear_button = (
-            f"<a href='{_esc(clear_href, quote=True)}' class='btn btn-sm btn-ghost' "
-            f"hx-get='{_esc(clear_href, quote=True)}' hx-target='#results' "
-            f"hx-push-url='true' hx-swap='innerHTML'>{_esc(clear_label)}</a>"
-        )
+    presets_block = (
+        f"<div class='dr-presets-row'>{presets_html}</div>" if presets_html else ""
+    )
     return (
         f"<div class='popover' id='{_esc(popover_id, quote=True)}'{style_attr}>"
+        f"{presets_block}"
         "<div class='popover-title'>Custom date range</div>"
         f"<form method='get'{action_attr}>"
         f"{hidden_inputs_html}"
@@ -374,7 +375,6 @@ def date_range_popover(
         f"<input class='input' type='date' name='to' "
         f"value='{_esc(date_to or '', quote=True)}'{fmin}{fmax}></div>"
         "<div class='pop-actions'>"
-        f"{clear_button}"
         "<button type='submit' class='btn btn-sm btn-primary'>Apply</button>"
         "</div>"
         "</form>"

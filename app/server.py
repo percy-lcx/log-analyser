@@ -4404,6 +4404,16 @@ def _lv2_filter_bar(
         dr_clear_qs = _lv2_build_qs(params, **{"from": None, "to": None, "page": None})
     avail_from_attr = f" data-avail-from='{html_escape(avail_from or '', quote=True)}'" if avail_from else ""
     avail_to_attr = f" data-avail-to='{html_escape(avail_to or '', quote=True)}'" if avail_to else ""
+    # "All time" sits alongside day presets — explicit avail range so the
+    # is_all_time check above keeps matching after click.
+    all_time_href_logs = f"/logs?{dr_clear_qs}" if dr_clear_qs else "/logs"
+    all_time_esc = html_escape(all_time_href_logs, quote=True)
+    all_time_cls_logs = "active" if is_all_time else ""
+    all_time_link_logs = (
+        f"<a class='{all_time_cls_logs}' href='{all_time_esc}' "
+        f"hx-get='{all_time_esc}' hx-target='#results' "
+        f"hx-push-url='true' hx-swap='innerHTML'>All time</a>"
+    )
     dr_popover_html = date_range_popover(
         popover_id="pop-date-range",
         date_from=date_from,
@@ -4411,10 +4421,9 @@ def _lv2_filter_bar(
         avail_from=avail_from,
         avail_to=avail_to,
         hidden_inputs_html=dr_hidden_html,
-        clear_href=f"/logs?{dr_clear_qs}",
-        clear_label="All time",
         form_action="/logs",
         extra_styles="top:38px; left:0; min-width:260px;",
+        presets_html=preset_btns + all_time_link_logs,
     )
     date_range_html = (
         f"<div class='date-range' data-date-range{avail_from_attr}{avail_to_attr}>"
@@ -4424,7 +4433,6 @@ def _lv2_filter_bar(
         f"{_lv2_icon('calendar')}"
         f"<span class='dr-label'>{html_escape(range_label)}</span>"
         "</span>"
-        f"<div class='dr-presets'>{preset_btns}</div>"
         f"{dr_popover_html}"
         "</div>"
     )
@@ -5073,39 +5081,62 @@ def _lv2_report_shell(
     if date_to:
         params["to"] = date_to
 
+    min_d = avail[0] if avail else ""
+    max_d = avail[-1] if avail else ""
+    try:
+        preset_anchor = (
+            datetime.fromisoformat(max_d).date()
+            if max_d
+            else datetime.utcnow().date()
+        )
+    except ValueError:
+        preset_anchor = datetime.utcnow().date()
+
     def preset_link(days: int, label: str, is_active: bool) -> str:
-        today = datetime.utcnow().date()
-        frm = (today - timedelta(days=days - 1)).isoformat()
-        to = today.isoformat()
+        frm = (preset_anchor - timedelta(days=days - 1)).isoformat()
+        to = preset_anchor.isoformat()
         qs = _lv2_build_qs(params, **{"from": frm, "to": to})
         cls = "active" if is_active else ""
         return f"<a class='{cls}' href='?{qs}'>{html_escape(label)}</a>"
 
-    # Detect active preset
+    # Active preset matches only when the range ends on the latest data day.
     active_days: Optional[int] = None
     if date_from and date_to:
         try:
             f_d = datetime.fromisoformat(date_from).date()
             t_d = datetime.fromisoformat(date_to).date()
             span = (t_d - f_d).days + 1
-            if span in {1, 3, 7, 14, 30}:
+            if t_d == preset_anchor and span in {1, 3, 7, 14, 30}:
                 active_days = span
         except ValueError:
             active_days = None
 
-    range_label = f"{date_from} → {date_to}" if date_from and date_to and date_from != date_to else (date_from or "All time")
-    min_d = avail[0] if avail else ""
-    max_d = avail[-1] if avail else ""
+    is_all_time = bool(min_d and max_d and date_from == min_d and date_to == max_d)
+    range_label = (
+        "All time" if is_all_time
+        else (f"{date_from} → {date_to}" if date_from and date_to and date_from != date_to
+              else (date_from or "All time"))
+    )
     rs_clear_qs = _lv2_build_qs(params, **{"from": min_d or None, "to": max_d or None})
+    all_time_cls = "active" if is_all_time else ""
+    all_time_href = f"?{rs_clear_qs}" if rs_clear_qs else "?"
+    all_time_link = f"<a class='{all_time_cls}' href='{all_time_href}'>All time</a>"
+    rs_presets_html = (
+        f"{preset_link(1, '24h', active_days == 1)}"
+        f"{preset_link(3, '3d', active_days == 3)}"
+        f"{preset_link(7, '7d', active_days == 7)}"
+        f"{preset_link(14, '14d', active_days == 14)}"
+        f"{preset_link(30, '30d', active_days == 30)}"
+        f"{all_time_link}"
+    )
     rs_dr_popover = date_range_popover(
         popover_id="pop-date-range",
         date_from=date_from,
         date_to=date_to,
         avail_from=min_d or None,
         avail_to=max_d or None,
-        clear_href=f"?{rs_clear_qs}" if rs_clear_qs else "?",
-        clear_label="All time",
         extra_styles="top:38px; left:0; min-width:260px;",
+        presets_html=rs_presets_html,
     )
     filter_slot = (
         f"<div class='report-filter-slot' style='margin-left:auto;'>{filter_popover_html}</div>"
@@ -5120,12 +5151,6 @@ def _lv2_report_shell(
         f"{_lv2_icon('calendar')}"
         f"<span class='dr-label'>{html_escape(range_label)}</span>"
         "</span>"
-        "<div class='dr-presets'>"
-        f"{preset_link(3, '3d', active_days == 3)}"
-        f"{preset_link(7, '7d', active_days == 7)}"
-        f"{preset_link(14, '14d', active_days == 14)}"
-        f"{preset_link(30, '30d', active_days == 30)}"
-        "</div>"
         f"{rs_dr_popover}"
         "</div>"
         f"{filter_slot}"
