@@ -1553,7 +1553,7 @@
 
     // Per-field Select all (respects current type-filter — only ticks visible
     // labels) and Clear (un-ticks every checkbox in the field).
-    popover.querySelectorAll('[data-hm-select-all]').forEach(function (btn) {
+    popover.querySelectorAll('[data-pop-select-all]').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.preventDefault();
         var field = btn.getAttribute('data-pop-field');
@@ -1566,7 +1566,7 @@
         });
       });
     });
-    popover.querySelectorAll('[data-hm-clear-field]').forEach(function (btn) {
+    popover.querySelectorAll('[data-pop-clear-field]').forEach(function (btn) {
       btn.addEventListener('click', function (e) {
         e.preventDefault();
         var field = btn.getAttribute('data-pop-field');

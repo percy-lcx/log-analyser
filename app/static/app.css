@@ -742,6 +742,41 @@ textarea{ font:inherit; color:inherit; }
 .mfp-head h4{ font-size: 13px; font-weight: 600; color: var(--ink-1);}
 .mfp-head p{ font-size: 12px; color: var(--ink-3); margin-top: 2px;}
 .mfp-body{ display: flex; flex: 1; min-height: 0; }
+.mfp-body.mfp-flat{ flex-direction: column; padding: 18px 22px; overflow: auto;}
+.mfp-body.mfp-flat > .mfp-section + .mfp-section{ margin-top: 22px;}
+.mfp-section-head{
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin-bottom: 8px;
+}
+.mfp-section-label{
+  font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--ink-3); font-weight: 700;
+}
+.mfp-section-actions{ display: inline-flex; gap: 4px; }
+.mfp-mini{
+  background: transparent; border: none;
+  font: inherit; font-size: 11.5px; font-weight: 500;
+  color: var(--accent); cursor: pointer;
+  padding: 2px 6px; border-radius: 4px;
+}
+.mfp-mini:hover{ background: var(--accent-soft); text-decoration: underline;}
+.mfp-toggle{
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 7px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 13px; color: var(--ink-2);
+  cursor: pointer; user-select: none;
+}
+.mfp-toggle:hover{ border-color: var(--border-strong); color: var(--ink-1);}
+.mfp-toggle:has(input:checked){
+  border-color: var(--accent); background: var(--accent-soft); color: var(--accent-ink);
+  font-weight: 600;
+}
+.mfp-toggle input[type=checkbox]{ accent-color: var(--accent); margin: 0;}
+.mfp-foot .mfp-foot-right{ margin-left: auto; display: inline-flex; align-items: center; gap: 12px;}
+.mfp-foot .mfp-active{ font-size: 12px; color: var(--ink-3);}
+.mfp-foot .mfp-active span{ font-weight: 600; color: var(--ink-1);}
 .mfp-nav{
   width: 180px; border-right: 1px solid var(--border);
   padding: 8px; background: var(--surface-alt);
@@ -815,159 +850,11 @@ textarea{ font:inherit; color:inherit; }
 .popover .pop-checklist label.ms-hidden{ display: none !important; }
 .filter-chip-btn.solid.active{ border-color: var(--accent); color: var(--accent-ink); background: var(--accent-soft);}
 
-/* ── Heatmap filter popover (/reports/locales heatmap tab) ──
-   Reuses .popover / .pop-checklist / .pop-checklist-search primitives above.
-   .hm-popover is a `position: fixed` modal modifier on .popover. Trigger and
-   modal-chrome (.hm-pop-*) are heatmap-specific.                          */
-.hm-filter-row{
-  display: flex; align-items: center; gap: 10px;
-  margin: 0 0 14px;
-}
-.hm-popover-trigger{
-  display: inline-flex; align-items: center; gap: 6px;
-  height: 34px; padding: 0 14px;
-  border: 1px dashed var(--border-strong); border-radius: var(--radius);
-  background: transparent; color: var(--ink-3);
-  font-size: 13px; font-weight: 500;
-  cursor: pointer;
-}
-.hm-popover-trigger:hover{
-  color: var(--ink-1); border-color: var(--ink-3); border-style: solid;
-}
-.hm-popover-trigger[aria-expanded='true']{
-  border-style: solid; border-color: var(--accent);
-  color: var(--accent-ink); background: var(--accent-soft);
-}
-.hm-trigger-badge{
-  background: var(--accent); color: #fff; border-radius: 999px;
-  padding: 0 7px; font-size: 11px; line-height: 18px;
-  min-width: 18px; text-align: center; font-weight: 700;
-}
-.hm-trigger-caret{
-  font-size: 11px; opacity: .7; margin-left: 2px;
-}
-.hm-trigger-clear{
-  font-size: 12px; color: var(--ink-3); text-decoration: none;
-  padding: 4px 8px; border-radius: 4px;
-}
-.hm-trigger-clear:hover{
-  background: var(--surface-alt); color: var(--ink-1); text-decoration: none;
-}
-
 /* Hidden form ferries popover state to a plain GET submit */
 .hm-form{ display: none; }
-
-/* Make .popover render as a fixed-position modal when .hm-popover is added */
-.popover.hm-popover{
-  position: fixed; inset: 32px;
-  min-width: 0;
-  padding: 0;
-  z-index: 410;
-  flex-direction: column;
-  overflow: hidden;
-}
-.popover.hm-popover.is-open{ display: flex; }
-
-.hm-pop-head{
-  padding: 14px 18px; border-bottom: 1px solid var(--border);
-  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
-  flex: 0 0 auto;
-}
-.hm-pop-head h4{
-  font-size: 14px; font-weight: 600; color: var(--ink-1);
-  margin: 0;
-}
-.hm-pop-head p{
-  font-size: 12.5px; color: var(--ink-3);
-  margin: 3px 0 0;
-}
-.hm-pop-close{
-  background: transparent; border: none;
-  font-size: 22px; line-height: 1; color: var(--ink-3);
-  cursor: pointer; padding: 0 4px;
-  margin-top: -2px;
-}
-.hm-pop-close:hover{ color: var(--ink-1); }
-.hm-pop-body{
-  flex: 1; min-height: 0; overflow: auto;
-  padding: 18px 22px;
-}
-.hm-pop-section{ margin-bottom: 22px; }
-.hm-pop-section:last-child{ margin-bottom: 0; }
-.hm-pop-section-head{
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 8px; margin-bottom: 8px;
-}
-.hm-pop-section-label{
-  font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
-  color: var(--ink-3); font-weight: 700;
-}
-.hm-pop-section-actions{
-  display: inline-flex; gap: 4px;
-}
-.hm-pop-mini{
-  background: transparent; border: none;
-  font: inherit; font-size: 11.5px; font-weight: 500;
-  color: var(--accent); cursor: pointer;
-  padding: 2px 6px; border-radius: 4px;
-}
-.hm-pop-mini:hover{
-  background: var(--accent-soft); text-decoration: underline;
-}
-.hm-pop-foot{
-  padding: 12px 18px; border-top: 1px solid var(--border);
-  background: var(--surface-alt);
-  display: flex; align-items: center; gap: 12px;
-  flex: 0 0 auto;
-}
-.hm-pop-foot-right{
-  margin-left: auto;
-  display: inline-flex; align-items: center; gap: 12px;
-}
-.hm-pop-active{ font-size: 12px; color: var(--ink-3); }
-.hm-pop-active span{ font-weight: 600; color: var(--ink-1); }
-.hm-pop-clear-btn{
-  display: inline-flex; align-items: center;
-  height: 34px; padding: 0 14px;
-  border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--surface); color: var(--ink-2);
-  font-size: 13px; font-weight: 500;
-  cursor: pointer;
-}
-.hm-pop-clear-btn:hover{
-  border-color: var(--ink-3); color: var(--ink-1);
-}
-.hm-pop-apply{
-  display: inline-flex; align-items: center;
-  height: 34px; padding: 0 18px;
-  border: 1px solid var(--ink-1); border-radius: var(--radius);
-  background: var(--ink-1); color: #fff;
-  font-size: 13px; font-weight: 600;
-  cursor: pointer;
-}
-.hm-pop-apply:hover{
-  background: var(--ink-2); border-color: var(--ink-2);
-}
-
-/* Display-section toggle — checkbox styled as a chip */
-.hm-pop-toggle{
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 7px 12px;
-  border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--surface);
-  font-size: 13px; color: var(--ink-2);
-  cursor: pointer; user-select: none;
-}
-.hm-pop-toggle:hover{
-  border-color: var(--ink-3); color: var(--ink-1);
-}
-.hm-pop-toggle:has(input:checked){
-  border-color: var(--accent); background: var(--accent-soft); color: var(--accent-ink);
-  font-weight: 600;
-}
-.hm-pop-toggle input[type=checkbox]{
-  accent-color: var(--accent); margin: 0;
-}
+.hm-filter-row{ display: flex; align-items: center; gap: 10px; margin: 0 0 14px;}
+.hm-trigger-clear{ font-size: 12px; color: var(--ink-3); padding: 4px 8px; border-radius: 4px;}
+.hm-trigger-clear:hover{ background: var(--surface-alt); color: var(--ink-1); text-decoration: none;}
 
 /* ── Table ── */
 .table-wrap{

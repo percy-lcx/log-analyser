@@ -98,7 +98,7 @@ if _STATIC_DIR.is_dir():
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 from app.settings import router as settings_router
-from app._ui import iconHtml, topnav, page_head
+from app._ui import iconHtml, topnav, page_head, filter_popover, date_range_popover
 app.include_router(settings_router)
 
 
@@ -2317,6 +2317,7 @@ window.applyDatePreset = function(form, days) {
         </main>
     </div>
     {js}
+    <script src="/static/app.js?v={_lv2_static_ver('app.js')}" defer></script>
 </body>
 </html>"""
     return HTMLResponse(html)
@@ -2852,67 +2853,57 @@ def locales(
         clear_link = (
             f"<a class='hm-trigger-clear' href='{clear_href}'>Clear all</a>"
         ) if active_count else ""
-        trigger_count_badge = (
-            f"<span class='hm-trigger-badge'>{active_count}</span>"
+        count_badge = (
+            f"<span class='count' style='background:var(--accent);color:#fff;border-radius:999px;"
+            f"padding:0 6px;font-size:10px;line-height:16px;min-width:16px;text-align:center;margin-left:6px;'>{active_count}</span>"
         ) if active_count else ""
-
-        # Flat checklist (port of `_lv2_more_filters_popover.checklist` at
-        # app/server.py around line 5330). Search input only when >6 options.
-        def _hm_pop_checklist(field: str, options: List[str], selected_vals: List[str], ph_label: str) -> str:
-            sel_set = set(selected_vals)
-            # No URL filter for this field → the heatmap is showing every value;
-            # reflect that honestly by pre-checking everything. The JS Apply
-            # handler treats "all checked" as "no filter" so the URL stays clean.
-            treat_as_all = not sel_set
-            items = []
-            for opt in options:
-                opt_safe = html_escape(str(opt), quote=True)
-                opt_text = html_escape(str(opt))
-                checked = " checked" if (treat_as_all or opt in sel_set) else ""
-                items.append(
-                    f"<label><input type='checkbox' data-pop-field='{field}' "
-                    f"value='{opt_safe}'{checked}> <span>{opt_text}</span></label>"
-                )
-            list_html = f"<div class='pop-checklist' data-pop-checklist data-pop-field-list='{field}'>{''.join(items)}</div>"
-            search_html = ""
-            if len(options) > 6:
-                search_html = (
-                    f"<input type='text' class='pop-checklist-search' "
-                    f"placeholder='Filter {html_escape(ph_label, quote=True)}…' "
-                    "autocomplete='off' spellcheck='false'>"
-                )
-            return (
-                "<div class='pop-checklist-wrap'>"
-                f"{search_html}"
-                f"{list_html}"
-                "<div class='pop-checklist-meta' data-pop-checklist-meta></div>"
-                "</div>"
-            )
-
-        def _hm_section_head(label: str, field: str) -> str:
-            """Section label + Select all / Clear actions on the right."""
-            return (
-                "<div class='hm-pop-section-head'>"
-                f"<div class='hm-pop-section-label'>{html_escape(label)}</div>"
-                "<div class='hm-pop-section-actions'>"
-                f"<button type='button' class='hm-pop-mini' data-hm-select-all data-pop-field='{field}'>Select all</button>"
-                f"<button type='button' class='hm-pop-mini' data-hm-clear-field data-pop-field='{field}'>Clear</button>"
-                "</div>"
-                "</div>"
-            )
-
-        locale_section = _hm_pop_checklist("locale", locale_options, locales_sel, "locale")
-        group_section = _hm_pop_checklist("url_group", group_options, url_groups, "URL group")
-        locale_head = _hm_section_head("Locale", "locale")
-        group_head = _hm_section_head("URL group", "url_group")
         content_checked = " checked" if content_only else ""
+
+        content_only_extras = (
+            "<div class='mfp-section'>"
+            "<div class='mfp-section-head'>"
+            "<div class='mfp-section-label'>Display</div>"
+            "</div>"
+            "<label class='mfp-toggle'>"
+            f"<input type='checkbox' data-pop-field='content_only' value='true'{content_checked}>"
+            "<span>Content URL groups only</span>"
+            "</label>"
+            "</div>"
+        )
+
+        footer_left = (
+            "<button type='button' class='btn btn-sm btn-ghost' data-hm-clear-all>Clear</button>"
+            f"<span class='mfp-active' style='margin-left:10px;'>"
+            f"<span data-hm-active-count>{active_count}</span> active</span>"
+        )
+        footer_right = (
+            "<button type='button' class='btn btn-sm btn-primary' data-hm-apply>Apply</button>"
+        )
+        heatmap_popover_html = filter_popover(
+            popover_id="hm-popover",
+            title="Heatmap filters",
+            description="Tick what you want, then click Apply.",
+            categories=[
+                {"id": "locale", "label": "Locale", "options": locale_options,
+                 "selected": locales_sel, "search_enabled": True,
+                 "treat_unselected_as_all": True},
+                {"id": "url_group", "label": "URL group", "options": group_options,
+                 "selected": url_groups, "search_enabled": True,
+                 "treat_unselected_as_all": True},
+            ],
+            popover_attrs="data-hm-popover role='dialog' aria-label='Heatmap filters'",
+            close_attr="data-hm-close",
+            extras_html=content_only_extras,
+            footer_left_html=footer_left,
+            footer_right_html=footer_right,
+        )
 
         heatmap_content += f"""
         <div class='hm-filter-row'>
-          <button type='button' class='hm-popover-trigger' data-hm-trigger
+          <button type='button' class='btn' data-hm-trigger
                   aria-haspopup='dialog' aria-expanded='false'>
-            <span>All filters</span>{trigger_count_badge}
-            <span class='hm-trigger-caret'>▾</span>
+            <span>All filters</span>{count_badge}
+            <svg width='12' height='12' aria-hidden='true' style='margin-left:4px;'><use href='/static/icons.svg#chevron'/></svg>
           </button>
           {clear_link}
         </div>
@@ -2927,41 +2918,7 @@ def locales(
         </form>
 
         <div class='popover-backdrop' data-hm-backdrop></div>
-        <div class='popover hm-popover' data-hm-popover role='dialog' aria-label='Heatmap filters'>
-          <div class='hm-pop-head'>
-            <div>
-              <h4>Heatmap filters</h4>
-              <p>Tick what you want, then click Apply.</p>
-            </div>
-            <button type='button' class='hm-pop-close' data-hm-close aria-label='Close'>×</button>
-          </div>
-          <div class='hm-pop-body'>
-            <div class='hm-pop-section'>
-              {locale_head}
-              {locale_section}
-            </div>
-            <div class='hm-pop-section'>
-              {group_head}
-              {group_section}
-            </div>
-            <div class='hm-pop-section'>
-              <div class='hm-pop-section-head'>
-                <div class='hm-pop-section-label'>Display</div>
-              </div>
-              <label class='hm-pop-toggle'>
-                <input type='checkbox' data-pop-field='content_only' value='true'{content_checked}>
-                <span>Content URL groups only</span>
-              </label>
-            </div>
-          </div>
-          <div class='hm-pop-foot'>
-            <div class='hm-pop-foot-right'>
-              <button type='button' class='hm-pop-clear-btn' data-hm-clear-all>Clear</button>
-              <span class='hm-pop-active'><span data-hm-active-count>{active_count}</span> active</span>
-              <button type='button' class='hm-pop-apply' data-hm-apply>Apply</button>
-            </div>
-          </div>
-        </div>
+        {heatmap_popover_html}
         """
         heatmap_content += export_link("locale-groups", date_from, date_to,
                                        extra=f"&locale={locale_param}&url_group={url_group_param}&limit={limit}")
@@ -5533,12 +5490,20 @@ def _lv2_filter_bar(
         )
     else:
         dr_clear_qs = _lv2_build_qs(params, **{"from": None, "to": None, "page": None})
-    _dr_input_style = (
-        "border:1px solid var(--border);border-radius:4px;padding:5px 8px;"
-        "font-size:13px;background:var(--surface);color:var(--ink-1);width:100%;"
-    )
     avail_from_attr = f" data-avail-from='{html_escape(avail_from or '', quote=True)}'" if avail_from else ""
     avail_to_attr = f" data-avail-to='{html_escape(avail_to or '', quote=True)}'" if avail_to else ""
+    dr_popover_html = date_range_popover(
+        popover_id="pop-date-range",
+        date_from=date_from,
+        date_to=date_to,
+        avail_from=avail_from,
+        avail_to=avail_to,
+        hidden_inputs_html=dr_hidden_html,
+        clear_href=f"/logs?{dr_clear_qs}",
+        clear_label="All time",
+        form_action="/logs",
+        extra_styles="top:38px; left:0; min-width:260px;",
+    )
     date_range_html = (
         f"<div class='date-range' data-date-range{avail_from_attr}{avail_to_attr}>"
         "<span class='dr-trigger' data-popover-trigger='pop-date-range' "
@@ -5548,25 +5513,7 @@ def _lv2_filter_bar(
         f"<span class='dr-label'>{html_escape(range_label)}</span>"
         "</span>"
         f"<div class='dr-presets'>{preset_btns}</div>"
-        "<div class='popover' id='pop-date-range' "
-        "style='top:38px; left:0; min-width:260px;'>"
-        "<div class='popover-title'>Custom date range</div>"
-        "<form method='get' action='/logs'>"
-        f"{dr_hidden_html}"
-        "<div class='pop-row'><label>From</label>"
-        f"<input type='date' name='from' value='{html_escape(date_from or '', quote=True)}' "
-        f"style='{_dr_input_style}'></div>"
-        "<div class='pop-row'><label>To</label>"
-        f"<input type='date' name='to' value='{html_escape(date_to or '', quote=True)}' "
-        f"style='{_dr_input_style}'></div>"
-        "<div class='pop-actions'>"
-        f"<a href='/logs?{dr_clear_qs}' class='btn btn-sm btn-ghost' "
-        f"hx-get='/logs?{dr_clear_qs}' hx-target='#results' "
-        "hx-push-url='true' hx-swap='innerHTML'>All time</a>"
-        "<button type='submit' class='btn btn-sm btn-primary'>Apply</button>"
-        "</div>"
-        "</form>"
-        "</div>"
+        f"{dr_popover_html}"
         "</div>"
     )
 
@@ -6237,24 +6184,34 @@ def _lv2_report_shell(
     range_label = f"{date_from} → {date_to}" if date_from and date_to and date_from != date_to else (date_from or "All time")
     min_d = avail[0] if avail else ""
     max_d = avail[-1] if avail else ""
+    rs_clear_qs = _lv2_build_qs(params, **{"from": min_d or None, "to": max_d or None})
+    rs_dr_popover = date_range_popover(
+        popover_id="pop-date-range",
+        date_from=date_from,
+        date_to=date_to,
+        avail_from=min_d or None,
+        avail_to=max_d or None,
+        clear_href=f"?{rs_clear_qs}" if rs_clear_qs else "?",
+        clear_label="All time",
+        extra_styles="top:38px; left:0; min-width:260px;",
+    )
     date_bar = (
         "<div class='filter-bar'>"
         "<div class='date-range'>"
+        "<span class='dr-trigger' data-popover-trigger='pop-date-range' "
+        "role='button' tabindex='0' "
+        "style='display:inline-flex;align-items:center;gap:6px;cursor:pointer;'>"
         f"{_lv2_icon('calendar')}"
         f"<span class='dr-label'>{html_escape(range_label)}</span>"
+        "</span>"
         "<div class='dr-presets'>"
         f"{preset_link(3, '3d', active_days == 3)}"
         f"{preset_link(7, '7d', active_days == 7)}"
         f"{preset_link(14, '14d', active_days == 14)}"
         f"{preset_link(30, '30d', active_days == 30)}"
         "</div>"
+        f"{rs_dr_popover}"
         "</div>"
-        # Custom-range inputs (plain form; reloads page)
-        "<form method='get' style='display:flex;gap:6px;align-items:center;'>"
-        f"<label style='font-size:12px;color:var(--ink-3);display:inline-flex;gap:4px;align-items:center;'>From <input type='date' name='from' value='{html_escape(date_from or '', quote=True)}' min='{html_escape(min_d, quote=True)}' max='{html_escape(max_d, quote=True)}' style='border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:12px;'></label>"
-        f"<label style='font-size:12px;color:var(--ink-3);display:inline-flex;gap:4px;align-items:center;'>To <input type='date' name='to' value='{html_escape(date_to or '', quote=True)}' min='{html_escape(min_d, quote=True)}' max='{html_escape(max_d, quote=True)}' style='border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:12px;'></label>"
-        "<button type='submit' class='btn btn-sm'>Apply</button>"
-        "</form>"
         "</div>"
     )
 
@@ -6699,6 +6656,7 @@ def _lv2_page(title: str, active_nav: str, body: str) -> HTMLResponse:
         "<aside class='drawer' id='drawer' aria-hidden='true'></aside>"
         "<div class='popover-backdrop' id='popover-backdrop'></div>"
         f"{_lv2_kb_help()}"
+        f"<script src='/static/app.js?v={_lv2_static_ver('app.js')}' defer></script>"
         f"<script src='/static/logviewer.js?v={_lv2_static_ver('logviewer.js')}' defer></script>"
         "</body></html>"
     )

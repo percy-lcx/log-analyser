@@ -88,3 +88,144 @@ def notice(variant: str, text: str, *, link: Optional[tuple[str, str]] = None) -
         label, href = link
         link_html = f" <a class='notice-link' href='{_esc(href, quote=True)}'>{_esc(label)}</a>"
     return f"<div class='notice {cls}'><span>{text}{link_html}</span></div>"
+
+
+def filter_popover(
+    *,
+    popover_id: str,
+    title: str,
+    description: str = "",
+    categories: list,
+    popover_attrs: str = "",
+    close_attr: str = "data-mfp-close",
+    extras_html: str = "",
+    footer_left_html: str = "",
+    footer_right_html: str = "",
+    section_actions_attr_fn=None,
+) -> str:
+    """Generic filter popover (.mfp shell, flat single-column body).
+
+    `categories` items: {id, label, options, selected, search_enabled,
+                          treat_unselected_as_all? (default False)}.
+    Caller wires JS via popover_attrs/close_attr/footer_*_html — the helper
+    emits structure only.
+    """
+    sections: list[str] = []
+    for cat in categories:
+        cid = cat["id"]
+        clabel = cat.get("label", cid)
+        options = cat.get("options", [])
+        selected = cat.get("selected", []) or []
+        search_enabled = bool(cat.get("search_enabled")) or len(options) > 6
+        treat_all = bool(cat.get("treat_unselected_as_all"))
+        sel_set = set(selected)
+        items: list[str] = []
+        for opt in options:
+            opt_str = str(opt)
+            opt_safe = _esc(opt_str, quote=True)
+            opt_text = _esc(opt_str)
+            checked = " checked" if (treat_all and not sel_set) or opt in sel_set else ""
+            items.append(
+                f"<label><input type='checkbox' data-pop-field='{_esc(cid, quote=True)}' "
+                f"value='{opt_safe}'{checked}> <span>{opt_text}</span></label>"
+            )
+        list_html = (
+            f"<div class='pop-checklist' data-pop-checklist "
+            f"data-pop-field-list='{_esc(cid, quote=True)}'>{''.join(items)}</div>"
+        )
+        search_html = ""
+        if search_enabled and options:
+            search_html = (
+                f"<input type='text' class='pop-checklist-search' "
+                f"placeholder='Filter {_esc(clabel, quote=True)}…' "
+                "autocomplete='off' spellcheck='false'>"
+            )
+        actions_extra = section_actions_attr_fn(cid) if section_actions_attr_fn else ""
+        section_actions = (
+            "<div class='mfp-section-actions'>"
+            f"<button type='button' class='mfp-mini' data-pop-field='{_esc(cid, quote=True)}' "
+            f"data-pop-select-all{(' ' + actions_extra) if actions_extra else ''}>Select all</button>"
+            f"<button type='button' class='mfp-mini' data-pop-field='{_esc(cid, quote=True)}' "
+            f"data-pop-clear-field{(' ' + actions_extra) if actions_extra else ''}>Clear</button>"
+            "</div>"
+        )
+        sections.append(
+            "<div class='mfp-section'>"
+            "<div class='mfp-section-head'>"
+            f"<div class='mfp-section-label'>{_esc(clabel)}</div>"
+            f"{section_actions}"
+            "</div>"
+            "<div class='pop-checklist-wrap'>"
+            f"{search_html}"
+            f"{list_html}"
+            "<div class='pop-checklist-meta' data-pop-checklist-meta></div>"
+            "</div>"
+            "</div>"
+        )
+
+    desc_html = f"<p>{_esc(description)}</p>" if description else ""
+    return (
+        f"<div class='popover mfp' id='{_esc(popover_id, quote=True)}'"
+        f"{(' ' + popover_attrs) if popover_attrs else ''}>"
+        "<div class='mfp-head'>"
+        f"<div><h4>{_esc(title)}</h4>{desc_html}</div>"
+        f"<button type='button' class='mfp-close btn btn-icon btn-ghost' "
+        f"{close_attr} aria-label='Close'>{iconHtml('x')}</button>"
+        "</div>"
+        "<div class='mfp-body mfp-flat'>"
+        f"{''.join(sections)}"
+        f"{extras_html}"
+        "</div>"
+        "<div class='mfp-foot'>"
+        f"{footer_left_html}"
+        "<div class='mfp-foot-right'>"
+        f"{footer_right_html}"
+        "</div>"
+        "</div>"
+        "</div>"
+    )
+
+
+def date_range_popover(
+    *,
+    popover_id: str,
+    date_from: Optional[str],
+    date_to: Optional[str],
+    avail_from: Optional[str] = None,
+    avail_to: Optional[str] = None,
+    hidden_inputs_html: str = "",
+    clear_href: str = "",
+    clear_label: str = "All time",
+    form_action: str = "",
+    extra_styles: str = "",
+) -> str:
+    """The standard custom date-range popover. Mounted via data-popover-trigger."""
+    fmin = f" min='{_esc(avail_from, quote=True)}'" if avail_from else ""
+    fmax = f" max='{_esc(avail_to, quote=True)}'" if avail_to else ""
+    style_attr = f" style='{extra_styles}'" if extra_styles else ""
+    action_attr = f" action='{_esc(form_action, quote=True)}'" if form_action else ""
+    clear_button = ""
+    if clear_href:
+        clear_button = (
+            f"<a href='{_esc(clear_href, quote=True)}' class='btn btn-sm btn-ghost' "
+            f"hx-get='{_esc(clear_href, quote=True)}' hx-target='#results' "
+            f"hx-push-url='true' hx-swap='innerHTML'>{_esc(clear_label)}</a>"
+        )
+    return (
+        f"<div class='popover' id='{_esc(popover_id, quote=True)}'{style_attr}>"
+        "<div class='popover-title'>Custom date range</div>"
+        f"<form method='get'{action_attr}>"
+        f"{hidden_inputs_html}"
+        "<div class='pop-row'><label>From</label>"
+        f"<input class='input' type='date' name='from' "
+        f"value='{_esc(date_from or '', quote=True)}'{fmin}{fmax}></div>"
+        "<div class='pop-row'><label>To</label>"
+        f"<input class='input' type='date' name='to' "
+        f"value='{_esc(date_to or '', quote=True)}'{fmin}{fmax}></div>"
+        "<div class='pop-actions'>"
+        f"{clear_button}"
+        "<button type='submit' class='btn btn-sm btn-primary'>Apply</button>"
+        "</div>"
+        "</form>"
+        "</div>"
+    )
