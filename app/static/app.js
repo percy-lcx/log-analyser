@@ -225,6 +225,60 @@
     (root || document).querySelectorAll('table.log-table.sortable').forEach(enhanceTable);
   }
   window.enhanceAllTables = enhanceAllTables;
+
+  // ── Report drawer click-through ────────────────────────────────────────
+  // Rows that carry data-drawer-key open the shared #drawer with a key/value
+  // summary built client-side from data-drawer-fields (JSON). A "View
+  // matching requests" link uses data-drawer-logs-qs to deep-link into /logs.
+  function escHtml(s) {
+    var d = document.createElement('div');
+    d.textContent = s == null ? '' : String(s);
+    return d.innerHTML;
+  }
+  function fmtCellValue(v) {
+    if (v === null || v === undefined || v === '') return '<em style="color:var(--ink-4);">—</em>';
+    if (typeof v === 'number') return Number.isFinite(v) ? v.toLocaleString() : String(v);
+    return escHtml(v);
+  }
+  function openReportDrawer(key, fields, logsQs) {
+    var d = document.getElementById('drawer');
+    var bd = document.getElementById('drawer-backdrop');
+    if (!d) return;
+    var rows = '';
+    Object.keys(fields).forEach(function (k) {
+      rows += '<div class="drawer-kv-row"><span class="drawer-kv-key">' +
+              escHtml(k) + '</span><span class="drawer-kv-val">' +
+              fmtCellValue(fields[k]) + '</span></div>';
+    });
+    var logsBtn = logsQs
+      ? '<a class="btn btn-primary" href="/logs?' + escHtml(logsQs) + '" target="_blank" rel="noopener">View matching requests →</a>'
+      : '';
+    d.innerHTML =
+      '<div class="drawer-head">' +
+        '<h3 style="font-family:var(--font-mono);font-size:13px;font-weight:600;color:var(--ink-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
+          escHtml(key) +
+        '</h3>' +
+        '<button class="btn btn-icon btn-ghost" data-drawer-close aria-label="Close">' +
+          '<svg width="14" height="14" aria-hidden="true"><use href="/static/icons.svg#x"/></svg>' +
+        '</button>' +
+      '</div>' +
+      '<div class="drawer-body">' +
+        '<div class="drawer-kv">' + rows + '</div>' +
+        (logsBtn ? '<div style="margin-top:14px;">' + logsBtn + '</div>' : '') +
+      '</div>';
+    d.classList.add('open');
+    if (bd) bd.classList.add('open');
+  }
+  document.addEventListener('click', function (e) {
+    var row = e.target.closest('tr[data-drawer-key]');
+    if (!row) return;
+    if (e.target.closest('a, button, [data-drawer-close]')) return;
+    var key = row.getAttribute('data-drawer-key') || '';
+    var fields = {};
+    try { fields = JSON.parse(row.getAttribute('data-drawer-fields') || '{}'); } catch (_) {}
+    var logsQs = row.getAttribute('data-drawer-logs-qs') || '';
+    openReportDrawer(key, fields, logsQs);
+  });
   document.addEventListener('DOMContentLoaded', function () { enhanceAllTables(); });
   if (document.body) {
     document.body.addEventListener('htmx:afterSettle', function (e) {

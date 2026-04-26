@@ -236,6 +236,7 @@ def render_table(
     count_label: Optional[str] = None,
     toolbar_right_html: str = "",
     pager_html: str = "",
+    row_attrs_fn: Optional[Callable[[Any, int], str]] = None,
 ) -> str:
     """v2 table component.
 
@@ -267,7 +268,7 @@ def render_table(
 
     visible = rows if max_rows is None else rows[: max(0, int(max_rows))]
     body_rows = []
-    for r in visible:
+    for idx, r in enumerate(visible):
         cells = []
         for c, v in zip(cols, r):
             if v is None:
@@ -280,7 +281,9 @@ def render_table(
                 cells.append(f"<td>{v}</td>")
             else:
                 cells.append(f"<td>{_esc(str(v))}</td>")
-        body_rows.append("<tr>" + "".join(cells) + "</tr>")
+        attrs = row_attrs_fn(r, idx) if row_attrs_fn else ""
+        prefix = (" " + attrs) if attrs else ""
+        body_rows.append(f"<tr{prefix}>" + "".join(cells) + "</tr>")
     tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
 
     cls_parts = ["log-table"]

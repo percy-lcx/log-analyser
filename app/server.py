@@ -633,23 +633,6 @@ def no_data_notice() -> str:
     return "<p class='no-data'>No data found for the selected date range.</p>"
 
 
-def viewer_preset_banner(preset: str, date_from: Optional[str], date_to: Optional[str],
-                          description: str) -> str:
-    """Inline banner pointing readers to the equivalent /logs?preset= view."""
-    qs = f"preset={preset}"
-    if date_from:
-        qs += f"&from={date_from}"
-    if date_to:
-        qs += f"&to={date_to}"
-    return (
-        "<div style='background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;"
-        "padding:10px 14px;margin:8px 0 16px 0;font-size:13px;color:#1e3a8a;'>"
-        f"<strong>New:</strong> {description} "
-        f"<a href='/logs?{qs}' style='color:#1d4ed8;font-weight:600;'>"
-        "Open in the unified log viewer &rarr;</a></div>"
-    )
-
-
 def export_link(report: str, date_from, date_to, extra: str = "") -> str:
     return (
         f"<p><a href='/export?report={report}&from={date_from or ''}"
@@ -1151,937 +1134,6 @@ def tab_panel(tid: str, content: str) -> str:
     """Wrap content in a tab panel div."""
     return f"<div class='tab-panel' id='tab-{tid}'>{content}</div>"
 
-
-def page(title: str, body: str) -> HTMLResponse:
-
-    charts_cdn = "<script src='https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js'></script>"
-
-    nav_items = [
-        ("Log Viewer", "/logs"),
-        ("Executive Summary", "/reports/summary"),
-        ("Locales", "/reports/locales"),
-        ("Search Console", "/reports/gsc"),
-        ("Settings", "/settings"),
-    ]
-    nav_links = "\n".join(
-        f"<a href='{url}' class='topnav-link' data-path='{url}'>{name}</a>"
-        for name, url in nav_items
-    )
-
-    # Lift the first <form class="filter-bar">…</form> out of body into the rail.
-    # Route handlers keep emitting the form inline; page() repositions it so the
-    # data lands above the fold. If no filter-bar is present, the rail is omitted.
-    rail_html = ""
-    m = re.search(r"<form[^>]*class=['\"]filter-bar['\"][^>]*>.*?</form>", body, re.DOTALL)
-    if m:
-        rail_html = m.group(0)
-        body = body[:m.start()] + body[m.end():]
-    has_rail = bool(rail_html)
-    layout_class = "with-rail" if has_rail else "no-rail"
-    rail_aside = (
-        f"""<aside class="filter-rail" id="filterRail" data-collapsed="0">
-            <div class="rail-header">
-                <span class="rail-title">Filters</span>
-                <button type="button" class="rail-toggle" id="railToggle"
-                        aria-label="Collapse filters" title="Collapse filters">‹</button>
-            </div>
-            <div class="rail-body">{rail_html}</div>
-        </aside>"""
-        if has_rail else ""
-    )
-
-    css = """<style>
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: #f1f5f9;
-    color: #334155;
-    display: block;
-    min-height: 100vh;
-}
-
-/* ── Top nav ── */
-.topnav {
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    display: flex;
-    align-items: stretch;
-    background: #1e293b;
-    color: #cbd5e1;
-    height: 48px;
-    padding: 0 18px;
-    border-bottom: 1px solid #0f172a;
-}
-.topnav-brand {
-    font-size: 13px;
-    font-weight: 700;
-    color: #f8fafc;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    display: flex;
-    align-items: center;
-    padding-right: 22px;
-    margin-right: 8px;
-    border-right: 1px solid #334155;
-    white-space: nowrap;
-}
-.topnav-brand span {
-    font-size: 10px;
-    color: #64748b;
-    font-weight: 400;
-    text-transform: none;
-    letter-spacing: 0;
-    margin-left: 6px;
-}
-.topnav-links { display: flex; gap: 2px; align-items: stretch; }
-.topnav-link {
-    display: flex;
-    align-items: center;
-    padding: 0 14px;
-    color: #94a3b8;
-    text-decoration: none;
-    font-size: 13px;
-    border-bottom: 2px solid transparent;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
-}
-.topnav-link:hover { color: #e2e8f0; background: #334155; }
-.topnav-link.active { color: #60a5fa; border-bottom-color: #3b82f6; font-weight: 600; }
-
-/* ── Layout: top nav + (optional) filter rail + content ── */
-.layout { display: flex; min-height: calc(100vh - 48px); align-items: stretch; }
-.layout.no-rail .filter-rail { display: none; }
-
-/* ── Filter rail (left) ── */
-.filter-rail {
-    width: 280px;
-    min-width: 280px;
-    background: #fff;
-    border-right: 1px solid #e2e8f0;
-    display: flex;
-    flex-direction: column;
-    position: sticky;
-    top: 48px;
-    align-self: flex-start;
-    max-height: calc(100vh - 48px);
-    overflow-y: auto;
-    transition: width 0.18s, min-width 0.18s;
-    z-index: 40;
-}
-.filter-rail[data-collapsed="1"] { width: 36px; min-width: 36px; overflow: hidden; }
-.filter-rail[data-collapsed="1"] .rail-body,
-.filter-rail[data-collapsed="1"] .rail-title { display: none; }
-.filter-rail[data-collapsed="1"] .rail-toggle { transform: rotate(180deg); }
-.rail-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 12px;
-    border-bottom: 1px solid #e2e8f0;
-    position: sticky;
-    top: 0;
-    background: #fff;
-    z-index: 1;
-}
-.rail-title {
-    font-size: 11px;
-    font-weight: 700;
-    color: #475569;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-.rail-toggle {
-    width: 22px;
-    height: 22px;
-    border: 1px solid #e2e8f0;
-    background: #f8fafc;
-    border-radius: 4px;
-    cursor: pointer;
-    color: #64748b;
-    font-size: 14px;
-    line-height: 1;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    transition: transform 0.18s, border-color 0.12s, color 0.12s;
-}
-.rail-toggle:hover { border-color: #94a3b8; color: #1e293b; }
-.rail-body { padding: 8px 10px 14px; }
-
-/* ── Content area (right of rail or full-width) ── */
-.content-area {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-}
-.topbar {
-    background: #fff;
-    border-bottom: 1px solid #e2e8f0;
-    padding: 14px 24px;
-    position: sticky;
-    top: 48px;
-    z-index: 50;
-    display: flex;
-    align-items: center;
-}
-.topbar h1 { font-size: 18px; font-weight: 700; color: #1e293b; }
-.content { padding: 20px 24px; flex: 1; overflow: visible; }
-
-/* Hide raw <br> separators between cards */
-.content > br { display: none; }
-
-/* ── Cards ── */
-.card {
-    background: #fff;
-    border-radius: 8px;
-    border: 1px solid #e2e8f0;
-    padding: 18px 20px;
-    margin-bottom: 16px;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-    overflow: hidden;
-}
-
-/* ── Section headings ── */
-.content h2 {
-    font-size: 14px;
-    font-weight: 700;
-    color: #475569;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin: 20px 0 10px;
-}
-.content h2:first-child { margin-top: 0; }
-
-/* ── Forms (filter bars) ── */
-.content form.filter-bar {
-    background: #fff;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    padding: 14px 18px;
-    margin-bottom: 14px;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px;
-    align-items: flex-end;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-}
-.content form.filter-bar label {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    font-size: 11px;
-    font-weight: 600;
-    color: #64748b;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-}
-.content form.filter-bar label:has(input[type=checkbox]) {
-    flex-direction: row;
-    align-items: center;
-    gap: 6px;
-    text-transform: none;
-    letter-spacing: 0;
-    font-size: 13px;
-    color: #374151;
-    font-weight: 500;
-    padding-bottom: 2px;
-}
-.content form.filter-bar input:not([type=checkbox]):not([type=hidden]),
-.content form.filter-bar select,
-.content form.filter-bar .ms-toggle {
-    box-sizing: border-box;
-    width: 140px;
-    height: 34px;
-    padding: 0 10px;
-    border: 1px solid #cbd5e1;
-    border-radius: 6px;
-    font-size: 13px;
-    color: #334155;
-    background: #fff;
-    outline: none;
-    transition: border-color 0.12s, box-shadow 0.12s;
-}
-.content form.filter-bar input[type=date] { width: 150px; }
-.content form.filter-bar input[type=text][name=search] { width: 240px; }
-.content form.filter-bar select[name=per_page] { width: 90px; }
-.content form.filter-bar input:focus, .content form.filter-bar select:focus {
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
-}
-.content form.filter-bar input[type=checkbox] { width: 15px; height: 15px; cursor: pointer; accent-color: #3b82f6; }
-.content form.filter-bar button[type=submit] { height: 34px; padding: 0 18px; }
-.content form.filter-bar .clear-filters-btn { height: 34px; padding: 0 14px; display: inline-flex; align-items: center; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; color: #64748b; text-decoration: none; font-size: 13px; font-weight: 500; cursor: pointer; transition: border-color 0.12s, color 0.12s; }
-.content form.filter-bar .clear-filters-btn:hover { border-color: #94a3b8; color: #334155; }
-.content form.filter-bar .date-presets { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.content form.filter-bar .date-preset-btn { height: 34px; padding: 0 12px; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; color: #475569; font-size: 13px; font-weight: 500; cursor: pointer; transition: border-color 0.12s, color 0.12s, background 0.12s; }
-.content form.filter-bar .date-preset-btn:hover { border-color: #3b82f6; color: #1d4ed8; background: #eff6ff; }
-
-/* ── Filter-group wrappers inside .filter-bar ── */
-.content form.filter-bar { flex-direction: column; align-items: stretch; gap: 0; padding: 4px 18px; }
-.content form.filter-bar .filter-group { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px dashed #e2e8f0; }
-.content form.filter-bar .filter-group:first-of-type { border-top: none; }
-.content form.filter-bar .filter-group-label { font-size: 10px; font-weight: 700; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.6px; }
-.content form.filter-bar .filter-group-fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
-.content form.filter-bar .filter-group-view .filter-group-fields { align-items: center; }
-.content form.filter-bar .filter-group-view .filter-group-actions { margin-left: auto; display: inline-flex; gap: 8px; align-items: center; }
-.content form.filter-bar > .clear-filters-btn { display: none; }
-.content form.filter-bar .search-hint { flex-basis: 100%; font-size: 11px; color: #64748b; margin-top: 2px; }
-
-/* ── Multi-select checkbox dropdown ── */
-.ms-wrap { position: relative; display: flex; flex-direction: column; gap: 4px; }
-.ms-label { font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.4px; }
-.ms-toggle { text-align: left; cursor: pointer; }
-.ms-toggle:hover { border-color: #94a3b8; }
-.ms-dropdown { display: none; position: absolute; top: 100%; left: 0; z-index: 50; background: #fff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); min-width: 220px; margin-top: 2px; flex-direction: column; }
-.ms-dropdown.open { display: flex; }
-.ms-dropdown .ms-header { padding: 8px 10px; border-bottom: 1px solid #e2e8f0; display: flex; flex-direction: column; gap: 6px; background: #f8fafc; border-radius: 6px 6px 0 0; }
-.content form.filter-bar .ms-dropdown input.ms-search { box-sizing: border-box; width: 100%; height: 28px; padding: 0 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; color: #334155; background: #fff; outline: none; }
-.content form.filter-bar .ms-dropdown input.ms-search:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.15); }
-.ms-dropdown .ms-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.ms-dropdown .ms-count { font-size: 11px; color: #64748b; font-weight: 500; }
-.ms-dropdown .ms-actions { display: flex; gap: 6px; }
-.content form.filter-bar .ms-dropdown .ms-actions button { background: none; border: none; padding: 2px 4px; height: auto; font-size: 11px; color: #3b82f6; cursor: pointer; text-transform: none; letter-spacing: 0; }
-.content form.filter-bar .ms-dropdown .ms-actions button:hover { text-decoration: underline; background: none; }
-.ms-dropdown .ms-list { max-height: 220px; overflow-y: auto; padding: 6px 0; }
-.content form.filter-bar .ms-dropdown label { display: flex; flex-direction: row; align-items: center; gap: 6px; padding: 4px 12px; font-size: 13px; cursor: pointer; text-transform: none; font-weight: 400; color: #334155; letter-spacing: 0; }
-.content form.filter-bar .ms-dropdown label:hover { background: #f1f5f9; }
-.content form.filter-bar .ms-dropdown label.ms-hidden { display: none !important; }
-
-/* ── Rail-flavored filter-bar (when lifted into .filter-rail) ── */
-.filter-rail form.filter-bar {
-    background: transparent;
-    border: none;
-    box-shadow: none;
-    padding: 0;
-    margin: 0;
-    gap: 0;
-    flex-direction: column;
-    align-items: stretch;
-}
-.filter-rail form.filter-bar .filter-group {
-    display: block;
-    border: none;
-    border-bottom: 1px solid #f1f5f9;
-    padding: 2px 0;
-    margin: 0;
-}
-.filter-rail form.filter-bar .filter-group:last-of-type { border-bottom: none; }
-.filter-rail form.filter-bar summary.filter-group-label {
-    list-style: none;
-    cursor: pointer;
-    padding: 8px 6px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 11px;
-    font-weight: 700;
-    color: #475569;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    border-radius: 4px;
-}
-.filter-rail form.filter-bar summary.filter-group-label::-webkit-details-marker { display: none; }
-.filter-rail form.filter-bar summary.filter-group-label::before {
-    content: "▸";
-    font-size: 10px;
-    color: #94a3b8;
-    transition: transform 0.12s;
-    display: inline-block;
-}
-.filter-rail form.filter-bar details[open] > summary.filter-group-label::before { transform: rotate(90deg); }
-.filter-rail form.filter-bar summary.filter-group-label:hover { background: #f8fafc; color: #1e293b; }
-.filter-rail form.filter-bar .filter-group-fields {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
-    padding: 4px 6px 10px;
-}
-.filter-rail form.filter-bar label { width: 100%; }
-.filter-rail form.filter-bar input:not([type=checkbox]):not([type=hidden]),
-.filter-rail form.filter-bar select,
-.filter-rail form.filter-bar .ms-toggle { width: 100%; }
-.filter-rail form.filter-bar input[type=date],
-.filter-rail form.filter-bar input[type=text][name=search],
-.filter-rail form.filter-bar select[name=per_page] { width: 100%; }
-.filter-rail form.filter-bar .date-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.filter-rail form.filter-bar .date-preset-btn { padding: 0 8px; }
-.filter-rail form.filter-bar .search-hint { font-size: 11px; color: #64748b; margin-top: 2px; }
-/* Sticky view-group with full-width Apply */
-.filter-rail form.filter-bar .filter-group-view {
-    position: sticky;
-    bottom: 0;
-    background: #fff;
-    border-top: 1px solid #e2e8f0;
-    border-bottom: none;
-    margin: 0 -10px;
-    padding: 6px 10px 10px;
-    z-index: 1;
-}
-.filter-rail form.filter-bar .filter-group-view .filter-group-actions {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-    margin-left: 0;
-    margin-top: 8px;
-}
-.filter-rail form.filter-bar .filter-group-view button[type=submit] { flex: 1; width: 100%; }
-.filter-rail form.filter-bar .filter-group-view .clear-filters-btn { flex: 0 0 auto; }
-/* Auto-injected "Clear filters" link sits at form bottom in rail; show + full-width */
-.filter-rail form.filter-bar > .clear-filters-btn {
-    display: block;
-    width: 100%;
-    text-align: center;
-    margin-top: 10px;
-    height: 32px;
-    line-height: 32px;
-    padding: 0;
-}
-/* Multi-select dropdowns inside the rail span the rail width */
-.filter-rail form.filter-bar .ms-dropdown {
-    left: 0;
-    right: 0;
-    min-width: 0;
-}
-.filter-rail form.filter-bar .ms-dropdown input.ms-search {
-    box-sizing: border-box; width: 100%; height: 28px; padding: 0 8px;
-    border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px;
-    color: #334155; background: #fff; outline: none;
-}
-.filter-rail form.filter-bar .ms-dropdown input.ms-search:focus {
-    border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.15);
-}
-.filter-rail form.filter-bar .ms-dropdown .ms-actions button {
-    background: none; border: none; padding: 2px 4px; height: auto;
-    font-size: 11px; color: #3b82f6; cursor: pointer;
-    text-transform: none; letter-spacing: 0;
-}
-.filter-rail form.filter-bar .ms-dropdown .ms-actions button:hover { text-decoration: underline; background: none; }
-.filter-rail form.filter-bar .ms-dropdown label {
-    display: flex; flex-direction: row; align-items: center; gap: 6px;
-    padding: 4px 12px; font-size: 13px; cursor: pointer; text-transform: none;
-    font-weight: 400; color: #334155; letter-spacing: 0; width: auto;
-}
-.filter-rail form.filter-bar .ms-dropdown label:hover { background: #f1f5f9; }
-.filter-rail form.filter-bar .ms-dropdown label.ms-hidden { display: none !important; }
-
-/* ── Buttons ── */
-button[type=submit] {
-    padding: 8px 18px;
-    background: #3b82f6;
-    color: #fff;
-    border: none;
-    border-radius: 6px;
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.12s;
-    white-space: nowrap;
-}
-button[type=submit]:hover { background: #2563eb; }
-
-/* ── Export links ── */
-a[href^='/export'] {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 5px 12px;
-    background: #f8fafc;
-    color: #475569;
-    border: 1px solid #e2e8f0;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: 500;
-    text-decoration: none;
-    transition: background 0.12s, color 0.12s;
-    margin-bottom: 14px;
-    margin-right: 6px;
-}
-a[href^='/export']:hover { background: #e2e8f0; color: #1e293b; }
-.content p:has(a[href^='/export']) { margin-bottom: 0; }
-
-/* ── No-data notice ── */
-.no-data { color: #94a3b8; font-style: italic; padding: 8px 0; }
-
-/* ── Report grid (index page) ── */
-.report-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-    gap: 10px;
-}
-.report-card {
-    display: block;
-    background: #fff;
-    border: 1px solid #e2e8f0;
-    border-radius: 8px;
-    padding: 14px 16px;
-    text-decoration: none;
-    color: #1e293b;
-    font-size: 13.5px;
-    font-weight: 500;
-    transition: border-color 0.12s, box-shadow 0.12s, color 0.12s;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-}
-.report-card:hover {
-    border-color: #3b82f6;
-    box-shadow: 0 0 0 2px rgba(59,130,246,0.15);
-    color: #2563eb;
-}
-.report-card small { display: block; font-size: 11px; color: #94a3b8; font-weight: 400; margin-top: 3px; }
-.index-tip {
-    background: #eff6ff;
-    border: 1px solid #bfdbfe;
-    border-radius: 8px;
-    padding: 12px 16px;
-    font-size: 13px;
-    color: #1e40af;
-    margin-bottom: 16px;
-}
-.index-tip code { background: #dbeafe; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
-
-.insights-date-bar { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 20px; }
-.insights-date-bar label { display: flex; flex-direction: column; font-size: 12px; font-weight: 600; color: #64748b; gap: 4px; }
-.insights-date-bar input { padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; }
-.insights-date-bar button { padding: 6px 14px; background: #3b82f6; color: #fff; border: none; border-radius: 4px; font-size: 13px; cursor: pointer; }
-.insights-date-bar button:hover { background: #2563eb; }
-.insights-back { font-size: 13px; color: #3b82f6; text-decoration: none; margin-left: auto; align-self: center; }
-.insights-back:hover { text-decoration: underline; }
-.insights-section-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; margin: 20px 0 8px; }
-.insights-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; margin-bottom: 4px; }
-.insight-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px 14px; font-size: 13px; color: #1e293b; text-decoration: none; display: block; line-height: 1.4; }
-.insight-card:hover { background: #eff6ff; border-color: #93c5fd; color: #1d4ed8; }
-.insight-result-title { font-size: 17px; font-weight: 700; color: #1e293b; margin-bottom: 16px; }
-
-.query-meta { font-size: 12px; color: #64748b; margin-bottom: 10px; }
-.query-error {
-    background: #fef2f2;
-    border: 1px solid #fecaca;
-    border-radius: 8px;
-    padding: 12px 16px;
-    color: #991b1b;
-    font-size: 13px;
-    margin-bottom: 16px;
-    white-space: pre-wrap;
-    font-family: 'SFMono-Regular', Consolas, monospace;
-}
-
-/* ── KPI cards (Executive Summary) ── */
-.kpi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin-bottom: 20px; }
-.kpi-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px 18px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
-.kpi-label { font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 4px; }
-.kpi-value { font-size: 24px; font-weight: 700; color: #1e293b; margin-bottom: 4px; }
-.kpi-change { font-size: 12px; font-weight: 600; }
-.kpi-trend-up-good { color: #16a34a; }
-.kpi-trend-up-bad { color: #dc2626; }
-.kpi-trend-down-good { color: #16a34a; }
-.kpi-trend-down-bad { color: #dc2626; }
-.kpi-trend-flat { color: #64748b; }
-
-/* ── Issue cards (Executive Summary) ── */
-.issue-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
-.issue-item { display: flex; align-items: flex-start; gap: 12px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 16px; border-left: 4px solid #94a3b8; }
-.issue-high { border-left-color: #dc2626; }
-.issue-medium { border-left-color: #f59e0b; }
-.issue-low { border-left-color: #3b82f6; }
-.issue-severity { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 4px; white-space: nowrap; flex-shrink: 0; margin-top: 2px; }
-.issue-high .issue-severity { background: #fef2f2; color: #dc2626; }
-.issue-medium .issue-severity { background: #fffbeb; color: #d97706; }
-.issue-low .issue-severity { background: #eff6ff; color: #2563eb; }
-.issue-body { flex: 1; min-width: 0; }
-.issue-title { font-size: 13px; font-weight: 600; color: #1e293b; }
-.issue-detail { font-size: 12px; color: #64748b; margin-top: 2px; }
-.issue-link { font-size: 12px; color: #3b82f6; text-decoration: none; white-space: nowrap; flex-shrink: 0; align-self: center; }
-.issue-link:hover { text-decoration: underline; }
-
-/* ── Summary sections ── */
-.summary-section { margin-bottom: 24px; }
-.summary-section h2 { margin-bottom: 12px; }
-.summary-period { font-size: 12px; color: #64748b; margin-bottom: 12px; }
-
-/* ── Recommendations box ── */
-.recommendations-box { background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px; padding: 16px 18px; margin-top: 16px; margin-bottom: 16px; }
-.rec-heading { font-size: 13px; font-weight: 700; color: #166534; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.3px; }
-.rec-item { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 8px; }
-.rec-item:last-child { margin-bottom: 0; }
-.rec-num { flex-shrink: 0; width: 22px; height: 22px; background: #16a34a; color: #fff; border-radius: 50%; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
-.rec-body { flex: 1; }
-.rec-action { display: inline-block; font-size: 11px; font-weight: 700; color: #166534; background: #dcfce7; padding: 1px 6px; border-radius: 3px; margin-right: 6px; }
-.rec-desc { font-size: 13px; color: #374151; }
-.rec-code { display: block; margin-top: 4px; font-size: 12px; padding: 4px 8px; background: #ecfdf5; border: 1px solid #bbf7d0; border-radius: 4px; color: #166534; white-space: pre-wrap; word-break: break-all; }
-
-/* ── Tab navigation ── */
-.tab-bar {
-    display: flex;
-    gap: 0;
-    border-bottom: 2px solid #e2e8f0;
-    margin-bottom: 16px;
-    overflow-x: auto;
-}
-.tab-btn {
-    padding: 10px 18px;
-    font-size: 13px;
-    font-weight: 600;
-    color: #64748b;
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -2px;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: color 0.12s, border-color 0.12s;
-}
-.tab-btn:hover { color: #1e293b; }
-.tab-btn.active {
-    color: #3b82f6;
-    border-bottom-color: #3b82f6;
-}
-.tab-panel { display: none; }
-.tab-panel.active { display: block; }
-
-/* ── Empty state card ── */
-.empty-state {
-    background: #f8fafc;
-    border: 1px dashed #cbd5e1;
-    border-radius: 8px;
-    padding: 40px 24px;
-    text-align: center;
-    color: #64748b;
-    margin: 20px 0;
-}
-.empty-state h3 { font-size: 16px; font-weight: 700; color: #475569; margin-bottom: 8px; }
-.empty-state p { font-size: 13px; margin-bottom: 12px; }
-.empty-state a {
-    display: inline-block;
-    padding: 8px 18px;
-    background: #3b82f6;
-    color: #fff;
-    border-radius: 6px;
-    text-decoration: none;
-    font-size: 13px;
-    font-weight: 600;
-}
-.empty-state a:hover { background: #2563eb; }
-</style>"""
-
-    js = """<script>
-(function() {
-// Highlight the active top-nav link based on current path
-(function() {
-    var path = window.location.pathname;
-    document.querySelectorAll('.topnav-link').forEach(function(a) {
-        var p = a.getAttribute('data-path');
-        if (path === p || path.startsWith(p + '/')) a.classList.add('active');
-    });
-})();
-
-// (Sort + client pagination controller now lives in app/static/app.js,
-// keyed on table.log-table.sortable + the .pager DOM. window.enhanceAllTables
-// is exposed there for the lazy-loaded /reports/bots tab panels below.)
-
-// Resize every ECharts instance on the page when the window resizes.
-// ECharts charts are fixed-size at init and don't auto-respond to layout changes.
-function resizeAllECharts() {
-    if (!window.echarts) return;
-    document.querySelectorAll('[data-echart]').forEach(function(el) {
-        var inst = echarts.getInstanceByDom(el);
-        if (inst) inst.resize();
-    });
-}
-window.addEventListener('resize', resizeAllECharts);
-
-document.addEventListener("DOMContentLoaded", () => {
-    // Tab navigation
-    (function() {
-        var tabBtns = document.querySelectorAll('.tab-btn');
-        if (!tabBtns.length) return;
-
-        function executeScripts(container) {
-            // innerHTML does NOT run <script> tags; replace each with a live script so
-            // each chart's inline echarts.init(...) call runs after injection.
-            container.querySelectorAll('script').forEach(function(oldScript) {
-                var newScript = document.createElement('script');
-                for (var i = 0; i < oldScript.attributes.length; i++) {
-                    var attr = oldScript.attributes[i];
-                    newScript.setAttribute(attr.name, attr.value);
-                }
-                newScript.text = oldScript.text;
-                oldScript.parentNode.replaceChild(newScript, oldScript);
-            });
-        }
-
-        function fragmentEndpointFor(tabId) {
-            // Only /reports/bots uses lazy tab loading today. Other report pages
-            // embed all panels eagerly, so no placeholder and no fetch.
-            if (window.location.pathname === '/reports/bots') {
-                return '/reports/bots/_tab/' + tabId;
-            }
-            return null;
-        }
-
-        function loadLazyPanel(panel) {
-            var placeholder = panel.querySelector('[data-lazy-tab]');
-            if (!placeholder) return Promise.resolve();
-            var tabId = placeholder.getAttribute('data-lazy-tab');
-            var endpoint = fragmentEndpointFor(tabId);
-            if (!endpoint) return Promise.resolve();
-            // Preserve current filter querystring; drop any existing tab= param.
-            var params = new URLSearchParams(window.location.search);
-            params.delete('tab');
-            var qs = params.toString();
-            var url = endpoint + (qs ? ('?' + qs) : '');
-            placeholder.innerHTML = "<p>Loading…</p>";
-            return fetch(url, { credentials: 'same-origin' })
-                .then(function(r) { return r.text(); })
-                .then(function(html) {
-                    panel.innerHTML = html;
-                    panel.removeAttribute('data-lazy-loaded-from');
-                    panel.setAttribute('data-lazy-loaded', '1');
-                    executeScripts(panel);
-                    if (window.enhanceAllTables) window.enhanceAllTables(panel);
-                })
-                .catch(function(err) {
-                    panel.innerHTML = "<p style='color:#e74c3c;'>Failed to load: " + (err && err.message ? err.message : 'error') + "</p>";
-                });
-        }
-
-        function activateTab(tabId) {
-            document.querySelectorAll('.tab-btn').forEach(function(b) { b.classList.toggle('active', b.getAttribute('data-tab') === tabId); });
-            document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.toggle('active', p.id === 'tab-' + tabId); });
-            var url = new URL(window.location);
-            url.searchParams.set('tab', tabId);
-            window.history.replaceState(null, '', url.toString());
-            var panel = document.getElementById('tab-' + tabId);
-            if (panel && panel.querySelector('[data-lazy-tab]') && !panel.getAttribute('data-lazy-loaded')) {
-                loadLazyPanel(panel);
-            }
-        }
-        tabBtns.forEach(function(btn) {
-            btn.addEventListener('click', function() { activateTab(btn.getAttribute('data-tab')); });
-        });
-        // Activate from URL param or first tab
-        var params = new URLSearchParams(window.location.search);
-        var activeTab = params.get('tab');
-        if (!activeTab || !document.getElementById('tab-' + activeTab)) {
-            activeTab = tabBtns[0].getAttribute('data-tab');
-        }
-        activateTab(activeTab);
-    })();
-
-    // Multi-select checkbox dropdown
-    (function() {
-        document.querySelectorAll('.ms-wrap').forEach(function(wrap) {
-            var toggle = wrap.querySelector('.ms-toggle');
-            var dropdown = wrap.querySelector('.ms-dropdown');
-            var hidden = wrap.querySelector('input[type=hidden]');
-            if (!toggle || !dropdown || !hidden) return;
-            var search = dropdown.querySelector('.ms-search');
-            var countEl = dropdown.querySelector('.ms-count');
-            var selectVisibleBtn = dropdown.querySelector('.ms-select-visible');
-            var clearAllBtn = dropdown.querySelector('.ms-clear-all');
-            var list = dropdown.querySelector('.ms-list');
-            var labels = list ? Array.from(list.querySelectorAll('label')) : [];
-            var total = labels.length;
-
-            function applyFilter(query) {
-                var q = (query || '').trim().toLowerCase();
-                var shown = 0;
-                labels.forEach(function(lbl) {
-                    var txt = lbl.textContent.trim().toLowerCase();
-                    var match = !q || txt.indexOf(q) !== -1;
-                    lbl.classList.toggle('ms-hidden', !match);
-                    if (match) shown++;
-                });
-                if (countEl) countEl.textContent = q ? (shown + ' of ' + total) : String(total);
-            }
-
-            var filterTimer = null;
-            function scheduleFilter() {
-                if (filterTimer) clearTimeout(filterTimer);
-                filterTimer = setTimeout(function() {
-                    applyFilter(search ? search.value : '');
-                }, 150);
-            }
-
-            toggle.addEventListener('click', function(e) {
-                e.preventDefault();
-                // Close other open dropdowns
-                document.querySelectorAll('.ms-dropdown.open').forEach(function(d) {
-                    if (d !== dropdown) d.classList.remove('open');
-                });
-                var willOpen = !dropdown.classList.contains('open');
-                dropdown.classList.toggle('open');
-                if (willOpen && search) {
-                    search.value = '';
-                    applyFilter('');
-                    search.focus();
-                }
-            });
-
-            function updateState() {
-                var checked = dropdown.querySelectorAll('input[type=checkbox]:checked');
-                var vals = Array.from(checked).map(function(cb) { return cb.value; });
-                hidden.value = vals.join(',');
-                if (vals.length === 0) toggle.textContent = 'All \u25BE';
-                else if (vals.length === 1) toggle.textContent = vals[0] + ' \u25BE';
-                else toggle.textContent = vals.length + ' selected \u25BE';
-            }
-
-            dropdown.querySelectorAll('input[type=checkbox]').forEach(function(cb) {
-                cb.addEventListener('change', updateState);
-            });
-
-            if (search) {
-                search.addEventListener('input', scheduleFilter);
-                search.addEventListener('click', function(e) { e.stopPropagation(); });
-            }
-            if (selectVisibleBtn) {
-                selectVisibleBtn.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    labels.forEach(function(lbl) {
-                        if (lbl.classList.contains('ms-hidden')) return;
-                        var cb = lbl.querySelector('input[type=checkbox]');
-                        if (cb && !cb.checked) cb.checked = true;
-                    });
-                    updateState();
-                });
-            }
-            if (clearAllBtn) {
-                clearAllBtn.addEventListener('click', function(e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    labels.forEach(function(lbl) {
-                        var cb = lbl.querySelector('input[type=checkbox]');
-                        if (cb && cb.checked) cb.checked = false;
-                    });
-                    updateState();
-                });
-            }
-
-            applyFilter('');
-        });
-
-        // Close dropdowns when clicking outside
-        document.addEventListener('click', function(e) {
-            if (!e.target.closest('.ms-wrap')) {
-                document.querySelectorAll('.ms-dropdown.open').forEach(function(d) {
-                    d.classList.remove('open');
-                });
-            }
-        });
-    })();
-
-    // Append "Clear filters" button to every filter bar — navigates to the
-    // current page with no query string so every filter on the active report resets.
-    (function() {
-        document.querySelectorAll('form.filter-bar').forEach(function(form) {
-            if (form.querySelector('.clear-filters-btn')) return;
-            var a = document.createElement('a');
-            a.className = 'clear-filters-btn';
-            a.textContent = 'Clear filters';
-            a.href = window.location.pathname;
-            form.appendChild(a);
-        });
-    })();
-
-    // Filter rail: collapse toggle (persisted) + per-group accordion state (persisted).
-    (function() {
-        var rail = document.getElementById('filterRail');
-        var btn  = document.getElementById('railToggle');
-        if (rail && btn) {
-            if (localStorage.getItem('logdash.rail.collapsed') === '1') {
-                rail.setAttribute('data-collapsed', '1');
-            }
-            btn.addEventListener('click', function() {
-                var collapsed = rail.getAttribute('data-collapsed') === '1';
-                rail.setAttribute('data-collapsed', collapsed ? '0' : '1');
-                localStorage.setItem('logdash.rail.collapsed', collapsed ? '0' : '1');
-                if (window.resizeAllECharts) setTimeout(resizeAllECharts, 220);
-            });
-        }
-        document.querySelectorAll('.filter-rail details[data-group]').forEach(function(d) {
-            var key = 'logdash.group.' + d.getAttribute('data-group');
-            var saved = localStorage.getItem(key);
-            if (saved === '1') d.open = true;
-            else if (saved === '0') d.open = false;
-            d.addEventListener('toggle', function() {
-                localStorage.setItem(key, d.open ? '1' : '0');
-            });
-        });
-    })();
-});
-
-// Date-range presets used by report filter bars and the log viewer form.
-window.applyDatePreset = function(form, days) {
-    const presets = form.querySelector('.date-presets');
-    if (!presets) return;
-    const minStr = presets.dataset.min;
-    const maxStr = presets.dataset.max;
-    if (!maxStr) return;
-    const parse = function(s) {
-        const parts = s.split('-').map(Number);
-        return Date.UTC(parts[0], parts[1] - 1, parts[2]);
-    };
-    const fmt = function(t) {
-        const d = new Date(t);
-        const y = d.getUTCFullYear();
-        const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-        const day = String(d.getUTCDate()).padStart(2, '0');
-        return y + '-' + m + '-' + day;
-    };
-    const endT = parse(maxStr);
-    let startT = endT - (days - 1) * 86400000;
-    if (minStr) {
-        const minT = parse(minStr);
-        if (startT < minT) startT = minT;
-    }
-    form.elements['from'].value = fmt(startT);
-    form.elements['to'].value = maxStr;
-    if (typeof form.requestSubmit === 'function') {
-        form.requestSubmit();
-    } else {
-        form.submit();
-    }
-};
-})();
-</script>"""
-
-    html = f"""<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{title} — Log Dashboard</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
-    <link rel="stylesheet" href="/static/app.css?v={_lv2_static_ver('app.css')}">
-    {charts_cdn}
-    {css}
-</head>
-<body>
-    <header class="topnav">
-        <div class="topnav-brand">Log Dashboard<span>nginx analytics</span></div>
-        <nav class="topnav-links">
-            {nav_links}
-        </nav>
-    </header>
-    <div class="layout {layout_class}">
-        {rail_aside}
-        <main class="content-area">
-            <div class="topbar"><h1>{title}</h1></div>
-            <div class="content">
-                {body}
-            </div>
-        </main>
-    </div>
-    {js}
-    <script src="/static/app.js?v={_lv2_static_ver('app.js')}" defer></script>
-</body>
-</html>"""
-    return HTMLResponse(html)
 
 
 def date_filters_html(date_from, date_to, available: List[str] = []):
@@ -2585,6 +1637,7 @@ def locales(
 
     # ── Locale x Group Heatmap tab ──
     heatmap_content = ""
+    heatmap_filter_trigger = ""
     paths_lg = list_partitions("locale_group_daily", date_from, date_to)
     if not paths_lg:
         heatmap_content = no_data_notice()
@@ -2612,7 +1665,7 @@ def locales(
         clear_qs_parts = [f"from={date_from or ''}", f"to={date_to or ''}", "tab=heatmap"]
         clear_href = "?" + "&".join(clear_qs_parts)
         clear_link = (
-            f"<a class='hm-trigger-clear' href='{clear_href}'>Clear all</a>"
+            f"<a class='btn btn-sm btn-ghost' href='{clear_href}'>Clear all</a>"
         ) if active_count else ""
         count_badge = (
             f"<span class='count' style='background:var(--accent);color:#fff;border-radius:999px;"
@@ -2659,15 +1712,16 @@ def locales(
             footer_right_html=footer_right,
         )
 
+        heatmap_filter_trigger = f"""
+        <button type='button' class='btn' data-hm-toggle
+                aria-haspopup='dialog' aria-expanded='false'>
+          <span>Heatmap filters</span>{count_badge}
+          <svg width='12' height='12' aria-hidden='true' style='margin-left:4px;'><use href='/static/icons.svg#chevron'/></svg>
+        </button>
+        {clear_link}
+        """
+
         heatmap_content += f"""
-        <div class='hm-filter-row'>
-          <button type='button' class='btn' data-hm-trigger
-                  aria-haspopup='dialog' aria-expanded='false'>
-            <span>All filters</span>{count_badge}
-            <svg width='12' height='12' aria-hidden='true' style='margin-left:4px;'><use href='/static/icons.svg#chevron'/></svg>
-          </button>
-          {clear_link}
-        </div>
 
         <form method='get' class='hm-form' data-hm-form>
           <input type='hidden' name='from' value='{date_from or ''}'>
@@ -2708,6 +1762,7 @@ def locales(
         title="Locales", nav_key="reports",
         date_from=date_from, date_to=date_to, avail=avail,
         body=body,
+        filter_popover_html=heatmap_filter_trigger,
     )
 
 
@@ -2805,8 +1860,7 @@ def gsc_report(
                 "<p>Connect Google Search Console to see crawl-to-search performance data.</p>"
                 "<p>This report will show crawl efficiency analysis, including pages with high crawl frequency "
                 "but zero impressions, pages with impressions but no recent crawl, and crawl frequency vs. position correlations.</p>"
-                "<a href='/settings/gsc' style='display:inline-block;margin-top:12px;padding:8px 16px;"
-                "background:#3b82f6;color:#fff;border-radius:6px;text-decoration:none;font-size:13px;'>Connect Search Console</a>"
+                "<a class='btn btn-primary' href='/settings/gsc' style='margin-top:12px;'>Connect Search Console</a>"
                 "</div>"
             )
         else:
@@ -3239,12 +2293,42 @@ def strategic_crawl_report(
     cols_ns, rows_ns = run_query(paths, non_strat_sql)
     body += "<h2>Top non-strategic URLs</h2>"
     body += (
-        "<p style='font-size:13px;color:#64748b;margin-bottom:8px;'>"
+        "<p style='font-size:13px;color:var(--ink-3);margin-bottom:8px;'>"
         f"URLs {html_escape(bot_family)} crawls most often that have no GSC impressions "
         "and no GSC ranking position. Typical candidates for noindex / blocking / canonicalization.</p>"
     )
+
+    def _crawl_row_attrs(cols_list: List[str], extra_logs_qs: str = ""):
+        page_idx = cols_list.index("page") if "page" in cols_list else None
+        def _fn(row, idx):
+            if page_idx is None:
+                return ""
+            page = row[page_idx]
+            if page is None:
+                return ""
+            fields_obj: Dict[str, Any] = {}
+            for c, v in zip(cols_list, row):
+                fields_obj[c] = v if v is None else (
+                    int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and float(v).is_integer()
+                    else float(v) if isinstance(v, float) else str(v)
+                )
+            fields_json = html_escape(json.dumps(fields_obj, default=str), quote=True)
+            logs_qs = f"search=path:{url_quote(str(page), safe='')}{extra_logs_qs}"
+            if date_from: logs_qs += f"&from={date_from}"
+            if date_to: logs_qs += f"&to={date_to}"
+            return (
+                f"data-drawer-key='{html_escape(str(page), quote=True)}' "
+                f"data-drawer-fields='{fields_json}' "
+                f"data-drawer-logs-qs='{html_escape(logs_qs, quote=True)}' "
+                "style='cursor:pointer;'"
+            )
+        return _fn
+
     if rows_ns:
-        body += render_table(rows_ns, cols_ns, max_rows=min(int(limit), 500))
+        body += render_table(
+            rows_ns, cols_ns, max_rows=min(int(limit), 500),
+            row_attrs_fn=_crawl_row_attrs(cols_ns),
+        )
     else:
         body += "<p class='no-data'>No non-strategic URLs in this range.</p>"
 
@@ -3262,11 +2346,14 @@ def strategic_crawl_report(
     cols_s, rows_s = run_query(paths, strat_sql)
     body += "<h2>Top strategic URLs</h2>"
     body += (
-        "<p style='font-size:13px;color:#64748b;margin-bottom:8px;'>"
+        "<p style='font-size:13px;color:var(--ink-3);margin-bottom:8px;'>"
         f"Most-crawled URLs that are indexed and/or ranking. Crawl budget well spent.</p>"
     )
     if rows_s:
-        body += render_table(rows_s, cols_s, max_rows=min(int(limit), 500))
+        body += render_table(
+            rows_s, cols_s, max_rows=min(int(limit), 500),
+            row_attrs_fn=_crawl_row_attrs(cols_s),
+        )
     else:
         body += "<p class='no-data'>No strategic URLs in this range.</p>"
 
@@ -5913,6 +5000,7 @@ def _lv2_report_shell(
     body: str,
     subtitle: str = "",
     extra_actions_html: str = "",
+    filter_popover_html: str = "",
 ) -> HTMLResponse:
     # Params dict for the date presets (active state + hx-get targets)
     params: Dict[str, Any] = {}
@@ -5955,6 +5043,10 @@ def _lv2_report_shell(
         clear_label="All time",
         extra_styles="top:38px; left:0; min-width:260px;",
     )
+    filter_slot = (
+        f"<div class='report-filter-slot' style='margin-left:auto;'>{filter_popover_html}</div>"
+        if filter_popover_html else ""
+    )
     date_bar = (
         "<div class='filter-bar'>"
         "<div class='date-range'>"
@@ -5972,6 +5064,7 @@ def _lv2_report_shell(
         "</div>"
         f"{rs_dr_popover}"
         "</div>"
+        f"{filter_slot}"
         "</div>"
     )
 
@@ -7114,7 +6207,7 @@ def log_detail(
                 "<button data-drawer-close>×</button></div>"
                 "<div class='drawer-body'><div class='empty'>No data for this date.</div></div>"
             )
-        return page("Log Detail", "<p class='no-data'>No data for this date.</p>")
+        return _lv2_page("Log Detail", "logs", "<div class='empty'>No data for this date.</div>")
 
     # Select every schema column, but cast types DuckDB can't materialise to
     # Python natively (TIMESTAMPTZ, ENUM).
@@ -7157,24 +6250,28 @@ def log_detail(
                 "<button data-drawer-close>×</button></div>"
                 "<div class='drawer-body'><div class='empty'>Row not found.</div></div>"
             )
-        return page("Log Detail", "<p class='no-data'>Row not found.</p>")
+        return _lv2_page("Log Detail", "logs", "<div class='empty'>Row not found.</div>")
 
     if is_htmx:
         return HTMLResponse(_lv2_drawer_fragment(rows[0], cols, date, int(row) if row is not None else None))
 
-    # Legacy full-page fallback (kept for deep-linking)
+    # Full-page fallback (deep-linking)
     entry = rows[0]
     items = ""
     for col_name, val in zip(cols, entry):
-        display_val = val if val is not None else "<em style='color:#94a3b8'>null</em>"
+        display_val = val if val is not None else "<em style='color:var(--ink-4);'>null</em>"
         if col_name == "bytes_sent" and val is not None:
             display_val = f"{val} ({fmt_bytes(val)})"
         items += (
-            f"<tr>"
-            f"<td style='font-weight:600;color:#1e293b;padding:6px 16px 6px 0;white-space:nowrap;vertical-align:top;font-family:monospace;font-size:12px;'>{col_name}</td>"
-            f"<td style='padding:6px 0;word-break:break-all;font-size:13px;'>{display_val}</td>"
-            f"</tr>"
+            "<div class='drawer-kv-row'>"
+            f"<span class='drawer-kv-key'>{col_name}</span>"
+            f"<span class='drawer-kv-val'>{display_val}</span>"
+            "</div>"
         )
-    body = f"<p style='margin-bottom:12px;'><a href='/logs?from={date}&to={date}' style='color:#3b82f6;text-decoration:none;font-size:13px;'>&larr; Back to logs</a></p>"
-    body += f"<div class='card'><table style='width:100%;border-collapse:collapse;'>{items}</table></div>"
-    return page(f"Log Detail — {date}", body)
+    head_html = page_head(f"Log detail — {date}", subtitle="Single request" )
+    body = (
+        head_html
+        + f"<p style='margin-bottom:12px;'><a class='nav-link' href='/logs?from={date}&to={date}'>&larr; Back to logs</a></p>"
+        + f"<div class='card'><div class='drawer-kv'>{items}</div></div>"
+    )
+    return _lv2_page(f"Log Detail — {date}", "logs", body)

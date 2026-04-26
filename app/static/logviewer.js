@@ -1485,7 +1485,7 @@
   // checked values per data-pop-field, writes them into the hidden form's
   // data-hm-input mirrors, and submits the form (plain GET — no htmx here).
   (function () {
-    var trigger  = document.querySelector('[data-hm-trigger]');
+    var trigger  = document.querySelector('[data-hm-toggle]');
     var popover  = document.querySelector('[data-hm-popover]');
     var backdrop = document.querySelector('[data-hm-backdrop]');
     var form     = document.querySelector('[data-hm-form]');
