@@ -12,6 +12,8 @@ Usage:
     python scripts/sample_no_locale.py --date 2026-03-01   # single date
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 from pathlib import Path
@@ -29,13 +31,15 @@ def find_parquet_files(date_filter: str | None) -> list[Path]:
     if not DATA_PARSED.exists():
         return []
     if date_filter:
-        # Accept either data/parsed/YYYY-MM-DD.parquet or data/parsed/YYYY-MM-DD/*.parquet
+        # Accept any of: data/parsed/YYYY-MM-DD.parquet, data/parsed/YYYY-MM-DD/*.parquet,
+        # or the Hive-style data/parsed/date=YYYY-MM-DD/*.parquet that ingest.py writes.
         direct = DATA_PARSED / f"{date_filter}.parquet"
         if direct.exists():
             return [direct]
-        date_dir = DATA_PARSED / date_filter
-        if date_dir.is_dir():
-            return sorted(date_dir.glob("*.parquet"))
+        for sub in (date_filter, f"date={date_filter}"):
+            date_dir = DATA_PARSED / sub
+            if date_dir.is_dir():
+                return sorted(date_dir.glob("*.parquet"))
         return []
     return sorted(DATA_PARSED.rglob("*.parquet"))
 

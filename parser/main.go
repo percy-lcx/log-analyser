@@ -398,11 +398,17 @@ func applyURLGrouping(path string, cfg *urlConfig) (group, locale string, sectio
 			return cfg.localeHomepageGroup, detectedLocale, nil
 		}
 		sectionIdx = 1
-	} else if len(segs) == 1 && cfg.localeHomepagePattern != nil && cfg.localeHomepagePattern.MatchString(first) {
-		// Single-segment path whose segment looks like a locale code but isn't
-		// in the explicit whitelist (e.g. /en-gb, /ja, /zh-tw).  Classify as
-		// Locale Homepage so these don't pollute Other Content.
-		return cfg.localeHomepageGroup, first, nil
+	} else if cfg.localeHomepagePattern != nil && cfg.localeHomepagePattern.MatchString(first) {
+		// First segment looks like a valid BCP47 locale code (strict ISO 639-1
+		// list + optional script + region) but isn't in the explicit whitelist —
+		// e.g. /en-gb, /ja, /zh-hant-nz/about. Single-segment paths fall to
+		// Locale Homepage; multi-segment paths get the same treatment as the
+		// whitelist branch (locale = first, section starts at segment 1).
+		detectedLocale = first
+		if len(segs) == 1 {
+			return cfg.localeHomepageGroup, detectedLocale, nil
+		}
+		sectionIdx = 1
 	} else {
 		detectedLocale = noLocaleLabel
 		sectionIdx = 0

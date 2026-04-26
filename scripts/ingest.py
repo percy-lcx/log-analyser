@@ -228,11 +228,17 @@ def apply_url_grouping(path: str, cfg: UrlGroupingConfig) -> Tuple[str, Optional
             return cfg.locale_homepage_group, locale, None
         section_index = 1
         section = segs[section_index] if len(segs) > section_index else None
-    elif len(segs) == 1 and cfg.locale_homepage_pattern and cfg.locale_homepage_pattern.fullmatch(first):
-        # Single-segment path whose segment looks like a locale code but isn't
-        # in the explicit whitelist (e.g. /en-gb, /ja, /zh-tw).  Classify as
-        # Locale Homepage so these don't pollute Other Content.
-        return cfg.locale_homepage_group, first, None
+    elif cfg.locale_homepage_pattern and cfg.locale_homepage_pattern.fullmatch(first):
+        # First segment looks like a valid BCP47 locale code (strict ISO 639-1
+        # list + optional script + region) but isn't in the explicit whitelist —
+        # e.g. /en-gb, /ja, /zh-hant-nz/about. Single-segment paths fall to
+        # Locale Homepage; multi-segment paths get the same treatment as the
+        # whitelist branch (locale = first, section starts at segment 1).
+        locale = first
+        if len(segs) == 1:
+            return cfg.locale_homepage_group, locale, None
+        section_index = 1
+        section = segs[section_index] if len(segs) > section_index else None
     else:
         locale = NO_LOCALE_LABEL
         section_index = 0

@@ -47,7 +47,7 @@ rules:
 
   - group: "Sitemaps"
     match: "regex"
-    value: "^/sitemap.*\\.xml$"
+    value: "^/[^/]*sitemap[^/]*\\.xml$"
 
   - group: "Nuxt Assets"
     match: "prefix"
@@ -84,6 +84,14 @@ rules:
   - group: "Well-Known"
     match: "prefix"
     value: "/autodiscover/"
+
+  # Exploit-scanner probes — paths that have no legitimate use on a non-PHP /
+  # non-WordPress site. Match BEFORE Static Assets so /.git/HEAD doesn't sneak
+  # into the asset bucket via its extension. Drop this rule if you migrate to
+  # WordPress.
+  - group: "Vulnerability Probe"
+    match: "regex"
+    value: "^/(wp-admin|wp-login|wp-content|wp-includes|xmlrpc\\.php|administrator|phpmyadmin|web\\.config|\\.env|\\.git|\\.aws|\\.ssh|admin(\\.php|/|$)|index\\.php(/|$))"
 
   # Extension-based assets that still hit origin.
   - group: "Static Assets"
