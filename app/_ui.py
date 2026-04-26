@@ -13,7 +13,13 @@ def iconHtml(name: str, cls: str = "", size: int = 14) -> str:
     )
 
 
-def topnav(active: str, *, last_ingest_label: str, date_label: Optional[str]) -> str:
+def topnav(
+    active: str,
+    *,
+    last_ingest_label: str,
+    date_label: Optional[str],
+    last_ingest_title: str = "Data freshness",
+) -> str:
     """Sticky v2 top nav. `active` is one of: logs, summary, reports, settings."""
     reports_children = [
         ("Locales", "/reports/locales"),
@@ -50,10 +56,9 @@ def topnav(active: str, *, last_ingest_label: str, date_label: Optional[str]) ->
     pill_text = last_ingest_label.strip() if last_ingest_label else ""
     if pill_text:
         pills.append(
-            f"<span class='nav-pill' title='Last ingest'><span class='dot'></span>{_esc(pill_text)}</span>"
+            f"<span class='nav-pill' title='{_esc(last_ingest_title, quote=True)}'>"
+            f"<span class='dot'></span>{_esc(pill_text)}</span>"
         )
-    else:
-        pills.append("<span class='nav-pill' title='Data freshness'><span class='dot'></span>live</span>")
     if date_label:
         pills.append(f"<span class='nav-pill' title='Date range'>{_esc(date_label)}</span>")
 

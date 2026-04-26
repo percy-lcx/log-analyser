@@ -3731,30 +3731,39 @@ def _lv2_static_ver(name: str) -> str:
 _MANIFEST_DB_PATH = ROOT / "state" / "manifest.sqlite"
 
 
-def _most_recent_ingest_label() -> str:
-    """Relative-time label for the most recent ingest from the manifest.
-    Returns 'no ingests' when the manifest is empty/missing — surfaces the
-    case where data/parsed/ was populated outside of the ingest pipeline."""
+def _data_freshness_pill() -> Tuple[str, str]:
+    """Return (display_label, hover_title) for the topnav freshness pill.
+    Sources MAX(log_date) from the manifest — the latest day reports cover.
+    Empty/missing manifest → ('No data', 'state/manifest.sqlite is empty')."""
     if not _MANIFEST_DB_PATH.exists():
-        return "no ingests"
+        return "No data", "state/manifest.sqlite is missing"
     try:
         with sqlite3.connect(str(_MANIFEST_DB_PATH)) as conn:
-            row = conn.execute("SELECT MAX(ingested_at_epoch) FROM ingested_files").fetchone()
+            row = conn.execute("SELECT MAX(log_date) FROM ingested_files").fetchone()
     except sqlite3.DatabaseError:
-        return ""
-    ts = row[0] if row else None
-    if not ts:
-        return "no ingests"
-    delta = max(0, int(datetime.now(timezone.utc).timestamp()) - int(ts))
-    if delta < 60:
-        return "just now"
-    if delta < 3600:
-        return f"{delta // 60}m ago"
-    if delta < 86400:
-        return f"{delta // 3600}h ago"
-    if delta < 7 * 86400:
-        return f"{delta // 86400}d ago"
-    return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%b %-d")
+        return "", ""
+    log_date = row[0] if row else None
+    if not log_date:
+        return "No data", "state/manifest.sqlite is empty"
+    try:
+        d = datetime.strptime(str(log_date), "%Y-%m-%d").date()
+    except ValueError:
+        return f"Data thru {log_date}", f"Latest log date: {log_date}"
+    today = datetime.now(timezone.utc).date()
+    if d == today:
+        label = "Data thru today"
+    elif d == today - timedelta(days=1):
+        label = "Data thru yesterday"
+    elif d.year == today.year:
+        label = f"Data thru {d.strftime('%b %-d')}"
+    else:
+        label = f"Data thru {d.strftime('%b %-d, %Y')}"
+    return label, f"Latest log date in manifest: {d.isoformat()}"
+
+
+def _freshness_pill_kwargs() -> Dict[str, str]:
+    label, title = _data_freshness_pill()
+    return {"last_ingest_label": label, "last_ingest_title": title}
 
 
 def _lv2_icon(name: str, cls: str = "") -> str:
@@ -4004,8 +4013,19 @@ def _lv2_apply_view(view_id: Optional[str], current: Dict[str, Optional[str]]) -
     return merged
 
 
-def _lv2_topnav(active: str, *, last_ingest_label: str = "", date_label: Optional[str] = None) -> str:
-    return topnav(active, last_ingest_label=last_ingest_label, date_label=date_label)
+def _lv2_topnav(
+    active: str,
+    *,
+    last_ingest_label: str = "",
+    last_ingest_title: str = "Data freshness",
+    date_label: Optional[str] = None,
+) -> str:
+    return topnav(
+        active,
+        last_ingest_label=last_ingest_label,
+        last_ingest_title=last_ingest_title,
+        date_label=date_label,
+    )
 
 
 def _lv2_page_head(title: str, count_text: str, mode: str, params: Dict[str, Any]) -> str:
@@ -5514,7 +5534,7 @@ def _lv2_page(title: str, active_nav: str, body: str) -> HTMLResponse:
         "<script src='https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js'></script>"
         "</head>"
         f"<body>"
-        f"{_lv2_topnav(active_nav, last_ingest_label=_most_recent_ingest_label())}"
+        f"{_lv2_topnav(active_nav, **_freshness_pill_kwargs())}"
         f"<main class='page'>{body}</main>"
         "<div class='drawer-backdrop' id='drawer-backdrop'></div>"
         "<aside class='drawer' id='drawer' aria-hidden='true'></aside>"
