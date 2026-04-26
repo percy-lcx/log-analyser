@@ -426,6 +426,9 @@ textarea{ font:inherit; color:inherit; }
   font-weight: 500;
   white-space: nowrap;
 }
+.chip.chip-ok{ background: var(--ok-soft); border-color: #c8e0c8; color: var(--ok);}
+.chip.chip-warn{ background: var(--warn-soft); border-color: #f0d6a5; color: var(--warn);}
+.chip.chip-err{ background: var(--err-soft); border-color: #e7c0c0; color: var(--err);}
 .chip .chip-key{ color: #5472b8; font-weight: 500; }
 .chip .chip-sep{ color: #8ba2d0; margin: 0 2px;}
 .chip .chip-val{ font-weight: 600; max-width: 200px; overflow: hidden; text-overflow: ellipsis;}
@@ -714,6 +717,25 @@ textarea{ font:inherit; color:inherit; }
 .popover .pop-actions{ display:flex; gap: 6px; justify-content: flex-end; margin-top: 8px;}
 
 .popover-anchor{ position: relative; display: inline-flex; }
+.popover-dialog{ min-width: 280px;}
+.popover-dialog .popover-title{ margin: 0 0 8px;}
+.popover-dialog .pop-row label{ font-size: 11px; font-weight: 600; color: var(--ink-3); text-transform: uppercase; letter-spacing: .04em;}
+.popover-dialog .pop-row .input{ width: 100%;}
+.popover-dialog .pop-actions{ margin-top: 6px;}
+.popover-dialog .pop-msg{ font-size: 12px; color: var(--ink-3); margin: -2px 0 8px; line-height: 1.4;}
+
+/* Thin determinate progress bar */
+.progress-bar{
+  height: 4px; background: var(--surface-sunk);
+  border-radius: 2px; overflow: hidden;
+}
+.progress-bar-fill{
+  height: 100%; width: 0%;
+  background: var(--accent);
+  transition: width .2s ease;
+}
+.progress-bar-fill.is-ok{ background: var(--ok);}
+.progress-bar-fill.is-err{ background: var(--err);}
 
 /* More filters popover (two-pane, viewport-filling modal) */
 .popover-backdrop{
@@ -1275,6 +1297,13 @@ table.log-table.sortable thead th:hover{ color: var(--ink-1);}
   padding: 6px 10px; border-bottom: 1px solid var(--border);
   color: var(--ink-2);
 }
+.drag-handle{
+  cursor: grab; color: var(--ink-4); font-size: 16px;
+  text-align: center; user-select: none;
+}
+.drag-handle:active{ cursor: grabbing;}
+tr.dragging{ opacity: .4; background: var(--accent-soft);}
+tr.drag-over td{ box-shadow: inset 0 2px 0 var(--accent);}
 
 /* Export link */
 .export-link,
@@ -1530,26 +1559,18 @@ form.filter-bar input[type='checkbox']{ accent-color: var(--accent); }
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 12px;
+  margin-bottom: 0;
 }
-.settings-hub-card{
+.settings-hub-grid > .card{ margin-bottom: 0; padding: 14px 16px;}
+a.card.card-link{
   display: flex; flex-direction: column; gap: 6px;
-  padding: 14px 16px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  text-decoration: none;
-  color: var(--ink-1);
-  box-shadow: var(--shadow-sm);
+  text-decoration: none; color: var(--ink-1);
   transition: border-color .12s, box-shadow .12s;
 }
-.settings-hub-card:hover{
+a.card.card-link:hover{
   border-color: var(--border-strong);
   box-shadow: var(--shadow-md);
   text-decoration: none;
 }
-.settings-hub-card .shc-title{
-  font-size: 14px; font-weight: 600; color: var(--ink-1);
-}
-.settings-hub-card .shc-desc{
-  font-size: 12px; color: var(--ink-3); line-height: 1.4;
-}
+.shc-title{ font-size: 14px; font-weight: 600; color: var(--ink-1);}
+.shc-desc{ font-size: 12px; color: var(--ink-3); line-height: 1.4;}

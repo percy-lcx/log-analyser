@@ -485,7 +485,7 @@ def settings_hub():
         if item_id == "hub":
             continue
         cards_html.append(
-            f"<a href='{url}' class='settings-hub-card'>"
+            f"<a href='{url}' class='card card-link'>"
             f"<span class='shc-title'>{label}</span>"
             f"<span class='shc-desc'>{desc}</span>"
             f"</a>"
@@ -512,9 +512,10 @@ def settings_profiles():
     rows = ""
     for p in profiles:
         active = p["is_active"]
-        badge = "<span style='color:#16a34a;font-weight:600;'>Active</span>" if active else ""
+        badge = "<span class='chip chip-ok'>Active</span>" if active else ""
         disable_del = "disabled title='Cannot delete active profile'" if active else ""
         disable_act = "disabled" if active else ""
+        name_attr = json.dumps(p["name"])  # safely-quoted JS string
         rows += f"""<tr data-id='{p["id"]}'>
             <td>{p["id"]}</td>
             <td class='profile-name'>{p["name"]}</td>
@@ -523,9 +524,9 @@ def settings_profiles():
             <td>{p["updated_at"]}</td>
             <td style='white-space:nowrap;'>
                 <button class='btn btn-sm btn-primary' onclick='activateProfile({p["id"]})' {disable_act}>Activate</button>
-                <button class='btn btn-sm' onclick='cloneProfile({p["id"]}, "{p["name"]}")'>Clone</button>
-                <button class='btn btn-sm' onclick='renameProfile({p["id"]}, "{p["name"]}")'>Rename</button>
-                <button class='btn btn-sm btn-danger' onclick='deleteProfile({p["id"]})' {disable_del}>Delete</button>
+                <button class='btn btn-sm' onclick='openClone(event, {p["id"]}, {name_attr})'>Clone</button>
+                <button class='btn btn-sm' onclick='openRename(event, {p["id"]}, {name_attr})'>Rename</button>
+                <button class='btn btn-sm btn-danger' onclick='openDelete(event, {p["id"]}, {name_attr})' {disable_del}>Delete</button>
             </td>
         </tr>"""
 
@@ -534,13 +535,13 @@ def settings_profiles():
         <div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;'>
             <input id='newName' class='input' placeholder='New profile name' style='min-width:200px;'>
             <button class='btn btn-sm btn-primary' onclick='createProfile()'>Create Blank</button>
-            <span style='color:#94a3b8;font-size:12px;'>or clone from an existing profile using Clone button below</span>
+            <span style='color:var(--ink-3);font-size:12px;'>or clone from an existing profile via the Clone button below</span>
         </div>
     </div>
 
     <div class='card'>
         <div class='table-wrapper'>
-            <table class='sortable' id='profilesTable'>
+            <table id='profilesTable'>
                 <thead><tr>
                     <th>ID</th><th>Name</th><th>Status</th><th>Created</th><th>Updated</th><th>Actions</th>
                 </tr></thead>
@@ -549,7 +550,40 @@ def settings_profiles():
         </div>
     </div>
 
+    <div class='popover popover-dialog' id='pop-clone-profile' data-anchored>
+        <div class='popover-title'>Clone profile</div>
+        <div class='pop-row'><label>New name</label>
+            <input class='input' id='cloneName' autocomplete='off'>
+        </div>
+        <div class='pop-actions'>
+            <button class='btn btn-sm btn-ghost' data-pop-close>Cancel</button>
+            <button class='btn btn-sm btn-primary' onclick='confirmClone()'>Clone</button>
+        </div>
+    </div>
+
+    <div class='popover popover-dialog' id='pop-rename-profile' data-anchored>
+        <div class='popover-title'>Rename profile</div>
+        <div class='pop-row'><label>New name</label>
+            <input class='input' id='renameName' autocomplete='off'>
+        </div>
+        <div class='pop-actions'>
+            <button class='btn btn-sm btn-ghost' data-pop-close>Cancel</button>
+            <button class='btn btn-sm btn-primary' onclick='confirmRename()'>Rename</button>
+        </div>
+    </div>
+
+    <div class='popover popover-dialog' id='pop-delete-profile' data-anchored>
+        <div class='popover-title'>Delete profile</div>
+        <p class='pop-msg' id='deleteMsg'></p>
+        <div class='pop-actions'>
+            <button class='btn btn-sm btn-ghost' data-pop-close>Cancel</button>
+            <button class='btn btn-sm btn-danger' onclick='confirmDelete()'>Delete</button>
+        </div>
+    </div>
+
     <script>
+    let pending = {{ id: null, name: '' }};
+
     async function apiCall(url, opts={{}}) {{
         const res = await fetch(url, {{
             headers: {{'Content-Type': 'application/json'}},
@@ -558,29 +592,75 @@ def settings_profiles():
         return res.json();
     }}
     function reload() {{ location.reload(); }}
+    function closeOpenPopover() {{
+        document.querySelectorAll('.popover.is-open').forEach(p => p.classList.remove('is-open'));
+    }}
+    function showFlash(msg, isErr) {{
+        const f = document.createElement('div');
+        f.className = 'notice ' + (isErr ? 'notice-err' : 'notice-info');
+        f.style.cssText = 'position:fixed;top:64px;right:20px;z-index:9999;max-width:340px;box-shadow:var(--shadow-md);';
+        f.textContent = msg;
+        document.body.appendChild(f);
+        setTimeout(() => f.remove(), 3000);
+    }}
+    function openPopover(triggerEl, popoverId) {{
+        const pop = document.getElementById(popoverId);
+        if (!pop) return;
+        closeOpenPopover();
+        const r = triggerEl.getBoundingClientRect();
+        pop.style.position = 'fixed';
+        pop.style.top = (r.bottom + 4) + 'px';
+        const right = window.innerWidth - r.right;
+        pop.style.right = Math.max(8, right) + 'px';
+        pop.style.left = '';
+        pop.classList.add('is-open');
+    }}
+    function openClone(ev, id, name) {{
+        ev.stopPropagation();
+        pending = {{ id, name }};
+        document.getElementById('cloneName').value = name + ' (copy)';
+        openPopover(ev.currentTarget, 'pop-clone-profile');
+        document.getElementById('cloneName').focus();
+    }}
+    function openRename(ev, id, name) {{
+        ev.stopPropagation();
+        pending = {{ id, name }};
+        document.getElementById('renameName').value = name;
+        openPopover(ev.currentTarget, 'pop-rename-profile');
+        document.getElementById('renameName').focus();
+    }}
+    function openDelete(ev, id, name) {{
+        ev.stopPropagation();
+        pending = {{ id, name }};
+        document.getElementById('deleteMsg').textContent =
+            'Permanently delete profile "' + name + '"? This cannot be undone.';
+        openPopover(ev.currentTarget, 'pop-delete-profile');
+    }}
+    document.querySelectorAll('[data-pop-close]').forEach(btn => {{
+        btn.addEventListener('click', closeOpenPopover);
+    }});
 
     async function createProfile() {{
         const name = document.getElementById('newName').value.trim();
-        if (!name) return alert('Enter a profile name');
+        if (!name) {{ showFlash('Enter a profile name', true); return; }}
         await apiCall('/api/settings/profiles', {{method:'POST', body:JSON.stringify({{name}})}});
         reload();
     }}
-    async function cloneProfile(id, currentName) {{
-        const name = prompt('Name for the cloned profile:', currentName + ' (copy)');
+    async function confirmClone() {{
+        const name = document.getElementById('cloneName').value.trim();
         if (!name) return;
-        await apiCall('/api/settings/profiles', {{method:'POST', body:JSON.stringify({{name, clone_from:id}})}});
+        await apiCall('/api/settings/profiles', {{method:'POST', body:JSON.stringify({{name, clone_from: pending.id}})}});
         reload();
     }}
-    async function renameProfile(id, currentName) {{
-        const name = prompt('New name:', currentName);
-        if (!name || name === currentName) return;
-        await apiCall('/api/settings/profiles/' + id, {{method:'PUT', body:JSON.stringify({{name}})}});
+    async function confirmRename() {{
+        const name = document.getElementById('renameName').value.trim();
+        if (!name || name === pending.name) {{ closeOpenPopover(); return; }}
+        await apiCall('/api/settings/profiles/' + pending.id, {{method:'PUT', body:JSON.stringify({{name}})}});
         reload();
     }}
-    async function deleteProfile(id) {{
-        if (!confirm('Delete this profile?')) return;
-        const r = await apiCall('/api/settings/profiles/' + id, {{method:'DELETE'}});
-        if (r.error) return alert(r.error);
+    async function confirmDelete() {{
+        const r = await apiCall('/api/settings/profiles/' + pending.id, {{method:'DELETE'}});
+        if (r.error) {{ closeOpenPopover(); showFlash(r.error, true); return; }}
         reload();
     }}
     async function activateProfile(id) {{
@@ -609,15 +689,15 @@ def settings_url_groups():
     profile_name = p["name"] if p else "(none)"
 
     body = f"""
-    <div id='warningBanner' class='card' style='display:none;background:#fffbeb;border-color:#fbbf24;'>
-        <span style='color:#92400e;font-size:13px;font-weight:600;'>Rules changed — rebuild aggregates to apply.</span>
+    <div id='warningBanner' class='notice notice-warn' style='display:none;'>
+        <span>Rules changed — rebuild aggregates to apply.</span>
     </div>
 
     <div class='card'>
         <h2 style='margin-bottom:12px;'>Live Preview</h2>
         <div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;'>
             <input id='previewPath' class='input' placeholder='Enter a sample path, e.g. /en/trading/forex' style='flex:1;min-width:250px;'>
-            <div id='previewResult' style='font-size:13px;color:#374151;'></div>
+            <div id='previewResult' style='font-size:13px;color:var(--ink-2);'></div>
         </div>
     </div>
 
@@ -629,14 +709,14 @@ def settings_url_groups():
                 <button class='btn btn-sm btn-primary' onclick='saveRules()'>Save</button>
             </div>
         </div>
-        <div class='table-wrapper' style='max-height:none;'>
-            <table id='rulesTable' style='width:100%;border-collapse:collapse;font-size:13px;'>
-                <thead><tr style='background:#f8fafc;'>
-                    <th style='padding:8px 6px;width:30px;'></th>
-                    <th style='padding:8px 6px;'>Label</th>
-                    <th style='padding:8px 6px;width:120px;'>Match Type</th>
-                    <th style='padding:8px 6px;'>Pattern / Value</th>
-                    <th style='padding:8px 6px;width:50px;'></th>
+        <div class='table-wrapper'>
+            <table id='rulesTable'>
+                <thead><tr>
+                    <th style='width:30px;'></th>
+                    <th>Label</th>
+                    <th style='width:120px;'>Match Type</th>
+                    <th>Pattern / Value</th>
+                    <th style='width:50px;'></th>
                 </tr></thead>
                 <tbody id='rulesBody'></tbody>
             </table>
@@ -657,14 +737,14 @@ def settings_url_groups():
             const val = Array.isArray(r.value) ? r.value.join(', ') : (r.value || '');
             tr.innerHTML = `
                 <td class='drag-handle' title='Drag to reorder'>&#9776;</td>
-                <td><input value="${{escHtml(r.group)}}" onchange="updateRule(${{i}},'group',this.value)"></td>
-                <td><select onchange="updateRule(${{i}},'match',this.value)">
+                <td><input class='input' value="${{escHtml(r.group)}}" onchange="updateRule(${{i}},'group',this.value)"></td>
+                <td><select class='select' onchange="updateRule(${{i}},'match',this.value)">
                     <option value='exact' ${{r.match==='exact'?'selected':''}}>exact</option>
                     <option value='prefix' ${{r.match==='prefix'?'selected':''}}>prefix</option>
                     <option value='regex' ${{r.match==='regex'?'selected':''}}>regex</option>
                     <option value='ext' ${{r.match==='ext'?'selected':''}}>extension</option>
                 </select></td>
-                <td><input value="${{escHtml(val)}}" onchange="updateRule(${{i}},'value',this.value)" placeholder="${{r.match==='ext'?'css, js, png':'pattern'}}"></td>
+                <td><input class='input' value="${{escHtml(val)}}" onchange="updateRule(${{i}},'value',this.value)" placeholder="${{r.match==='ext'?'css, js, png':'pattern'}}"></td>
                 <td><button class='btn btn-icon btn-ghost btn-sm' onclick='removeRule(${{i}})' title='Delete' aria-label='Delete'><svg width='12' height='12' aria-hidden='true'><use href='/static/icons.svg#x'/></svg></button></td>
             `;
             // Drag events
@@ -774,7 +854,7 @@ def settings_locales():
     body = f"""
     <div class='card'>
         <h2 style='margin-bottom:10px;'>Locale Whitelist</h2>
-        <p style='font-size:12px;color:#64748b;margin-bottom:12px;'>
+        <p style='font-size:12px;color:var(--ink-3);margin-bottom:12px;'>
             Locale codes that appear as the first path segment (e.g. /en/, /zh-hans/).
             Click a tag to remove it. Type below to add.
         </p>
@@ -789,7 +869,7 @@ def settings_locales():
     <div class='card'>
         <label style='display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;'>
             <input type='checkbox' id='bcp47Toggle' {'checked' if bcp47 else ''}
-                   style='width:16px;height:16px;accent-color:#3b82f6;'>
+                   style='width:16px;height:16px;accent-color:var(--accent);'>
             <span><strong>BCP 47 fallback</strong> — treat unrecognised single-segment paths matching BCP 47 pattern as locale homepages</span>
         </label>
     </div>
@@ -806,14 +886,15 @@ def settings_locales():
         c.innerHTML = '';
         locales.forEach((loc, i) => {{
             const tag = document.createElement('span');
-            tag.className = 'locale-tag';
-            tag.innerHTML = loc + ' <span class="x">&times;</span>';
+            tag.className = 'chip';
+            tag.style.cursor = 'pointer';
             tag.title = 'Click to remove';
+            tag.innerHTML = '<span class="chip-val">' + loc + '</span><button type="button" class="chip-x" aria-label="Remove">&times;</button>';
             tag.onclick = () => {{ locales.splice(i, 1); renderLocales(); }};
             c.appendChild(tag);
         }});
         if (locales.length === 0) {{
-            c.innerHTML = '<span style="color:#94a3b8;font-size:12px;">No locales defined</span>';
+            c.innerHTML = '<span style="color:var(--ink-4);font-size:12px;">No locales defined</span>';
         }}
     }}
 
@@ -821,7 +902,7 @@ def settings_locales():
         const inp = document.getElementById('localeInput');
         const val = inp.value.trim().toLowerCase();
         if (!val) return;
-        if (locales.includes(val)) {{ alert('Already in the list'); return; }}
+        if (locales.includes(val)) {{ inp.value = ''; return; }}
         locales.push(val);
         inp.value = '';
         renderLocales();
@@ -835,8 +916,7 @@ def settings_locales():
             body: JSON.stringify({{locales, bcp47_fallback: bcp47}})
         }});
         const d = await res.json();
-        if (d.ok) alert('Saved.');
-        else alert('Error: ' + (d.error || 'Unknown'));
+        if (!d.ok) alert('Error: ' + (d.error || 'Unknown'));
     }}
 
     renderLocales();
@@ -870,16 +950,16 @@ def settings_sections():
                 <button class='btn btn-sm btn-primary' onclick='saveSections()'>Save</button>
             </div>
         </div>
-        <p style='font-size:12px;color:#64748b;margin-bottom:12px;'>
+        <p style='font-size:12px;color:var(--ink-3);margin-bottom:12px;'>
             Map URL path segments to section labels. Use <code>segment</code> for primary sections
             and <code>segment/subsegment</code> for composite sections (e.g. <code>analysis/market-news</code>).
         </p>
-        <div class='table-wrapper' style='max-height:none;'>
-            <table style='width:100%;border-collapse:collapse;font-size:13px;' id='sectionsTable'>
-                <thead><tr style='background:#f8fafc;'>
-                    <th style='padding:8px 6px;'>Path Segment(s)</th>
-                    <th style='padding:8px 6px;'>Section Label</th>
-                    <th style='padding:8px 6px;width:50px;'></th>
+        <div class='table-wrapper'>
+            <table id='sectionsTable'>
+                <thead><tr>
+                    <th>Path Segment(s)</th>
+                    <th>Section Label</th>
+                    <th style='width:50px;'></th>
                 </tr></thead>
                 <tbody id='sectionsBody'></tbody>
             </table>
@@ -897,8 +977,8 @@ def settings_sections():
         entries.forEach((e, i) => {{
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td><input value="${{escHtml(e[0])}}" onchange="entries[${{i}}][0]=this.value"></td>
-                <td><input value="${{escHtml(e[1])}}" onchange="entries[${{i}}][1]=this.value"></td>
+                <td><input class='input' value="${{escHtml(e[0])}}" onchange="entries[${{i}}][0]=this.value"></td>
+                <td><input class='input' value="${{escHtml(e[1])}}" onchange="entries[${{i}}][1]=this.value"></td>
                 <td><button class='btn btn-icon btn-ghost btn-sm' onclick='entries.splice(${{i}},1);renderSections();' title='Delete' aria-label='Delete'><svg width='12' height='12' aria-hidden='true'><use href='/static/icons.svg#x'/></svg></button></td>
             `;
             tbody.appendChild(tr);
@@ -927,8 +1007,7 @@ def settings_sections():
             body: JSON.stringify({{sections: obj}})
         }});
         const d = await res.json();
-        if (d.ok) alert('Saved.');
-        else alert('Error: ' + (d.error || 'Unknown'));
+        if (!d.ok) alert('Error: ' + (d.error || 'Unknown'));
     }}
 
     renderSections();
@@ -949,24 +1028,26 @@ def settings_sections():
 @router.get("/settings/logs", response_class=HTMLResponse)
 def settings_logs():
     files = _log_file_status()
+    status_label = {"ingested": "ingested", "pending": "pending", "changed": "changed"}
+    status_class = {"ingested": "status-ok", "pending": "status-pending", "changed": "status-pending"}
 
     rows_html = ""
     for f in files:
         status = f["status"]
-        status_color = {"ingested": "#16a34a", "pending": "#f59e0b", "changed": "#3b82f6"}.get(status, "#64748b")
+        cls = status_class.get(status, "status-pending")
         rows_html += f"""<tr>
             <td><input type='checkbox' class='file-cb' value='{f["name"]}' data-path='{f["path"]}'></td>
-            <td style='font-family:monospace;font-size:12px;'>{f["name"]}</td>
+            <td style='font-family:var(--font-mono);font-size:12px;color:var(--ink-1);'>{f["name"]}</td>
             <td>{_fmt_bytes(f["size"])}</td>
-            <td>{f["mtime"][:19]}</td>
-            <td><span style='color:{status_color};font-weight:600;font-size:12px;'>{status}</span></td>
+            <td style='font-family:var(--font-mono);font-size:11.5px;color:var(--ink-3);'>{f["mtime"][:19]}</td>
+            <td><span class='status-pill {cls}'>{status_label.get(status, status)}</span></td>
         </tr>"""
 
     body = f"""
     <div class='card'>
         <h2 style='margin-bottom:12px;'>Log Files</h2>
-        <div class='table-wrapper' style='max-height:500px;'>
-            <table class='sortable' style='width:100%;'>
+        <div class='table-wrapper' style='max-height:500px;overflow:auto;'>
+            <table>
                 <thead><tr>
                     <th style='width:30px;'><input type='checkbox' id='selectAll'></th>
                     <th>Filename</th><th>Size</th><th>Last Modified</th><th>Status</th>
@@ -979,26 +1060,26 @@ def settings_logs():
     <div class='card'>
         <h2 style='margin-bottom:10px;'>Ingestion</h2>
         <div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;'>
-            <button class='btn btn-sm btn-primary' id='btnIngestSelected' onclick='runIngest("selected")'>Ingest Selected</button>
-            <button class='btn btn-sm btn-primary' id='btnIngestAll' onclick='runIngest("all")'>Ingest All Pending</button>
+            <button class='btn btn-primary' id='btnIngestSelected' onclick='runIngest("selected")'>Ingest Selected</button>
+            <button class='btn btn-primary' id='btnIngestAll' onclick='runIngest("all")'>Ingest All Pending</button>
         </div>
-        <div id='ingestProgress' style='font-size:13px;color:#64748b;'></div>
+        <div id='ingestProgress' style='font-size:13px;color:var(--ink-3);'></div>
     </div>
 
     <div class='card'>
         <h2 style='margin-bottom:10px;'>Rebuild Aggregates</h2>
-        <div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;'>
-            <label style='font-size:12px;font-weight:600;color:#64748b;display:flex;flex-direction:column;gap:4px;'>
-                FROM
+        <div style='display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;'>
+            <label style='font-size:11px;font-weight:600;color:var(--ink-3);text-transform:uppercase;letter-spacing:.04em;display:flex;flex-direction:column;gap:4px;'>
+                From
                 <input type='date' id='rebuildFrom' class='input'>
             </label>
-            <label style='font-size:12px;font-weight:600;color:#64748b;display:flex;flex-direction:column;gap:4px;'>
-                TO
+            <label style='font-size:11px;font-weight:600;color:var(--ink-3);text-transform:uppercase;letter-spacing:.04em;display:flex;flex-direction:column;gap:4px;'>
+                To
                 <input type='date' id='rebuildTo' class='input'>
             </label>
-            <button class='btn btn-sm btn-primary' id='btnRebuild' onclick='runRebuild()' style='align-self:flex-end;'>Rebuild</button>
+            <button class='btn btn-primary' id='btnRebuild' onclick='runRebuild()'>Rebuild</button>
         </div>
-        <div id='rebuildProgress' style='font-size:13px;color:#64748b;'></div>
+        <div id='rebuildProgress' style='font-size:13px;color:var(--ink-3);'></div>
     </div>
 
     <script>
@@ -1067,17 +1148,15 @@ def settings_logs():
     function pollTask(url, el) {{
         el.innerHTML = `
             <div style="margin:8px 0;">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-                    <span class="progress-msg" style="font-size:12px;color:#475569;">Initializing\u2026</span>
-                    <span class="progress-pct" style="font-size:12px;font-weight:600;color:#3b82f6;"></span>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                    <span class="progress-msg" style="font-size:12px;color:var(--ink-2);">Initializing\u2026</span>
+                    <span class="progress-pct" style="font-size:12px;font-weight:600;color:var(--accent);font-variant-numeric:tabular-nums;"></span>
                 </div>
-                <div style="width:100%;height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden;">
-                    <div class="progress-bar" style="height:100%;width:0%;background:#3b82f6;border-radius:4px;transition:width 0.3s ease;"></div>
-                </div>
-                <div class="progress-detail" style="margin-top:6px;font-size:11px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"></div>
+                <div class="progress-bar"><div class="progress-bar-fill"></div></div>
+                <div class="progress-detail" style="margin-top:6px;font-size:11px;color:var(--ink-4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono);"></div>
             </div>
         `;
-        const bar = el.querySelector('.progress-bar');
+        const fill = el.querySelector('.progress-bar-fill');
         const msg = el.querySelector('.progress-msg');
         const pctEl = el.querySelector('.progress-pct');
         const detail = el.querySelector('.progress-detail');
@@ -1088,7 +1167,7 @@ def settings_logs():
                 const d = await res.json();
                 if (d.status === 'running') {{
                     const p = d.progress_pct || 0;
-                    bar.style.width = p + '%';
+                    fill.style.width = p + '%';
                     pctEl.textContent = d.progress_total > 0 ? (p + '%') : '';
                     msg.textContent = d.progress_message || 'Running\u2026';
                     const lines = (d.detail || '').trim().split('\\n');
@@ -1097,15 +1176,15 @@ def settings_logs():
                 }} else {{
                     clearInterval(iv);
                     const ok = d.status === 'done';
-                    bar.style.width = '100%';
-                    bar.style.background = ok ? '#16a34a' : '#dc2626';
+                    fill.style.width = '100%';
+                    fill.classList.add(ok ? 'is-ok' : 'is-err');
                     pctEl.textContent = '';
                     msg.innerHTML = ok
-                        ? '<span style="color:#16a34a;font-weight:600;">Completed</span>'
-                        : '<span style="color:#dc2626;font-weight:600;">Error</span>';
+                        ? '<span style="color:var(--ok);font-weight:600;">Completed</span>'
+                        : '<span style="color:var(--err);font-weight:600;">Error</span>';
                     detail.remove();
                     const pre = document.createElement('pre');
-                    pre.style.cssText = 'margin-top:6px;font-size:11px;max-height:200px;overflow:auto;background:#f8fafc;padding:8px;border-radius:4px;border:1px solid #e2e8f0;';
+                    pre.style.cssText = 'margin-top:8px;font-size:11px;max-height:200px;overflow:auto;background:var(--surface-alt);padding:8px;border-radius:var(--radius);border:1px solid var(--border);font-family:var(--font-mono);color:var(--ink-2);';
                     pre.textContent = d.detail || '';
                     el.appendChild(pre);
                     setButtonsDisabled(false);
@@ -1401,15 +1480,15 @@ def settings_gsc():
 
     <div id='setupSection' class='card' style='display:none;'>
         <h2 style='margin-bottom:12px;'>Connect Google Search Console</h2>
-        <div style='font-size:13px;color:#64748b;line-height:1.6;margin-bottom:16px;'>
+        <div style='font-size:13px;color:var(--ink-3);line-height:1.6;margin-bottom:16px;'>
             <p style='margin-bottom:8px;'><strong>Setup instructions:</strong></p>
             <ol style='padding-left:20px;margin-bottom:12px;'>
-                <li>Go to <a href='https://console.cloud.google.com/apis/credentials' target='_blank' style='color:#3b82f6;'>Google Cloud Console</a></li>
+                <li>Go to <a href='https://console.cloud.google.com/apis/credentials' target='_blank'>Google Cloud Console</a></li>
                 <li>Create or select a project</li>
                 <li>Enable the <strong>Google Search Console API</strong></li>
                 <li>Create an <strong>OAuth 2.0 Client ID</strong> (Desktop application type)</li>
                 <li>Download the JSON credentials file</li>
-                <li>Save it as <code style='background:#f1f5f9;padding:2px 6px;border-radius:3px;'>state/gsc_credentials.json</code></li>
+                <li>Save it as <code>state/gsc_credentials.json</code></li>
             </ol>
         </div>
         <div id='authFlowSection'>
@@ -1417,7 +1496,7 @@ def settings_gsc():
             <div id='authUrlBox' style='display:none;margin-top:12px;'>
                 <p style='font-size:13px;margin-bottom:6px;'>Open this URL in your browser and authorize access:</p>
                 <input id='authUrl' class='input' readonly style='width:100%;background:var(--surface-alt);margin-bottom:10px;'>
-                <p style='font-size:13px;margin-bottom:6px;line-height:1.5;'>After approving, your browser will redirect to <code style='background:#f1f5f9;padding:1px 4px;border-radius:3px;'>http://localhost/?code=...</code> and show a <em>can't reach this page</em> error &mdash; that's expected. Copy the <strong>entire URL</strong> from the browser address bar and paste it below.</p>
+                <p style='font-size:13px;margin-bottom:6px;line-height:1.5;'>After approving, your browser will redirect to <code>http://localhost/?code=...</code> and show a <em>can't reach this page</em> error &mdash; that's expected. Copy the <strong>entire URL</strong> from the browser address bar and paste it below.</p>
                 <div style='display:flex;gap:8px;'>
                     <input id='authCode' class='input' placeholder='Paste http://localhost/?code=... URL here' style='flex:1;'>
                     <button class='btn btn-sm btn-primary' onclick='exchangeCode()'>Connect</button>
@@ -1426,7 +1505,7 @@ def settings_gsc():
         </div>
         <div id='propertySelect' style='display:none;margin-top:12px;'>
             <p style='font-size:13px;margin-bottom:6px;'><strong>Select a Search Console property:</strong></p>
-            <div id='propertyList'></div>
+            <div id='propertyList' style='display:flex;flex-direction:column;gap:6px;'></div>
         </div>
     </div>
 
@@ -1434,32 +1513,35 @@ def settings_gsc():
         <div class='card'>
             <h2 style='margin-bottom:12px;'>Sync Controls</h2>
             <div style='display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;'>
-                <button class='btn btn-sm btn-primary' onclick='triggerSync("daily")' id='btnDaily'>Sync Now (Last 3 Days)</button>
-                <button class='btn btn-sm' onclick='triggerSync("backfill")' id='btnBackfill'>Full Backfill (~16 Months)</button>
+                <button class='btn btn-primary' onclick='triggerSync("daily")' id='btnDaily'>Sync Now (Last 3 Days)</button>
+                <button class='btn' onclick='triggerSync("backfill")' id='btnBackfill'>Full Backfill (~16 Months)</button>
             </div>
             <div style='display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;'>
                 <label style='font-size:13px;'>From <input type='date' id='syncFrom' class='input'></label>
                 <label style='font-size:13px;'>To <input type='date' id='syncTo' class='input'></label>
-                <button class='btn btn-sm' onclick='triggerRangeSync()'>Sync Range</button>
+                <button class='btn' onclick='triggerRangeSync()'>Sync Range</button>
             </div>
-            <div id='syncOutput' style='font-size:13px;color:#64748b;'></div>
+            <div id='syncOutput' style='font-size:13px;color:var(--ink-3);'></div>
         </div>
 
         <div class='card'>
             <h2 style='margin-bottom:12px;'>Recent Sync Log</h2>
-            <div id='syncLog' class='table-wrapper'><p style='color:#94a3b8;font-size:13px;'>Loading...</p></div>
+            <div id='syncLog' class='table-wrapper'><p style='color:var(--ink-4);font-size:13px;'>Loading...</p></div>
         </div>
 
         <div class='card'>
-            <button class='btn btn-sm btn-danger' onclick='disconnect()'>Disconnect Search Console</button>
+            <button class='btn btn-sm btn-danger' id='btnDisconnect' onclick='openDisconnect(event)'>Disconnect Search Console</button>
         </div>
     </div>
 
-    <style>
-    .prop-btn {{ display:block; width:100%; text-align:left; padding:8px 12px; margin-bottom:6px;
-                 border:1px solid #e2e8f0; border-radius:6px; background:#fff; cursor:pointer; font-size:13px; }}
-    .prop-btn:hover {{ background:#eff6ff; border-color:#3b82f6; }}
-    </style>
+    <div class='popover popover-dialog' id='pop-disconnect-gsc' data-anchored>
+        <div class='popover-title'>Disconnect Search Console</div>
+        <p class='pop-msg'>Removes stored tokens but keeps synced data. You can reconnect later.</p>
+        <div class='pop-actions'>
+            <button class='btn btn-sm btn-ghost' data-pop-close>Cancel</button>
+            <button class='btn btn-sm btn-danger' onclick='confirmDisconnect()'>Disconnect</button>
+        </div>
+    </div>
 
     <script>
     let authTokenData = null;
@@ -1471,18 +1553,18 @@ def settings_gsc():
 
         if (data.connected) {{
             el.innerHTML = `
-                <div style='display:flex;gap:24px;flex-wrap:wrap;font-size:13px;'>
-                    <div><strong>Status:</strong> <span style='color:#16a34a;font-weight:600;'>Connected</span></div>
-                    <div><strong>Property:</strong> ${{data.property_url}}</div>
-                    <div><strong>Dates synced:</strong> ${{data.dates_synced}}</div>
-                    <div><strong>Total records:</strong> ${{(data.total_records || 0).toLocaleString()}}</div>
-                    <div><strong>Last sync:</strong> ${{data.last_sync || 'Never'}}</div>
+                <div style='display:flex;gap:8px;flex-wrap:wrap;align-items:center;'>
+                    <span class='chip chip-ok'>Connected</span>
+                    <span class='chip'><span class='chip-key'>Property</span><span class='chip-sep'>·</span><span class='chip-val'>${{data.property_url}}</span></span>
+                    <span class='chip'><span class='chip-key'>Dates synced</span><span class='chip-sep'>·</span><span class='chip-val'>${{data.dates_synced}}</span></span>
+                    <span class='chip'><span class='chip-key'>Records</span><span class='chip-sep'>·</span><span class='chip-val'>${{(data.total_records || 0).toLocaleString()}}</span></span>
+                    <span class='chip'><span class='chip-key'>Last sync</span><span class='chip-sep'>·</span><span class='chip-val'>${{data.last_sync || 'Never'}}</span></span>
                 </div>`;
             document.getElementById('connectedSection').style.display = 'block';
             document.getElementById('setupSection').style.display = 'none';
             renderSyncLog(data.sync_log || []);
         }} else {{
-            el.innerHTML = '<span style="color:#94a3b8;font-size:13px;">Not connected</span>';
+            el.innerHTML = '<span class="chip">Not connected</span>';
             document.getElementById('setupSection').style.display = 'block';
             document.getElementById('connectedSection').style.display = 'none';
         }}
@@ -1490,16 +1572,16 @@ def settings_gsc():
 
     function renderSyncLog(logs) {{
         if (!logs.length) {{
-            document.getElementById('syncLog').innerHTML = '<p style="color:#94a3b8;font-size:13px;">No sync history.</p>';
+            document.getElementById('syncLog').innerHTML = '<p style="color:var(--ink-4);font-size:13px;">No sync history.</p>';
             return;
         }}
-        let html = '<table class="sortable" style="font-size:12px;"><thead><tr>' +
+        let html = '<table><thead><tr>' +
             '<th>Date</th><th>Status</th><th>Records</th><th>Started</th><th>Error</th></tr></thead><tbody>';
         logs.forEach(l => {{
-            const statusColor = l.status === 'success' ? '#16a34a' : '#dc2626';
+            const cls = l.status === 'success' ? 'status-ok' : 'status-err';
             html += `<tr>
                 <td>${{l.sync_date}}</td>
-                <td style="color:${{statusColor}};font-weight:600;">${{l.status}}</td>
+                <td><span class="status-pill ${{cls}}">${{l.status}}</span></td>
                 <td>${{l.records_pulled}}</td>
                 <td>${{l.started_at || ''}}</td>
                 <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;">${{l.error_message || ''}}</td>
@@ -1543,12 +1625,13 @@ def settings_gsc():
             const list = document.getElementById('propertyList');
             list.innerHTML = '';
             if (!data.properties || !data.properties.length) {{
-                list.innerHTML = '<p style="color:#dc2626;font-size:13px;">No properties found for this account.</p>';
+                list.innerHTML = '<p style="color:var(--err);font-size:13px;">No properties found for this account.</p>';
                 return;
             }}
             data.properties.forEach(p => {{
                 const btn = document.createElement('button');
-                btn.className = 'prop-btn';
+                btn.className = 'btn';
+                btn.style.justifyContent = 'flex-start';
                 btn.textContent = p.url + (p.permission ? ' (' + p.permission + ')' : '');
                 btn.onclick = () => selectProperty(p.url);
                 list.appendChild(btn);
@@ -1628,9 +1711,9 @@ def settings_gsc():
                     clearInterval(iv);
                     const ok = d.status === 'done';
                     el.innerHTML = (ok
-                        ? '<span style="color:#16a34a;font-weight:600;">Sync complete.</span>'
-                        : '<span style="color:#dc2626;font-weight:600;">Sync error.</span>')
-                        + '<pre style="margin-top:6px;font-size:11px;max-height:200px;overflow:auto;background:#f8fafc;padding:8px;border-radius:4px;border:1px solid #e2e8f0;">'
+                        ? '<span style="color:var(--ok);font-weight:600;">Sync complete.</span>'
+                        : '<span style="color:var(--err);font-weight:600;">Sync error.</span>')
+                        + '<pre style="margin-top:8px;font-size:11px;max-height:200px;overflow:auto;background:var(--surface-alt);padding:8px;border-radius:var(--radius);border:1px solid var(--border);font-family:var(--font-mono);color:var(--ink-2);">'
                         + escHtml(d.detail || '') + '</pre>';
                     document.querySelectorAll('.btn-sm').forEach(b => b.disabled = false);
                     loadStatus();
@@ -1643,11 +1726,29 @@ def settings_gsc():
         }}, 1500);
     }}
 
-    async function disconnect() {{
-        if (!confirm('Disconnect Google Search Console? This removes stored tokens but keeps synced data.')) return;
+    function closeDisconnectPop() {{
+        const p = document.getElementById('pop-disconnect-gsc');
+        if (p) p.classList.remove('is-open');
+    }}
+    function openDisconnect(ev) {{
+        ev.stopPropagation();
+        const pop = document.getElementById('pop-disconnect-gsc');
+        if (!pop) return;
+        const r = ev.currentTarget.getBoundingClientRect();
+        pop.style.position = 'fixed';
+        pop.style.top = (r.bottom + 4) + 'px';
+        pop.style.left = Math.max(8, r.left) + 'px';
+        pop.style.right = '';
+        pop.classList.add('is-open');
+    }}
+    async function confirmDisconnect() {{
+        closeDisconnectPop();
         await fetch('/api/settings/gsc/disconnect', {{method: 'POST'}});
         location.reload();
     }}
+    document.querySelectorAll('#pop-disconnect-gsc [data-pop-close]').forEach(b => {{
+        b.addEventListener('click', closeDisconnectPop);
+    }});
 
     function escHtml(s) {{ const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }}
 
