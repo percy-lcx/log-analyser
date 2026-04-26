@@ -1214,7 +1214,7 @@ def settings_logs():
 
 @router.get("/api/settings/gsc/status")
 def api_gsc_status():
-    """Return GSC connection status, sync stats, and recent sync log."""
+    """Return GSC connection status, sync stats, and full sync log."""
     import sqlite3 as _sqlite3
     conn = _sqlite3.connect(MANIFEST_DB)
     conn.row_factory = _sqlite3.Row
@@ -1261,8 +1261,12 @@ def api_gsc_status():
     last_row = cur.fetchone()
     last_sync = last_row["last"] if last_row else None
 
-    # Recent sync log
-    cur.execute("SELECT * FROM gsc_sync_log ORDER BY id DESC LIMIT 10")
+    # Full sync log — latest attempt per date (re-syncs supersede prior rows)
+    cur.execute("""
+        SELECT * FROM gsc_sync_log
+        WHERE id IN (SELECT MAX(id) FROM gsc_sync_log GROUP BY sync_date)
+        ORDER BY sync_date DESC
+    """)
     log_rows = [dict(r) for r in cur.fetchall()]
 
     conn.close()
@@ -1517,6 +1521,10 @@ def settings_gsc():
                 <button class='btn' onclick='triggerSync("backfill")' id='btnBackfill'>Full Backfill (~16 Months)</button>
             </div>
             <div style='display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;'>
+                <label style='font-size:13px;'>Date <input type='date' id='syncSingle' class='input'></label>
+                <button class='btn' onclick='triggerSingleSync()'>Sync Single Date</button>
+            </div>
+            <div style='display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;'>
                 <label style='font-size:13px;'>From <input type='date' id='syncFrom' class='input'></label>
                 <label style='font-size:13px;'>To <input type='date' id='syncTo' class='input'></label>
                 <button class='btn' onclick='triggerRangeSync()'>Sync Range</button>
@@ -1525,7 +1533,7 @@ def settings_gsc():
         </div>
 
         <div class='card'>
-            <h2 style='margin-bottom:12px;'>Recent Sync Log</h2>
+            <h2 style='margin-bottom:12px;'>Full Sync Log</h2>
             <div id='syncLog' class='table-wrapper'><p style='color:var(--ink-4);font-size:13px;'>Loading...</p></div>
         </div>
 
@@ -1678,6 +1686,24 @@ def settings_gsc():
             el.textContent = 'Error: ' + e.message;
             document.querySelectorAll('.btn-sm').forEach(b => b.disabled = false);
         }}
+    }}
+
+    function triggerSingleSync() {{
+        const d = document.getElementById('syncSingle').value;
+        if (!d) return alert('Pick a date');
+        const el = document.getElementById('syncOutput');
+        el.textContent = 'Starting sync for ' + d + '...';
+        document.querySelectorAll('.btn-sm').forEach(b => b.disabled = true);
+        fetch('/api/settings/gsc/sync', {{
+            method: 'POST',
+            headers: {{'Content-Type': 'application/json'}},
+            body: JSON.stringify({{mode: 'range', from_date: d, to_date: d}})
+        }}).then(r => r.json()).then(data => {{
+            pollGscTask(data.task_id, el);
+        }}).catch(e => {{
+            el.textContent = 'Error: ' + e.message;
+            document.querySelectorAll('.btn-sm').forEach(b => b.disabled = false);
+        }});
     }}
 
     function triggerRangeSync() {{
