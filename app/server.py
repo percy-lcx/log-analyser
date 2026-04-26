@@ -7,8 +7,10 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+import sqlite3
 
 import duckdb
 from fastapi import FastAPI, Query, Request
@@ -3726,6 +3728,35 @@ def _lv2_static_ver(name: str) -> str:
         return "0"
 
 
+_MANIFEST_DB_PATH = ROOT / "state" / "manifest.sqlite"
+
+
+def _most_recent_ingest_label() -> str:
+    """Relative-time label for the most recent ingest from the manifest.
+    Returns 'no ingests' when the manifest is empty/missing — surfaces the
+    case where data/parsed/ was populated outside of the ingest pipeline."""
+    if not _MANIFEST_DB_PATH.exists():
+        return "no ingests"
+    try:
+        with sqlite3.connect(str(_MANIFEST_DB_PATH)) as conn:
+            row = conn.execute("SELECT MAX(ingested_at_epoch) FROM ingested_files").fetchone()
+    except sqlite3.DatabaseError:
+        return ""
+    ts = row[0] if row else None
+    if not ts:
+        return "no ingests"
+    delta = max(0, int(datetime.now(timezone.utc).timestamp()) - int(ts))
+    if delta < 60:
+        return "just now"
+    if delta < 3600:
+        return f"{delta // 60}m ago"
+    if delta < 86400:
+        return f"{delta // 3600}h ago"
+    if delta < 7 * 86400:
+        return f"{delta // 86400}d ago"
+    return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%b %-d")
+
+
 def _lv2_icon(name: str, cls: str = "") -> str:
     return iconHtml(name, cls)
 
@@ -5483,7 +5514,7 @@ def _lv2_page(title: str, active_nav: str, body: str) -> HTMLResponse:
         "<script src='https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js'></script>"
         "</head>"
         f"<body>"
-        f"{_lv2_topnav(active_nav)}"
+        f"{_lv2_topnav(active_nav, last_ingest_label=_most_recent_ingest_label())}"
         f"<main class='page'>{body}</main>"
         "<div class='drawer-backdrop' id='drawer-backdrop'></div>"
         "<aside class='drawer' id='drawer' aria-hidden='true'></aside>"
