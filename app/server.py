@@ -3977,25 +3977,6 @@ def _lv2_topnav(active: str, *, last_ingest_label: str = "", date_label: Optiona
     return topnav(active, last_ingest_label=last_ingest_label, date_label=date_label)
 
 
-def _lv2_kb_help() -> str:
-    rows = [
-        ("<kbd class='kbd'>/</kbd>", "Focus search"),
-        ("<kbd class='kbd'>?</kbd>", "Show this help"),
-        ("<kbd class='kbd'>esc</kbd>", "Close drawer / popover"),
-        ("<kbd class='kbd'>j</kbd> / <kbd class='kbd'>k</kbd>", "Next / previous row"),
-        ("<kbd class='kbd'>g</kbd>", "Toggle chart"),
-    ]
-    row_html = "".join(f"<div class='kh-row'><span>{lbl}</span><span>{k}</span></div>" for k, lbl in rows)
-    return (
-        "<div class='kb-help' id='kb-help' data-kb-close>"
-        "<div class='kb-help-panel'>"
-        "<h3>Keyboard shortcuts</h3>"
-        f"{row_html}"
-        "<div class='kh-close'><button class='btn btn-sm' data-kb-close>Close</button></div>"
-        "</div></div>"
-    )
-
-
 def _lv2_page_head(title: str, count_text: str, mode: str, params: Dict[str, Any]) -> str:
     modes = [("rows", "Rows"), ("group", "Group"), ("timeseries", "Timeseries")]
     seg_links = "".join(
@@ -4250,7 +4231,6 @@ def _lv2_filter_bar(
         "placeholder='Search or filter   e.g.  status:404  is:bot  path:/api' "
         "spellcheck='false' autocomplete='off'>"
         "</form>"
-        "<span class='sx-kbd'>/</span>"
         "</div>"
     )
 
@@ -4967,7 +4947,7 @@ def _lv2_results_card(
     toolbar = (
         "<div class='table-toolbar'>"
         f"<div class='tt-count'><strong>{total:,}</strong> rows</div>"
-        "<div class='tt-right'>Click a row for details · <kbd class='kbd'>j</kbd> / <kbd class='kbd'>k</kbd> to navigate</div>"
+        "<div class='tt-right'>Click a row for details</div>"
         "</div>"
     )
 
@@ -5508,7 +5488,6 @@ def _lv2_page(title: str, active_nav: str, body: str) -> HTMLResponse:
         "<div class='drawer-backdrop' id='drawer-backdrop'></div>"
         "<aside class='drawer' id='drawer' aria-hidden='true'></aside>"
         "<div class='popover-backdrop' id='popover-backdrop'></div>"
-        f"{_lv2_kb_help()}"
         f"<script src='/static/app.js?v={_lv2_static_ver('app.js')}' defer></script>"
         f"<script src='/static/logviewer.js?v={_lv2_static_ver('logviewer.js')}' defer></script>"
         "</body></html>"

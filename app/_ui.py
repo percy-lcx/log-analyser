@@ -63,8 +63,6 @@ def topnav(active: str, *, last_ingest_label: str, date_label: Optional[str]) ->
         f"<div class='nav-links'>{plain_links}{reports_dropdown}{settings_link}</div>"
         "<div class='nav-util'>"
         f"{''.join(pills)}"
-        f"<button class='btn btn-icon btn-ghost' data-popover-trigger='kb-help-open' "
-        f"title='Shortcuts (?)' aria-label='Keyboard shortcuts'>{iconHtml('keyboard')}</button>"
         "</div>"
         "</nav>"
     )

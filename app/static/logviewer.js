@@ -85,13 +85,11 @@
     }
   });
 
-  // ── Keyboard shortcuts ────────────────────────────────────────────────
+  // ── Escape: close any open overlays ───────────────────────────────────
   document.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') {
       closeAllPopovers();
       closeAllNavDropdowns();
-      var kb = document.getElementById('kb-help');
-      if (kb) kb.classList.remove('is-open');
       var hint = document.querySelector('.search-hint');
       if (hint) hint.style.display = '';
       return;
@@ -100,29 +98,6 @@
       // In search input: handle arrow-nav + Enter inside autocomplete dropdown
       var inp = e.target.closest('.search-input input');
       if (inp) handleSearchKey(e, inp);
-      return;
-    }
-    if (e.key === '/') {
-      var searchInp = document.querySelector('.search-input input');
-      if (searchInp) {
-        e.preventDefault();
-        searchInp.focus();
-        searchInp.select();
-      }
-    } else if (e.key === '?') {
-      var kb = document.getElementById('kb-help');
-      if (kb) {
-        e.preventDefault();
-        kb.classList.toggle('is-open');
-      }
-    }
-  });
-
-  document.addEventListener('click', function (e) {
-    var kb = document.getElementById('kb-help');
-    if (!kb || !kb.classList.contains('is-open')) return;
-    if (e.target === kb || e.target.matches('[data-kb-close]')) {
-      kb.classList.remove('is-open');
     }
   });
 
@@ -843,21 +818,6 @@
     if (!btn) return;
     e.preventDefault();
     navigateRow(btn.getAttribute('data-drawer-nav') === 'next' ? 1 : -1);
-  });
-
-  // ── Global shortcuts: j / k / g ───────────────────────────────────────
-  document.addEventListener('keydown', function (e) {
-    if (isTypingTarget(e.target)) return;
-    if (e.key === 'j') { e.preventDefault(); navigateRow(1); }
-    else if (e.key === 'k') { e.preventDefault(); navigateRow(-1); }
-    else if (e.key === 'g') {
-      e.preventDefault();
-      var url = new URL(window.location.href);
-      if (url.searchParams.get('chart') === '1') url.searchParams.delete('chart');
-      else url.searchParams.set('chart', '1');
-      url.searchParams.delete('page');
-      navigate(url.pathname + url.search);
-    }
   });
 
   // ── Chart metric dropdown: change → navigate to the option's data-href ──
