@@ -98,7 +98,14 @@ if _STATIC_DIR.is_dir():
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 from app.settings import router as settings_router
-from app._ui import iconHtml, topnav, page_head, filter_popover, date_range_popover
+from app._ui import (
+    iconHtml,
+    topnav,
+    page_head,
+    filter_popover,
+    date_range_popover,
+    render_table,
+)
 app.include_router(settings_router)
 
 
@@ -224,41 +231,6 @@ STATUS_CODE_LABELS = {
     "s4xx": "4xx Client Errors",
     "s5xx": "5xx Server Errors",
 }
-
-
-def html_table(rows, columns, max_rows: int = 999, server_paginated: bool = False) -> str:
-    """
-    Styled HTML table. A shared JS controller auto-enhances every
-    .sortable table on DOMContentLoaded: non-server-paginated tables get
-    client-side pagination (25/50/100/200 presets) and full-dataset sort;
-    server-paginated tables (e.g. /logs) flip ?sort=&order= on header click.
-    """
-    head = "".join(
-        f"<th scope='col' data-col='{i}' data-sort-col='{c}' title='{STATUS_CODE_LABELS.get(c, '')}'>{c}</th>"
-        for i, c in enumerate(columns)
-    )
-
-    body_rows = []
-    for i, r in enumerate(rows):
-        if i >= max_rows:
-            break
-        tds = "".join(f"<td>{'' if v is None else v}</td>" for v in r)
-        body_rows.append(f"<tr>{tds}</tr>")
-    body = "\n".join(body_rows)
-
-    table_cls = "sortable server-paginated" if server_paginated else "sortable"
-    table = (
-        f"<table class='{table_cls}'>"
-        f"<thead><tr>{head}</tr></thead>"
-        f"<tbody>{body}</tbody>"
-        "</table>"
-    )
-    return (
-        "<div class='card'>"
-        f"<div class='table-wrapper'>{table}</div>"
-        "<div class='table-controls' data-table-controls hidden></div>"
-        "</div>"
-    )
 
 
 _DB_CONN: Optional[duckdb.DuckDBPyConnection] = None
@@ -1601,71 +1573,6 @@ a[href^='/export'] {
 a[href^='/export']:hover { background: #e2e8f0; color: #1e293b; }
 .content p:has(a[href^='/export']) { margin-bottom: 0; }
 
-/* ── Tables ── */
-.table-wrapper { overflow-x: auto; }
-.table-wrapper table.sortable thead th {
-    background: #f8fafc;
-    box-shadow: 0 1px 0 #e2e8f0;
-}
-table.sortable {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-}
-table.sortable thead tr { background: #f8fafc; }
-table.sortable th {
-    padding: 9px 12px;
-    text-align: left;
-    font-size: 11px;
-    font-weight: 700;
-    color: #64748b;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    border-bottom: 2px solid #e2e8f0;
-    cursor: pointer;
-    user-select: none;
-    white-space: nowrap;
-}
-table.sortable th:hover { color: #1e293b; background: #f1f5f9; }
-table.sortable th.sorted-asc::after  { content: " ▲"; color: #3b82f6; }
-table.sortable th.sorted-desc::after { content: " ▼"; color: #3b82f6; }
-table.sortable td {
-    padding: 8px 12px;
-    border-bottom: 1px solid #f1f5f9;
-    color: #374151;
-    max-width: 480px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-table.sortable tbody tr:hover { background: #f8fafc; }
-table.sortable tbody tr:last-child td { border-bottom: none; }
-
-/* ── Per-table pagination / sort controls ── */
-.table-controls {
-    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-    padding: 8px 12px; border-top: 1px solid #e2e8f0;
-    font-size: 12px; color: #475569; background: #fafbfc;
-    margin: 0 -20px -18px; padding-left: 20px; padding-right: 20px;
-    border-radius: 0 0 8px 8px;
-}
-.table-controls[hidden] { display: none; }
-.table-controls .tc-count { color: #64748b; }
-.table-controls label { display: inline-flex; align-items: center; gap: 6px; font-weight: 500; color: #475569; }
-.table-controls select,
-.table-controls input[type=number] {
-    padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px;
-    font-size: 12px; color: #334155; background: #fff; outline: none;
-}
-.table-controls input[type=number] { width: 60px; }
-.table-controls .tc-nav { display: inline-flex; gap: 4px; align-items: center; }
-.table-controls button {
-    padding: 3px 9px; border: 1px solid #cbd5e1; background: #fff;
-    border-radius: 4px; cursor: pointer; font-size: 12px; color: #3b82f6;
-}
-.table-controls button:hover:not(:disabled) { background: #eff6ff; }
-.table-controls button:disabled { color: #cbd5e1; cursor: default; }
-
 /* ── No-data notice ── */
 .no-data { color: #94a3b8; font-style: italic; padding: 8px 0; }
 
@@ -1840,182 +1747,9 @@ table.sortable tbody tr:last-child td { border-bottom: none; }
     });
 })();
 
-const BYTE_UNITS = { B: 1, KB: 1024, MB: 1048576, GB: 1073741824, TB: 1099511627776 };
-function parseNumber(s) {
-    const cleaned = s.replace(/[,\s]/g, "").replace(/%$/, "");
-    if (!cleaned) return null;
-    const byteMatch = cleaned.match(/^([\d.]+)(B|KB|MB|GB|TB)$/i);
-    if (byteMatch) {
-        const n = parseFloat(byteMatch[1]);
-        const mult = BYTE_UNITS[byteMatch[2].toUpperCase()] ?? 1;
-        return Number.isFinite(n) ? n * mult : null;
-    }
-    const n = Number(cleaned);
-    return Number.isFinite(n) ? n : null;
-}
-
-const PER_PAGE_PRESETS = [25, 50, 100, 200];
-const DEFAULT_PER_PAGE = 50;
-const DATE_RE = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?$/;
-
-function cellValue(tr, idx) {
-    return (tr.cells[idx]?.innerText ?? "").trim();
-}
-function cmpValues(a, b) {
-    const na = parseNumber(a), nb = parseNumber(b);
-    if (na !== null && nb !== null) return na - nb;
-    if (DATE_RE.test(a) && DATE_RE.test(b)) {
-        const da = Date.parse(a), db = Date.parse(b);
-        if (!Number.isNaN(da) && !Number.isNaN(db)) return da - db;
-    }
-    return a.localeCompare(b);
-}
-
-function enhanceTable(table) {
-    if (table.dataset.enhanced === "1") return;
-    table.dataset.enhanced = "1";
-
-    const serverPaginated = table.classList.contains("server-paginated");
-    const tbody = table.tBodies[0];
-    if (!tbody) return;
-    const headers = table.tHead ? Array.from(table.tHead.rows[0].cells) : [];
-
-    if (serverPaginated) {
-        // /logs: headers flip ?sort=&order= and reload. Reflect current
-        // URL state in the header indicator; do not touch tbody/controls.
-        const url = new URL(window.location);
-        const curSort = url.searchParams.get("sort");
-        const curOrder = (url.searchParams.get("order") || "desc").toLowerCase();
-        headers.forEach(th => {
-            const col = th.getAttribute("data-sort-col");
-            if (col && col === curSort) {
-                th.classList.add(curOrder === "asc" ? "sorted-asc" : "sorted-desc");
-            }
-            th.addEventListener("click", () => {
-                if (!col) return;
-                const u = new URL(window.location);
-                const prevSort = u.searchParams.get("sort");
-                const prevOrder = (u.searchParams.get("order") || "desc").toLowerCase();
-                const nextOrder = (prevSort === col && prevOrder === "asc") ? "desc" : "asc";
-                u.searchParams.set("sort", col);
-                u.searchParams.set("order", nextOrder);
-                u.searchParams.set("page", "1");
-                window.location.assign(u.toString());
-            });
-        });
-        return;
-    }
-
-    // Client-paginated path: cache full row set, re-render slice on sort/page change.
-    const state = {
-        rows: Array.from(tbody.rows),
-        sortIdx: null,
-        sortAsc: true,
-        page: 1,
-        perPage: DEFAULT_PER_PAGE,
-    };
-
-    headers.forEach((th, idx) => {
-        th.addEventListener("click", () => {
-            const asc = !(state.sortIdx === idx && state.sortAsc);
-            state.sortIdx = idx;
-            state.sortAsc = asc;
-            state.rows.sort((ra, rb) => {
-                const r = cmpValues(cellValue(ra, idx), cellValue(rb, idx));
-                return asc ? r : -r;
-            });
-            headers.forEach(h => h.classList.remove("sorted-asc", "sorted-desc"));
-            th.classList.add(asc ? "sorted-asc" : "sorted-desc");
-            state.page = 1;
-            render();
-        });
-    });
-
-    const card = table.closest(".card");
-    const controls = card ? card.querySelector("[data-table-controls]") : null;
-    const total = state.rows.length;
-
-    if (!controls || total <= PER_PAGE_PRESETS[0]) {
-        // Small table: no controls, render once.
-        render();
-        return;
-    }
-
-    controls.hidden = false;
-    const ppOptions = PER_PAGE_PRESETS.map(n => `<option value="${n}">${n}</option>`).join("");
-    controls.innerHTML =
-        `<span class="tc-count"></span>` +
-        `<label>Per page <select class="tc-pp">${ppOptions}</select></label>` +
-        `<span class="tc-nav">` +
-            `<button type="button" data-nav="first" title="First">&laquo;</button>` +
-            `<button type="button" data-nav="prev" title="Prev">&lsaquo;</button>` +
-            `<label>Page <input type="number" class="tc-page" min="1" value="1"> of <span class="tc-total-pages"></span></label>` +
-            `<button type="button" data-nav="next" title="Next">&rsaquo;</button>` +
-            `<button type="button" data-nav="last" title="Last">&raquo;</button>` +
-        `</span>`;
-
-    const ppSel = controls.querySelector(".tc-pp");
-    ppSel.value = String(state.perPage);
-    ppSel.addEventListener("change", () => {
-        const v = parseInt(ppSel.value, 10);
-        state.perPage = Number.isFinite(v) && v > 0 ? v : DEFAULT_PER_PAGE;
-        state.page = 1;
-        render();
-    });
-
-    controls.querySelectorAll("[data-nav]").forEach(btn => {
-        btn.addEventListener("click", () => {
-            const tp = Math.max(1, Math.ceil(state.rows.length / state.perPage));
-            const nav = btn.getAttribute("data-nav");
-            if (nav === "first") state.page = 1;
-            else if (nav === "prev") state.page = Math.max(1, state.page - 1);
-            else if (nav === "next") state.page = Math.min(tp, state.page + 1);
-            else if (nav === "last") state.page = tp;
-            render();
-        });
-    });
-
-    const pageInput = controls.querySelector(".tc-page");
-    const commitPage = () => {
-        const tp = Math.max(1, Math.ceil(state.rows.length / state.perPage));
-        let v = parseInt(pageInput.value, 10);
-        if (!Number.isFinite(v) || v < 1) v = 1;
-        if (v > tp) v = tp;
-        state.page = v;
-        render();
-    };
-    pageInput.addEventListener("change", commitPage);
-    pageInput.addEventListener("keydown", e => {
-        if (e.key === "Enter") { e.preventDefault(); commitPage(); }
-    });
-
-    render();
-
-    function render() {
-        const total = state.rows.length;
-        const tp = Math.max(1, Math.ceil(total / state.perPage));
-        if (state.page > tp) state.page = tp;
-        const start = (state.page - 1) * state.perPage;
-        const end = Math.min(total, start + state.perPage);
-        tbody.replaceChildren(...state.rows.slice(start, end));
-        if (!controls || controls.hidden) return;
-        controls.querySelector(".tc-count").textContent =
-            `${total.toLocaleString()} rows · showing ${(start + 1).toLocaleString()}-${end.toLocaleString()}`;
-        controls.querySelector(".tc-total-pages").textContent = tp.toLocaleString();
-        pageInput.value = String(state.page);
-        pageInput.max = String(tp);
-        const firstBtn = controls.querySelector('[data-nav="first"]');
-        const prevBtn = controls.querySelector('[data-nav="prev"]');
-        const nextBtn = controls.querySelector('[data-nav="next"]');
-        const lastBtn = controls.querySelector('[data-nav="last"]');
-        firstBtn.disabled = prevBtn.disabled = state.page <= 1;
-        nextBtn.disabled = lastBtn.disabled = state.page >= tp;
-    }
-}
-
-function enhanceAllTables(root) {
-    (root || document).querySelectorAll("table.sortable").forEach(enhanceTable);
-}
+// (Sort + client pagination controller now lives in app/static/app.js,
+// keyed on table.log-table.sortable + the .pager DOM. window.enhanceAllTables
+// is exposed there for the lazy-loaded /reports/bots tab panels below.)
 
 // Resize every ECharts instance on the page when the window resizes.
 // ECharts charts are fixed-size at init and don't auto-respond to layout changes.
@@ -2029,8 +1763,6 @@ function resizeAllECharts() {
 window.addEventListener('resize', resizeAllECharts);
 
 document.addEventListener("DOMContentLoaded", () => {
-    enhanceAllTables();
-
     // Tab navigation
     (function() {
         var tabBtns = document.querySelectorAll('.tab-btn');
@@ -2078,7 +1810,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     panel.removeAttribute('data-lazy-loaded-from');
                     panel.setAttribute('data-lazy-loaded', '1');
                     executeScripts(panel);
-                    enhanceAllTables(panel);
+                    if (window.enhanceAllTables) window.enhanceAllTables(panel);
                 })
                 .catch(function(err) {
                     panel.innerHTML = "<p style='color:#e74c3c;'>Failed to load: " + (err && err.message ? err.message : 'error') + "</p>";
@@ -2814,12 +2546,12 @@ def locales(
         breakdown += bar_chart(chart_rows1[:chart_limit], chart_cols1, x_col="locale",
                                y_cols=["hits_human", "hits_bot"],
                                title=f"Top {chart_limit} locales — human vs bot", barmode="stack")
-        breakdown += html_table(rows1, cols1)
+        breakdown += render_table(rows1, cols1)
         breakdown += "<h2>Non-resource hits (excludes Nuxt/static resources)</h2>"
         breakdown += bar_chart(rows2[:chart_limit], cols2, x_col="locale",
                                y_cols=["hits_human_non_resource", "hits_bot_non_resource"],
                                title=f"Top {chart_limit} locales (non-resource) — human vs bot", barmode="stack")
-        breakdown += html_table(rows2, cols2)
+        breakdown += render_table(rows2, cols2)
 
 
     # ── Locale x Group Heatmap tab ──
@@ -2937,7 +2669,7 @@ def locales(
         title_hm = "Hits heatmap — locale × URL group" + title_suffix + (" (content only)" if content_only else "")
         heatmap_content += heatmap_chart(heatmap_rows, cols_lg, x_col="url_group", y_col="locale",
                                          z_col="hits", title=title_hm)
-        heatmap_content += html_table(rows_lg, cols_lg, max_rows=min(int(limit), 500))
+        heatmap_content += render_table(rows_lg, cols_lg, max_rows=min(int(limit), 500))
 
     tabs = tab_bar([("breakdown", "Locale Breakdown"), ("heatmap", "Locale × Group Heatmap")])
     body += tabs
@@ -3140,7 +2872,7 @@ def gsc_report(
         f"&limit={int(limit)}'>Export CSV</a></p>"
     )
     perf += "<h2>Top Pages by Clicks</h2>"
-    perf += html_table(_format_gsc_rows(rows_tc, cols_tc), cols_tc, max_rows=min(int(limit), 500))
+    perf += render_table(_format_gsc_rows(rows_tc, cols_tc), cols_tc, max_rows=min(int(limit), 500))
 
     # Top queries by impressions (from raw GSC data, not the joined aggregate)
     gsc_data_dir = ROOT / "data" / "gsc"
@@ -3171,7 +2903,7 @@ def gsc_report(
         """
         cols_q, rows_q = run_query(gsc_raw_paths, query_sql)
         perf += "<h2>Top Queries by Impressions</h2>"
-        perf += html_table(_format_gsc_rows(rows_q, cols_q), cols_q, max_rows=min(int(limit), 500))
+        perf += render_table(_format_gsc_rows(rows_q, cols_q), cols_q, max_rows=min(int(limit), 500))
 
     # ── Tab: Crawl-to-Index Efficiency ─────────────────────────────────
     eff = ""
@@ -3198,7 +2930,7 @@ def gsc_report(
         f"&limit={int(limit)}'>Export CSV</a></p>"
     )
     if rows_hc:
-        eff += html_table(rows_hc, cols_hc, max_rows=min(int(limit), 500))
+        eff += render_table(rows_hc, cols_hc, max_rows=min(int(limit), 500))
     else:
         eff += "<p style='color:#94a3b8;'>No pages found with crawl activity but zero impressions.</p>"
 
@@ -3225,7 +2957,7 @@ def gsc_report(
         f"&limit={int(limit)}'>Export CSV</a></p>"
     )
     if rows_nc:
-        eff += html_table(_format_gsc_rows(rows_nc, cols_nc), cols_nc, max_rows=min(int(limit), 500))
+        eff += render_table(_format_gsc_rows(rows_nc, cols_nc), cols_nc, max_rows=min(int(limit), 500))
     else:
         eff += "<p style='color:#94a3b8;'>No pages found with impressions but zero crawl activity.</p>"
 
@@ -3457,7 +3189,7 @@ def strategic_crawl_report(
         body += bar_chart(chart_rows, ["strategic_class", "crawl_hits"],
                           x_col="strategic_class", y_col="crawl_hits",
                           title=f"{bot_family} crawl hits by class")
-        body += html_table(
+        body += render_table(
             [[lab, f"{hits:,}", pct_of_total(hits), f"{pages:,}"] for lab, hits, pages in relabeled],
             ["Class", "Crawl hits", "% of total", "Unique pages"],
             max_rows=20,
@@ -3483,7 +3215,7 @@ def strategic_crawl_report(
         "and no GSC ranking position. Typical candidates for noindex / blocking / canonicalization.</p>"
     )
     if rows_ns:
-        body += html_table(rows_ns, cols_ns, max_rows=min(int(limit), 500))
+        body += render_table(rows_ns, cols_ns, max_rows=min(int(limit), 500))
     else:
         body += "<p class='no-data'>No non-strategic URLs in this range.</p>"
 
@@ -3505,7 +3237,7 @@ def strategic_crawl_report(
         f"Most-crawled URLs that are indexed and/or ranking. Crawl budget well spent.</p>"
     )
     if rows_s:
-        body += html_table(rows_s, cols_s, max_rows=min(int(limit), 500))
+        body += render_table(rows_s, cols_s, max_rows=min(int(limit), 500))
     else:
         body += "<p class='no-data'>No strategic URLs in this range.</p>"
 
@@ -3532,7 +3264,7 @@ def strategic_crawl_report(
         body += bar_chart(rows_seg, cols_seg, x_col="path_segment_1",
                           y_col="crawl_hits",
                           title="Non-strategic crawl by segment 1")
-        body += html_table(rows_seg, cols_seg, max_rows=30)
+        body += render_table(rows_seg, cols_seg, max_rows=30)
     else:
         body += "<p class='no-data'>No non-strategic crawl to break down.</p>"
 
@@ -4530,7 +4262,7 @@ def _render_log_group_mode(
             row[bytes_idx] = fmt_bytes(row[bytes_idx])
         display_rows.append(row)
 
-    return chart_html + html_table(display_rows, cols, max_rows=int(limit))
+    return chart_html + render_table(display_rows, cols, max_rows=int(limit))
 
 
 def _render_log_timeseries_mode(
@@ -6140,9 +5872,8 @@ def _lv2_results_card(
 
 # ── Phase 4 report shell ────────────────────────────────────────────────
 # Wraps existing report bodies (/reports/summary, /reports/locales, /reports/gsc)
-# in the new lv2 chrome. The body itself is untouched — the helpers
-# kpi_card/issue_card/recommendations_section/html_table/*_chart keep rendering
-# their existing markup; only the chrome and styling change.
+# in the new lv2 chrome. Tables use render_table; charts/KPIs keep their
+# helpers — the chrome and styling change, the body data does not.
 def _lv2_report_shell(
     *,
     title: str,

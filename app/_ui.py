@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from html import escape as _esc
-from typing import Optional
+from typing import Any, Callable, Optional
 
 
 def iconHtml(name: str, cls: str = "", size: int = 14) -> str:
@@ -182,6 +182,133 @@ def filter_popover(
         f"{footer_right_html}"
         "</div>"
         "</div>"
+        "</div>"
+    )
+
+
+def status_pill_html(value: Any) -> str:
+    """HTTP status code → coloured pill. Non-numeric values pass through escaped."""
+    if value is None or value == "":
+        return ""
+    try:
+        s = int(value)
+    except (TypeError, ValueError):
+        return _esc(str(value))
+    if 200 <= s < 300:
+        cls = "status-2xx"
+    elif 300 <= s < 400:
+        cls = "status-3xx"
+    elif 400 <= s < 500:
+        cls = "status-4xx"
+    elif 500 <= s < 600:
+        cls = "status-5xx"
+    else:
+        cls = ""
+    return f"<span class='status-pill {cls}'>{s}</span>"
+
+
+def method_pill_html(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    m = _esc(str(value))
+    return f"<span class='method method-{m}'>{m}</span>"
+
+
+_PILLIFY_COLS = {
+    "status": status_pill_html,
+    "method": method_pill_html,
+    "s2xx": status_pill_html,
+    "s3xx": status_pill_html,
+    "s4xx": status_pill_html,
+    "s5xx": status_pill_html,
+}
+
+
+def render_table(
+    rows: list,
+    columns: list,
+    *,
+    sortable: bool = True,
+    server_paginated: bool = False,
+    column_renderers: Optional[dict[str, Callable[[Any], str]]] = None,
+    empty_text: str = "No data.",
+    max_rows: Optional[int] = None,
+    count_label: Optional[str] = None,
+    toolbar_right_html: str = "",
+    pager_html: str = "",
+) -> str:
+    """v2 table component.
+
+    Auto-detects status/method-style columns by name unless `column_renderers`
+    overrides. `column_renderers` keys are column names; values take the cell
+    value and return HTML. Sticky header by default; `sortable=True` adds
+    `.sort-arrow` affordance and the JS controller hooks up sort + paging.
+    """
+    cols = list(columns)
+    renderers: dict[str, Callable[[Any], str]] = dict(_PILLIFY_COLS)
+    if column_renderers:
+        renderers.update(column_renderers)
+
+    if not rows:
+        return (
+            "<div class='table-wrap'>"
+            f"<div class='empty'>{_esc(empty_text)}</div>"
+            "</div>"
+        )
+
+    head_cells = []
+    for i, c in enumerate(cols):
+        sort_attr = f" data-sort-col='{_esc(str(c), quote=True)}'" if sortable else ""
+        arrow = "<span class='sort-arrow'>↕</span>" if sortable else ""
+        head_cells.append(
+            f"<th scope='col' data-col='{i}'{sort_attr}>{_esc(str(c))}{arrow}</th>"
+        )
+    thead = "<thead><tr>" + "".join(head_cells) + "</tr></thead>"
+
+    visible = rows if max_rows is None else rows[: max(0, int(max_rows))]
+    body_rows = []
+    for r in visible:
+        cells = []
+        for c, v in zip(cols, r):
+            if v is None:
+                cells.append("<td></td>")
+                continue
+            renderer = renderers.get(c)
+            if renderer is not None:
+                cells.append(f"<td>{renderer(v)}</td>")
+            elif isinstance(v, str):
+                cells.append(f"<td>{v}</td>")
+            else:
+                cells.append(f"<td>{_esc(str(v))}</td>")
+        body_rows.append("<tr>" + "".join(cells) + "</tr>")
+    tbody = "<tbody>" + "".join(body_rows) + "</tbody>"
+
+    cls_parts = ["log-table"]
+    if sortable:
+        cls_parts.append("sortable")
+    if server_paginated:
+        cls_parts.append("server-paginated")
+    table_cls = " ".join(cls_parts)
+
+    if count_label is None:
+        count = len(rows)
+        if max_rows is not None and count > int(max_rows):
+            count_label = f"<strong>{int(max_rows):,}</strong> of {count:,} rows"
+        else:
+            count_label = f"<strong>{count:,}</strong> {'row' if count == 1 else 'rows'}"
+
+    toolbar = (
+        "<div class='table-toolbar'>"
+        f"<div class='tt-count'>{count_label}</div>"
+        f"<div class='tt-right'>{toolbar_right_html}</div>"
+        "</div>"
+    )
+
+    return (
+        "<div class='table-wrap'>"
+        f"{toolbar}"
+        f"<div class='table-scroll'><table class='{table_cls}'>{thead}{tbody}</table></div>"
+        f"{pager_html}"
         "</div>"
     )
 
