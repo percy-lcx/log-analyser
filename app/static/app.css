@@ -949,6 +949,15 @@ table.log-table td.col-mono{ font-family: var(--font-mono); font-size: 11.5px; c
 .status-pending{ background: var(--warn-soft); color: var(--warn); font-family: var(--font-sans); min-width: 0;}
 .status-err{ background: var(--err-soft); color: var(--err); font-family: var(--font-sans); min-width: 0;}
 
+/* Count cells in s2xx/s3xx/s4xx/s5xx columns — value is a request count,
+   so tint by column (severity) rather than by value. */
+.count-tint{ font-variant-numeric: tabular-nums; font-weight: 500;}
+.count-tint-2xx{ color: var(--ok);}
+.count-tint-3xx{ color: var(--accent-ink);}
+.count-tint-4xx{ color: var(--warn);}
+.count-tint-5xx{ color: var(--err);}
+.count-zero{ color: var(--ink-4); font-variant-numeric: tabular-nums;}
+
 /* Method pill */
 .method{
   display:inline-block;

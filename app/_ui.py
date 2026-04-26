@@ -217,13 +217,31 @@ def method_pill_html(value: Any) -> str:
     return f"<span class='method method-{m}'>{m}</span>"
 
 
-_PILLIFY_COLS = {
+def _count_tint_html(klass: str) -> Callable[[Any], str]:
+    """Tint a count cell with a severity-keyed text color.
+    Used for columns whose name (s2xx/s3xx/s4xx/s5xx) implies a status class
+    but whose value is a request count, not a status code. Zero values stay
+    subdued so a long column of zeroes doesn't shout."""
+    def render(value: Any) -> str:
+        if value is None or value == "":
+            return ""
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            return _esc(str(value))
+        if n == 0:
+            return "<span class='count-zero'>0</span>"
+        return f"<span class='count-tint {klass}'>{n:,}</span>"
+    return render
+
+
+_PILLIFY_COLS: dict[str, Callable[[Any], str]] = {
     "status": status_pill_html,
     "method": method_pill_html,
-    "s2xx": status_pill_html,
-    "s3xx": status_pill_html,
-    "s4xx": status_pill_html,
-    "s5xx": status_pill_html,
+    "s2xx": _count_tint_html("count-tint-2xx"),
+    "s3xx": _count_tint_html("count-tint-3xx"),
+    "s4xx": _count_tint_html("count-tint-4xx"),
+    "s5xx": _count_tint_html("count-tint-5xx"),
 }
 
 
