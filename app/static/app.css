@@ -34,7 +34,7 @@
 [data-density="compact"]{ --density-row: 26px; --density-pad: 5px; }
 [data-density="cozy"]   { --density-row: 42px; --density-pad: 11px; }
 
-body[data-app="logviewer-v2"]{
+body{
   margin:0; padding:0;
   font-family: var(--font-sans);
   font-size: 13px;
@@ -44,15 +44,15 @@ body[data-app="logviewer-v2"]{
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
-body[data-app="logviewer-v2"] *,
-body[data-app="logviewer-v2"] *::before,
-body[data-app="logviewer-v2"] *::after{ box-sizing: border-box; }
-body[data-app="logviewer-v2"] button{ font:inherit; color:inherit; background:none; border:none; cursor:pointer; }
-body[data-app="logviewer-v2"] a{ color: var(--accent); text-decoration:none; }
-body[data-app="logviewer-v2"] a:hover{ text-decoration:underline; }
-body[data-app="logviewer-v2"] input,
-body[data-app="logviewer-v2"] select,
-body[data-app="logviewer-v2"] textarea{ font:inherit; color:inherit; }
+*,
+*::before,
+*::after{ box-sizing: border-box; }
+button{ font:inherit; color:inherit; background:none; border:none; cursor:pointer; }
+a{ color: var(--accent); text-decoration:none; }
+a:hover{ text-decoration:underline; }
+input,
+select,
+textarea{ font:inherit; color:inherit; }
 
 /* ── Top nav ── */
 .topnav{
@@ -749,11 +749,11 @@ body[data-app="logviewer-v2"] textarea{ font:inherit; color:inherit; }
    Reuses .popover / .pop-checklist / .pop-checklist-search primitives above.
    .hm-popover is a `position: fixed` modal modifier on .popover. Trigger and
    modal-chrome (.hm-pop-*) are heatmap-specific.                          */
-body[data-app="logviewer-v2"] .hm-filter-row{
+.hm-filter-row{
   display: flex; align-items: center; gap: 10px;
   margin: 0 0 14px;
 }
-body[data-app="logviewer-v2"] .hm-popover-trigger{
+.hm-popover-trigger{
   display: inline-flex; align-items: center; gap: 6px;
   height: 34px; padding: 0 14px;
   border: 1px dashed var(--border-strong); border-radius: var(--radius);
@@ -761,34 +761,34 @@ body[data-app="logviewer-v2"] .hm-popover-trigger{
   font-size: 13px; font-weight: 500;
   cursor: pointer;
 }
-body[data-app="logviewer-v2"] .hm-popover-trigger:hover{
+.hm-popover-trigger:hover{
   color: var(--ink-1); border-color: var(--ink-3); border-style: solid;
 }
-body[data-app="logviewer-v2"] .hm-popover-trigger[aria-expanded='true']{
+.hm-popover-trigger[aria-expanded='true']{
   border-style: solid; border-color: var(--accent);
   color: var(--accent-ink); background: var(--accent-soft);
 }
-body[data-app="logviewer-v2"] .hm-trigger-badge{
+.hm-trigger-badge{
   background: var(--accent); color: #fff; border-radius: 999px;
   padding: 0 7px; font-size: 11px; line-height: 18px;
   min-width: 18px; text-align: center; font-weight: 700;
 }
-body[data-app="logviewer-v2"] .hm-trigger-caret{
+.hm-trigger-caret{
   font-size: 11px; opacity: .7; margin-left: 2px;
 }
-body[data-app="logviewer-v2"] .hm-trigger-clear{
+.hm-trigger-clear{
   font-size: 12px; color: var(--ink-3); text-decoration: none;
   padding: 4px 8px; border-radius: 4px;
 }
-body[data-app="logviewer-v2"] .hm-trigger-clear:hover{
+.hm-trigger-clear:hover{
   background: var(--surface-alt); color: var(--ink-1); text-decoration: none;
 }
 
 /* Hidden form ferries popover state to a plain GET submit */
-body[data-app="logviewer-v2"] .hm-form{ display: none; }
+.hm-form{ display: none; }
 
 /* Make .popover render as a fixed-position modal when .hm-popover is added */
-body[data-app="logviewer-v2"] .popover.hm-popover{
+.popover.hm-popover{
   position: fixed; inset: 32px;
   min-width: 0;
   padding: 0;
@@ -796,67 +796,67 @@ body[data-app="logviewer-v2"] .popover.hm-popover{
   flex-direction: column;
   overflow: hidden;
 }
-body[data-app="logviewer-v2"] .popover.hm-popover.is-open{ display: flex; }
+.popover.hm-popover.is-open{ display: flex; }
 
-body[data-app="logviewer-v2"] .hm-pop-head{
+.hm-pop-head{
   padding: 14px 18px; border-bottom: 1px solid var(--border);
   display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
   flex: 0 0 auto;
 }
-body[data-app="logviewer-v2"] .hm-pop-head h4{
+.hm-pop-head h4{
   font-size: 14px; font-weight: 600; color: var(--ink-1);
   margin: 0;
 }
-body[data-app="logviewer-v2"] .hm-pop-head p{
+.hm-pop-head p{
   font-size: 12.5px; color: var(--ink-3);
   margin: 3px 0 0;
 }
-body[data-app="logviewer-v2"] .hm-pop-close{
+.hm-pop-close{
   background: transparent; border: none;
   font-size: 22px; line-height: 1; color: var(--ink-3);
   cursor: pointer; padding: 0 4px;
   margin-top: -2px;
 }
-body[data-app="logviewer-v2"] .hm-pop-close:hover{ color: var(--ink-1); }
-body[data-app="logviewer-v2"] .hm-pop-body{
+.hm-pop-close:hover{ color: var(--ink-1); }
+.hm-pop-body{
   flex: 1; min-height: 0; overflow: auto;
   padding: 18px 22px;
 }
-body[data-app="logviewer-v2"] .hm-pop-section{ margin-bottom: 22px; }
-body[data-app="logviewer-v2"] .hm-pop-section:last-child{ margin-bottom: 0; }
-body[data-app="logviewer-v2"] .hm-pop-section-head{
+.hm-pop-section{ margin-bottom: 22px; }
+.hm-pop-section:last-child{ margin-bottom: 0; }
+.hm-pop-section-head{
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px; margin-bottom: 8px;
 }
-body[data-app="logviewer-v2"] .hm-pop-section-label{
+.hm-pop-section-label{
   font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
   color: var(--ink-3); font-weight: 700;
 }
-body[data-app="logviewer-v2"] .hm-pop-section-actions{
+.hm-pop-section-actions{
   display: inline-flex; gap: 4px;
 }
-body[data-app="logviewer-v2"] .hm-pop-mini{
+.hm-pop-mini{
   background: transparent; border: none;
   font: inherit; font-size: 11.5px; font-weight: 500;
   color: var(--accent); cursor: pointer;
   padding: 2px 6px; border-radius: 4px;
 }
-body[data-app="logviewer-v2"] .hm-pop-mini:hover{
+.hm-pop-mini:hover{
   background: var(--accent-soft); text-decoration: underline;
 }
-body[data-app="logviewer-v2"] .hm-pop-foot{
+.hm-pop-foot{
   padding: 12px 18px; border-top: 1px solid var(--border);
   background: var(--surface-alt);
   display: flex; align-items: center; gap: 12px;
   flex: 0 0 auto;
 }
-body[data-app="logviewer-v2"] .hm-pop-foot-right{
+.hm-pop-foot-right{
   margin-left: auto;
   display: inline-flex; align-items: center; gap: 12px;
 }
-body[data-app="logviewer-v2"] .hm-pop-active{ font-size: 12px; color: var(--ink-3); }
-body[data-app="logviewer-v2"] .hm-pop-active span{ font-weight: 600; color: var(--ink-1); }
-body[data-app="logviewer-v2"] .hm-pop-clear-btn{
+.hm-pop-active{ font-size: 12px; color: var(--ink-3); }
+.hm-pop-active span{ font-weight: 600; color: var(--ink-1); }
+.hm-pop-clear-btn{
   display: inline-flex; align-items: center;
   height: 34px; padding: 0 14px;
   border: 1px solid var(--border); border-radius: var(--radius);
@@ -864,10 +864,10 @@ body[data-app="logviewer-v2"] .hm-pop-clear-btn{
   font-size: 13px; font-weight: 500;
   cursor: pointer;
 }
-body[data-app="logviewer-v2"] .hm-pop-clear-btn:hover{
+.hm-pop-clear-btn:hover{
   border-color: var(--ink-3); color: var(--ink-1);
 }
-body[data-app="logviewer-v2"] .hm-pop-apply{
+.hm-pop-apply{
   display: inline-flex; align-items: center;
   height: 34px; padding: 0 18px;
   border: 1px solid var(--ink-1); border-radius: var(--radius);
@@ -875,12 +875,12 @@ body[data-app="logviewer-v2"] .hm-pop-apply{
   font-size: 13px; font-weight: 600;
   cursor: pointer;
 }
-body[data-app="logviewer-v2"] .hm-pop-apply:hover{
+.hm-pop-apply:hover{
   background: var(--ink-2); border-color: var(--ink-2);
 }
 
 /* Display-section toggle — checkbox styled as a chip */
-body[data-app="logviewer-v2"] .hm-pop-toggle{
+.hm-pop-toggle{
   display: inline-flex; align-items: center; gap: 8px;
   padding: 7px 12px;
   border: 1px solid var(--border); border-radius: var(--radius);
@@ -888,14 +888,14 @@ body[data-app="logviewer-v2"] .hm-pop-toggle{
   font-size: 13px; color: var(--ink-2);
   cursor: pointer; user-select: none;
 }
-body[data-app="logviewer-v2"] .hm-pop-toggle:hover{
+.hm-pop-toggle:hover{
   border-color: var(--ink-3); color: var(--ink-1);
 }
-body[data-app="logviewer-v2"] .hm-pop-toggle:has(input:checked){
+.hm-pop-toggle:has(input:checked){
   border-color: var(--accent); background: var(--accent-soft); color: var(--accent-ink);
   font-weight: 600;
 }
-body[data-app="logviewer-v2"] .hm-pop-toggle input[type=checkbox]{
+.hm-pop-toggle input[type=checkbox]{
   accent-color: var(--accent); margin: 0;
 }
 
@@ -1102,7 +1102,7 @@ table.log-table td.col-mono{ font-family: var(--font-mono); font-size: 11.5px; c
 
 /* ── Report body styles (kpi cards, issues, recommendations, tabs, ms-multi-select) ──
    Scoped to the lv2 body so un-migrated routes keep their legacy appearance. */
-body[data-app="logviewer-v2"] .card{
+.card{
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -1111,194 +1111,194 @@ body[data-app="logviewer-v2"] .card{
   box-shadow: var(--shadow-sm);
   overflow: hidden;
 }
-body[data-app="logviewer-v2"] h2{
+h2{
   font-size: 12px; font-weight: 700; color: var(--ink-2);
   text-transform: uppercase; letter-spacing: 0.06em;
   margin: 18px 0 10px;
 }
 
 /* Headings/paragraphs default */
-body[data-app="logviewer-v2"] p{ margin-bottom: 8px; }
+p{ margin-bottom: 8px; }
 
 /* KPI */
-body[data-app="logviewer-v2"] .kpi-grid{
+.kpi-grid{
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
   gap: 12px; margin-bottom: 18px;
 }
-body[data-app="logviewer-v2"] .kpi-card{
+.kpi-card{
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
   padding: 14px 16px; box-shadow: var(--shadow-sm);
 }
-body[data-app="logviewer-v2"] .kpi-label{
+.kpi-label{
   font-size: 10.5px; font-weight: 600; color: var(--ink-3);
   text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;
 }
-body[data-app="logviewer-v2"] .kpi-value{
+.kpi-value{
   font-size: 24px; font-weight: 700; color: var(--ink-1);
   margin-bottom: 4px; font-variant-numeric: tabular-nums;
 }
-body[data-app="logviewer-v2"] .kpi-change{ font-size: 12px; font-weight: 600; }
-body[data-app="logviewer-v2"] .kpi-trend-up-good{ color: var(--ok); }
-body[data-app="logviewer-v2"] .kpi-trend-up-bad{ color: var(--err); }
-body[data-app="logviewer-v2"] .kpi-trend-down-good{ color: var(--ok); }
-body[data-app="logviewer-v2"] .kpi-trend-down-bad{ color: var(--err); }
-body[data-app="logviewer-v2"] .kpi-trend-flat{ color: var(--ink-3); }
+.kpi-change{ font-size: 12px; font-weight: 600; }
+.kpi-trend-up-good{ color: var(--ok); }
+.kpi-trend-up-bad{ color: var(--err); }
+.kpi-trend-down-good{ color: var(--ok); }
+.kpi-trend-down-bad{ color: var(--err); }
+.kpi-trend-flat{ color: var(--ink-3); }
 
 /* Issues */
-body[data-app="logviewer-v2"] .issue-list{
+.issue-list{
   display: grid; grid-template-columns: 1fr; gap: 10px; margin-bottom: 18px;
 }
-body[data-app="logviewer-v2"] .issue-item{
+.issue-item{
   display: grid; grid-template-columns: auto 1fr auto; align-items: center;
   gap: 12px; padding: 12px 16px;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm);
 }
-body[data-app="logviewer-v2"] .issue-severity{
+.issue-severity{
   font-size: 10.5px; font-weight: 700; padding: 3px 8px;
   border-radius: 999px; letter-spacing: 0.04em; text-transform: uppercase;
   background: var(--surface-alt); color: var(--ink-3);
 }
-body[data-app="logviewer-v2"] .issue-critical .issue-severity{ background: var(--err-soft); color: var(--err); }
-body[data-app="logviewer-v2"] .issue-high     .issue-severity{ background: var(--warn-soft); color: var(--warn); }
-body[data-app="logviewer-v2"] .issue-medium   .issue-severity{ background: var(--accent-soft); color: var(--accent-ink); }
-body[data-app="logviewer-v2"] .issue-low      .issue-severity{ background: var(--ok-soft); color: var(--ok); }
-body[data-app="logviewer-v2"] .issue-title{ font-size: 13px; font-weight: 600; color: var(--ink-1); }
-body[data-app="logviewer-v2"] .issue-detail{ font-size: 12px; color: var(--ink-3); margin-top: 2px; }
-body[data-app="logviewer-v2"] .issue-link{ color: var(--accent); font-size: 12px; font-weight: 500; white-space: nowrap; }
+.issue-critical .issue-severity{ background: var(--err-soft); color: var(--err); }
+.issue-high     .issue-severity{ background: var(--warn-soft); color: var(--warn); }
+.issue-medium   .issue-severity{ background: var(--accent-soft); color: var(--accent-ink); }
+.issue-low      .issue-severity{ background: var(--ok-soft); color: var(--ok); }
+.issue-title{ font-size: 13px; font-weight: 600; color: var(--ink-1); }
+.issue-detail{ font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+.issue-link{ color: var(--accent); font-size: 12px; font-weight: 500; white-space: nowrap; }
 
 /* Recommendations */
-body[data-app="logviewer-v2"] .recommendations-box{
+.recommendations-box{
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
   padding: 14px 16px; margin: 16px 0; box-shadow: var(--shadow-sm);
 }
-body[data-app="logviewer-v2"] .rec-heading{
+.rec-heading{
   font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--ink-3); margin-bottom: 8px;
 }
-body[data-app="logviewer-v2"] .rec-item{
+.rec-item{
   display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 8px 0;
   border-top: 1px dashed var(--border);
 }
-body[data-app="logviewer-v2"] .rec-item:first-of-type{ border-top: none; padding-top: 2px; }
-body[data-app="logviewer-v2"] .rec-num{
+.rec-item:first-of-type{ border-top: none; padding-top: 2px; }
+.rec-num{
   width: 22px; height: 22px; border-radius: 50%;
   background: var(--accent-soft); color: var(--accent-ink);
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 11px; font-weight: 700;
 }
-body[data-app="logviewer-v2"] .rec-body{ display: flex; flex-direction: column; gap: 3px; }
-body[data-app="logviewer-v2"] .rec-action{ font-size: 12px; font-weight: 600; color: var(--ink-1); }
-body[data-app="logviewer-v2"] .rec-desc{ font-size: 12.5px; color: var(--ink-2); }
-body[data-app="logviewer-v2"] .rec-code{
+.rec-body{ display: flex; flex-direction: column; gap: 3px; }
+.rec-action{ font-size: 12px; font-weight: 600; color: var(--ink-1); }
+.rec-desc{ font-size: 12.5px; color: var(--ink-2); }
+.rec-code{
   font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-2);
   background: var(--surface-alt); padding: 2px 6px; border-radius: 3px;
   border: 1px solid var(--border); width: fit-content;
 }
 
 /* Tabs (tab_bar emits .tab-bar + .tab-btn; tab_panel emits .tab-panel#tab-<id>) */
-body[data-app="logviewer-v2"] .tab-bar{
+.tab-bar{
   display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 12px;
 }
-body[data-app="logviewer-v2"] .tab-btn{
+.tab-btn{
   padding: 8px 14px; background: transparent; border: none; cursor: pointer;
   font-size: 12.5px; color: var(--ink-3); font-weight: 500;
   border-bottom: 2px solid transparent;
 }
-body[data-app="logviewer-v2"] .tab-btn:hover{ color: var(--ink-1); }
-body[data-app="logviewer-v2"] .tab-btn.active{
+.tab-btn:hover{ color: var(--ink-1); }
+.tab-btn.active{
   color: var(--ink-1); border-bottom-color: var(--accent); font-weight: 600;
 }
-body[data-app="logviewer-v2"] .tab-panel{ display: none; }
-body[data-app="logviewer-v2"] .tab-panel.active{ display: block; }
+.tab-panel{ display: none; }
+.tab-panel.active{ display: block; }
 
 /* Quick links on Summary */
-body[data-app="logviewer-v2"] .report-grid,
-body[data-app="logviewer-v2"] .quick-links{
+.report-grid,
+.quick-links{
   display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-bottom: 14px;
 }
-body[data-app="logviewer-v2"] .report-card{
+.report-card{
   display: block; padding: 12px 14px; background: var(--surface);
   border: 1px solid var(--border); border-radius: var(--radius);
   color: var(--ink-1); font-size: 13px; font-weight: 600; text-decoration: none;
   box-shadow: var(--shadow-sm); transition: border-color .12s, background .12s;
 }
-body[data-app="logviewer-v2"] .report-card:hover{
+.report-card:hover{
   border-color: var(--border-strong); text-decoration: none;
 }
-body[data-app="logviewer-v2"] .report-card small{
+.report-card small{
   display: block; font-size: 11px; color: var(--ink-3); font-weight: 400; margin-top: 3px;
 }
 
 /* No-data / empty-state */
-body[data-app="logviewer-v2"] .no-data{
+.no-data{
   color: var(--ink-3); font-style: italic; padding: 10px 0;
 }
-body[data-app="logviewer-v2"] .empty-state{
+.empty-state{
   background: var(--surface); border: 1px dashed var(--border-strong); border-radius: var(--radius-lg);
   padding: 32px 24px; text-align: center; color: var(--ink-3);
 }
-body[data-app="logviewer-v2"] .empty-state h3{
+.empty-state h3{
   font-size: 14px; font-weight: 600; color: var(--ink-1); margin-bottom: 6px;
 }
 
 /* Multi-select (.ms-*) used by locales heatmap filter */
-body[data-app="logviewer-v2"] .ms-wrap{ position: relative; display: inline-flex; flex-direction: column; gap: 4px;}
-body[data-app="logviewer-v2"] .ms-label{
+.ms-wrap{ position: relative; display: inline-flex; flex-direction: column; gap: 4px;}
+.ms-label{
   font-size: 10.5px; font-weight: 600; color: var(--ink-3);
   text-transform: uppercase; letter-spacing: 0.05em;
 }
-body[data-app="logviewer-v2"] .ms-toggle{
+.ms-toggle{
   height: 30px; padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--surface); color: var(--ink-2); font-size: 12.5px; text-align: left; min-width: 140px;
 }
-body[data-app="logviewer-v2"] .ms-toggle:hover{ border-color: var(--border-strong); color: var(--ink-1);}
-body[data-app="logviewer-v2"] .ms-dropdown{
+.ms-toggle:hover{ border-color: var(--border-strong); color: var(--ink-1);}
+.ms-dropdown{
   display: none; position: absolute; top: 100%; left: 0; z-index: 50;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
   box-shadow: var(--shadow-md); min-width: 220px; margin-top: 4px; flex-direction: column;
 }
-body[data-app="logviewer-v2"] .ms-dropdown.open{ display: flex; }
-body[data-app="logviewer-v2"] .ms-dropdown .ms-header{
+.ms-dropdown.open{ display: flex; }
+.ms-dropdown .ms-header{
   padding: 8px 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px;
   background: var(--surface-alt); border-radius: var(--radius) var(--radius) 0 0;
 }
-body[data-app="logviewer-v2"] .ms-dropdown input.ms-search{
+.ms-dropdown input.ms-search{
   box-sizing: border-box; width: 100%; height: 26px; padding: 0 8px;
   border: 1px solid var(--border); border-radius: 4px; font-size: 12px;
   color: var(--ink-1); background: var(--surface); outline: none;
 }
-body[data-app="logviewer-v2"] .ms-dropdown input.ms-search:focus{
+.ms-dropdown input.ms-search:focus{
   border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
 }
-body[data-app="logviewer-v2"] .ms-dropdown .ms-meta{
+.ms-dropdown .ms-meta{
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
 }
-body[data-app="logviewer-v2"] .ms-dropdown .ms-count{ font-size: 11px; color: var(--ink-3); font-weight: 500;}
-body[data-app="logviewer-v2"] .ms-dropdown .ms-actions{ display: flex; gap: 6px;}
-body[data-app="logviewer-v2"] .ms-dropdown .ms-actions button{
+.ms-dropdown .ms-count{ font-size: 11px; color: var(--ink-3); font-weight: 500;}
+.ms-dropdown .ms-actions{ display: flex; gap: 6px;}
+.ms-dropdown .ms-actions button{
   background: none; border: none; padding: 2px 4px; font-size: 11px; color: var(--accent); cursor: pointer;
 }
-body[data-app="logviewer-v2"] .ms-dropdown .ms-actions button:hover{ text-decoration: underline; }
-body[data-app="logviewer-v2"] .ms-dropdown .ms-list{
+.ms-dropdown .ms-actions button:hover{ text-decoration: underline; }
+.ms-dropdown .ms-list{
   max-height: 220px; overflow-y: auto; padding: 6px 0;
 }
-body[data-app="logviewer-v2"] .ms-dropdown label{
+.ms-dropdown label{
   display: flex; align-items: center; gap: 6px; padding: 4px 12px;
   font-size: 12.5px; cursor: pointer; color: var(--ink-2); text-transform: none;
   letter-spacing: 0; font-weight: 400;
 }
-body[data-app="logviewer-v2"] .ms-dropdown label:hover{ background: var(--surface-alt); }
-body[data-app="logviewer-v2"] .ms-dropdown label.ms-hidden{ display: none !important; }
+.ms-dropdown label:hover{ background: var(--surface-alt); }
+.ms-dropdown label.ms-hidden{ display: none !important; }
 
 /* Sortable tables from html_table() */
-body[data-app="logviewer-v2"] table.sortable,
-body[data-app="logviewer-v2"] table:not(.log-table){
+table.sortable,
+table:not(.log-table){
   width: 100%; border-collapse: separate; border-spacing: 0;
   font-size: 12.5px; font-variant-numeric: tabular-nums;
 }
-body[data-app="logviewer-v2"] table:not(.log-table) thead th{
+table:not(.log-table) thead th{
   position: sticky; top: 0; z-index: 2;
   background: var(--surface-alt); border-bottom: 1px solid var(--border);
   padding: 6px 10px; text-align: left;
@@ -1306,37 +1306,37 @@ body[data-app="logviewer-v2"] table:not(.log-table) thead th{
   text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--ink-3); white-space: nowrap; cursor: pointer; user-select: none;
 }
-body[data-app="logviewer-v2"] table:not(.log-table) tbody td{
+table:not(.log-table) tbody td{
   padding: 6px 10px; border-bottom: 1px solid var(--border);
   color: var(--ink-2); white-space: nowrap;
 }
-body[data-app="logviewer-v2"] table:not(.log-table) tbody tr:hover td{ background: var(--surface-alt);}
+table:not(.log-table) tbody tr:hover td{ background: var(--surface-alt);}
 
 /* Export link */
-body[data-app="logviewer-v2"] .export-link,
-body[data-app="logviewer-v2"] a.export-link{
+.export-link,
+a.export-link{
   display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px;
   border: 1px solid var(--border); border-radius: var(--radius);
   font-size: 11.5px; color: var(--ink-2); text-decoration: none; background: var(--surface);
   margin: 6px 0;
 }
-body[data-app="logviewer-v2"] .export-link:hover{ border-color: var(--border-strong); color: var(--ink-1); text-decoration: none;}
+.export-link:hover{ border-color: var(--border-strong); color: var(--ink-1); text-decoration: none;}
 
 /* Legacy filter bar (inline forms in report bodies) */
-body[data-app="logviewer-v2"] form.filter-bar{
+form.filter-bar{
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
   padding: 10px 12px; margin-bottom: 10px;
   display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; box-shadow: var(--shadow-sm);
 }
-body[data-app="logviewer-v2"] form.filter-bar label{
+form.filter-bar label{
   display: inline-flex; flex-direction: column; gap: 3px;
   font-size: 10.5px; font-weight: 600; color: var(--ink-3); text-transform: uppercase;
 }
-body[data-app="logviewer-v2"] form.filter-bar button[type='submit']{
+form.filter-bar button[type='submit']{
   height: 30px; padding: 0 14px; background: var(--ink-1); color: #fff;
   border: none; border-radius: var(--radius); font-size: 12.5px; font-weight: 500; cursor: pointer;
 }
-body[data-app="logviewer-v2"] form.filter-bar input[type='checkbox']{ accent-color: var(--accent); }
+form.filter-bar input[type='checkbox']{ accent-color: var(--accent); }
 
 /* HTMX: fade swap on indicator */
 .htmx-indicator{ opacity: 0; transition: opacity .18s; }

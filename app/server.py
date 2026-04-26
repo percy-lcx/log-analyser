@@ -2292,6 +2292,10 @@ window.applyDatePreset = function(form, days) {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{title} — Log Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+    <link rel="stylesheet" href="/static/app.css?v={_lv2_static_ver('app.css')}">
     {charts_cdn}
     {css}
 </head>
@@ -6738,11 +6742,11 @@ def _lv2_page(title: str, active_nav: str, body: str) -> HTMLResponse:
         "<link rel='preconnect' href='https://fonts.googleapis.com'>"
         "<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>"
         "<link rel='stylesheet' href='https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap'>"
-        f"<link rel='stylesheet' href='/static/logviewer.css?v={_lv2_static_ver('logviewer.css')}'>"
+        f"<link rel='stylesheet' href='/static/app.css?v={_lv2_static_ver('app.css')}'>"
         "<script src='https://unpkg.com/htmx.org@1.9.12'></script>"
         "<script src='https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js'></script>"
         "</head>"
-        f"<body data-app='logviewer-v2'>"
+        f"<body>"
         f"{_lv2_topnav(active_nav)}"
         f"<main class='page'>{body}</main>"
         "<div class='drawer-backdrop' id='drawer-backdrop'></div>"

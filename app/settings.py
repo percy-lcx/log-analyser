@@ -414,53 +414,6 @@ SETTINGS_NAV: List[Tuple[str, str, str, str]] = [
     ("gsc",            "Search Console", "/settings/gsc",           "Connect Google Search Console for search performance data"),
 ]
 
-_SETTINGS_CSS = """
-<style>
-  /* Settings layout ---------------------------------------------------- */
-  .settings-layout { display: grid; grid-template-columns: 220px 1fr; gap: 28px; align-items: start; margin-top: 4px; }
-  @media (max-width: 860px) { .settings-layout { grid-template-columns: 1fr; } }
-  .settings-nav { position: sticky; top: 16px; padding: 10px 0; border-right: 1px solid #e2e8f0; }
-  @media (max-width: 860px) { .settings-nav { position: static; border-right: 0; border-bottom: 1px solid #e2e8f0; padding: 0 0 10px; margin-bottom: 6px; } }
-  .settings-nav .sn-lead { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #64748b; padding: 0 10px 6px; }
-  .settings-nav a { display: flex; align-items: center; gap: 8px; padding: 7px 10px; margin: 1px 6px 1px 0; border-radius: 6px; font-size: 13px; color: #334155; text-decoration: none; line-height: 1.25; }
-  .settings-nav a:hover { background: #f1f5f9; color: #0f172a; }
-  .settings-nav a.active { background: #eff6ff; color: #1d4ed8; font-weight: 600; box-shadow: inset 2px 0 0 #3b82f6; }
-  .settings-nav .sn-divider { height: 1px; background: #e2e8f0; margin: 8px 6px; }
-
-  .settings-content { min-width: 0; }
-  .settings-content h1.page-title { margin: 0 0 4px; font-size: 22px; font-weight: 700; color: #0f172a; }
-  .settings-content .page-subtitle { margin: 0 0 18px; font-size: 13px; color: #64748b; }
-
-  /* Shared form primitives used by subpages --------------------------- */
-  .settings-content .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px 18px; box-shadow: 0 1px 2px rgba(15,23,42,0.03); }
-  .settings-content .card + .card { margin-top: 14px; }
-  .settings-content .card h2 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: #0f172a; }
-  .settings-content .card p.help { font-size: 12px; color: #64748b; margin: 0 0 12px; }
-
-  .settings-content .btn-sm { padding: 5px 12px; border: 1px solid #cbd5e1; border-radius: 5px; font-size: 12px; cursor: pointer; background: #fff; color: #374151; }
-  .settings-content .btn-sm:hover { background: #f1f5f9; }
-  .settings-content .btn-sm:disabled { opacity: 0.4; cursor: not-allowed; }
-  .settings-content .btn-blue { background: #3b82f6; color: #fff; border-color: #3b82f6; }
-  .settings-content .btn-blue:hover { background: #2563eb; }
-  .settings-content .btn-red { color: #dc2626; border-color: #fca5a5; }
-  .settings-content .btn-red:hover { background: #fef2f2; }
-
-  .settings-content .settings-input { padding: 7px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; background: #fff; }
-  .settings-content .settings-input:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,0.15); }
-
-  .settings-content .profile-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: #f1f5f9; border: 1px solid #e2e8f0; font-size: 12px; color: #475569; }
-  .settings-content .profile-chip strong { color: #0f172a; font-weight: 600; }
-
-  /* Hub grid (cards on /settings) ------------------------------------- */
-  .settings-hub-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
-  .settings-hub-card { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; text-decoration: none; color: #0f172a; transition: border-color 0.12s, box-shadow 0.12s, transform 0.12s; }
-  .settings-hub-card:hover { border-color: #3b82f6; box-shadow: 0 4px 12px rgba(59,130,246,0.08); transform: translateY(-1px); }
-  .settings-hub-card .shc-title { font-size: 14px; font-weight: 600; color: #0f172a; }
-  .settings-hub-card .shc-desc { font-size: 12px; color: #64748b; line-height: 1.4; }
-</style>
-"""
-
-
 def _render_active_profile_chip() -> str:
     """Small pill showing the currently-active profile — rendered above the
     content title on subpages so context is obvious without a paragraph."""
@@ -504,8 +457,7 @@ def _settings_layout(
     )
 
     full = (
-        _SETTINGS_CSS
-        + "<div class='settings-layout'>"
+        "<div class='settings-layout'>"
         + sidebar
         + f"<div class='settings-content'>{header}{body}</div>"
         + "</div>"
@@ -694,19 +646,6 @@ def settings_url_groups():
         </div>
     </div>
 
-    <style>
-    #rulesTable td {{ padding:6px; border-bottom:1px solid #f1f5f9; vertical-align:middle; }}
-    #rulesTable input, #rulesTable select {{
-        padding:5px 8px; border:1px solid #cbd5e1; border-radius:4px; font-size:13px; width:100%;
-    }}
-    .drag-handle {{ cursor:grab; color:#94a3b8; font-size:16px; text-align:center; user-select:none; }}
-    .drag-handle:active {{ cursor:grabbing; }}
-    tr.dragging {{ opacity:0.4; background:#eff6ff; }}
-    tr.drag-over {{ border-top:2px solid #3b82f6; }}
-    .del-btn {{ background:none; border:none; color:#dc2626; cursor:pointer; font-size:16px; padding:2px 6px; }}
-    .del-btn:hover {{ background:#fef2f2; border-radius:4px; }}
-    </style>
-
     <script>
     let rules = {rules_json};
     let dirty = false;
@@ -862,16 +801,6 @@ def settings_locales():
         <button class='btn-sm btn-blue' onclick='saveLocales()'>Save</button>
     </div>
 
-    <style>
-    .locale-tag {{
-        display:inline-flex; align-items:center; gap:4px;
-        padding:4px 10px; background:#eff6ff; border:1px solid #bfdbfe;
-        border-radius:20px; font-size:12px; color:#1e40af; cursor:pointer;
-    }}
-    .locale-tag:hover {{ background:#dbeafe; border-color:#93c5fd; }}
-    .locale-tag .x {{ color:#3b82f6; font-weight:700; margin-left:2px; }}
-    </style>
-
     <script>
     let locales = {locales_json};
 
@@ -959,15 +888,6 @@ def settings_sections():
             </table>
         </div>
     </div>
-
-    <style>
-    #sectionsTable td {{ padding:6px; border-bottom:1px solid #f1f5f9; }}
-    #sectionsTable input {{
-        padding:5px 8px; border:1px solid #cbd5e1; border-radius:4px; font-size:13px; width:100%;
-    }}
-    .del-btn {{ background:none; border:none; color:#dc2626; cursor:pointer; font-size:16px; padding:2px 6px; }}
-    .del-btn:hover {{ background:#fef2f2; border-radius:4px; }}
-    </style>
 
     <script>
     let sections = {sections_json};
