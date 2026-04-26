@@ -39,8 +39,22 @@ def _chart_uid() -> str:
     return f"ec{next(_chart_uid_counter)}"
 
 
-def _echart_html(option: dict, height: int = 400, fns: Optional[Dict[str, str]] = None) -> str:
-    """Wrap an ECharts option dict in a div + init script, ready to embed.
+def _echart_html(
+    option: dict,
+    height: int = 400,
+    fns: Optional[Dict[str, str]] = None,
+    *,
+    title: Optional[str] = None,
+    total: Optional[str] = None,
+    legend: Optional[str] = None,
+    actions: Optional[str] = None,
+) -> str:
+    """Wrap an ECharts option dict in a .chart-card div + init script.
+
+    Title/total/legend/actions render into a `.chart-head` block above the
+    chart so ECharts' built-in title doesn't double up with the page chrome.
+    Pass any of them to enable the head; if all are None, the card has just
+    the chart body.
 
     fns: map of placeholder marker (e.g. "__FMT__") to a JS function literal.
     Each occurrence of "<marker>" in the JSON is replaced with the literal,
@@ -51,11 +65,31 @@ def _echart_html(option: dict, height: int = 400, fns: Optional[Dict[str, str]] 
     if fns:
         for marker, js in fns.items():
             opt_json = opt_json.replace(f'"{marker}"', js)
+    head_html = ""
+    if title or total or legend or actions:
+        title_parts: List[str] = []
+        if title:
+            title_parts.append(f"<h3>{html_escape(title)}</h3>")
+        if total:
+            title_parts.append(f"<span class='ch-total'>{total}</span>")
+        title_html = (
+            f"<div class='chart-title'>{''.join(title_parts)}</div>" if title_parts else ""
+        )
+        legend_html = f"<div class='chart-legend'>{legend}</div>" if legend else ""
+        actions_html = f"<div class='chart-actions'>{actions}</div>" if actions else ""
+        head_html = (
+            "<div class='chart-head'>"
+            f"{title_html}"
+            f"{legend_html}"
+            f"{actions_html}"
+            "</div>"
+        )
     # Defer init until the browser has done layout — inline scripts run during
     # parsing, when clientWidth can be 0 and ECharts would lock to that width.
     # ResizeObserver also handles sidebar collapse / window resize after init.
     return (
-        f"<div class='card'>"
+        f"<div class='chart-card'>"
+        f"{head_html}"
         f"<div id='{uid}' data-echart style='width:100%;height:{height}px'></div>"
         f"<script>(function(){{"
         f"var el=document.getElementById('{uid}');"
@@ -398,15 +432,14 @@ def line_chart(rows, columns, x_col, y_cols, title, dual_axis=False):
         grid_right = 20
 
     option = {
-        "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14, "fontWeight": "normal"}},
         "tooltip": {"trigger": "axis"},
-        "legend": {"top": 28, "type": "scroll"},
-        "grid": {"left": 10, "right": grid_right, "top": 70, "bottom": 30, "containLabel": True},
+        "legend": {"top": 4, "type": "scroll"},
+        "grid": {"left": 10, "right": grid_right, "top": 38, "bottom": 30, "containLabel": True},
         "xAxis": {"type": "category", "data": x, "boundaryGap": False},
         "yAxis": y_axis,
         "series": series,
     }
-    return _echart_html(option)
+    return _echart_html(option, title=title)
 
 
 # Tooltip formatter that reads the pre-formatted "fmt" string off each data point.
@@ -436,9 +469,8 @@ def bytes_line_chart(rows, columns, x_col, y_col, title):
     x = ["" if pd.isna(v) else str(v) for v in df[x_col].tolist()]
     data = _bytes_data(df[y_col].tolist())
     option = {
-        "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14, "fontWeight": "normal"}},
         "tooltip": {"trigger": "axis", "formatter": "__BYTES_FMT__"},
-        "grid": {"left": 10, "right": 20, "top": 50, "bottom": 30, "containLabel": True},
+        "grid": {"left": 10, "right": 20, "top": 18, "bottom": 30, "containLabel": True},
         "xAxis": {"type": "category", "data": x, "boundaryGap": False},
         "yAxis": {"type": "value"},
         "series": [{
@@ -449,7 +481,7 @@ def bytes_line_chart(rows, columns, x_col, y_col, title):
             "connectNulls": False,
         }],
     }
-    return _echart_html(option, fns={"__BYTES_FMT__": _BYTES_TOOLTIP_FN})
+    return _echart_html(option, fns={"__BYTES_FMT__": _BYTES_TOOLTIP_FN}, title=title)
 
 
 def bytes_bar_chart(rows, columns, x_col, y_col, title):
@@ -460,9 +492,8 @@ def bytes_bar_chart(rows, columns, x_col, y_col, title):
     x = ["" if v is None or pd.isna(v) else str(v) for v in df[x_col].tolist()]
     data = _bytes_data(df[y_col].tolist())
     option = {
-        "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14, "fontWeight": "normal"}},
         "tooltip": {"trigger": "axis", "formatter": "__BYTES_FMT__"},
-        "grid": {"left": 10, "right": 20, "top": 50, "bottom": 30, "containLabel": True},
+        "grid": {"left": 10, "right": 20, "top": 18, "bottom": 30, "containLabel": True},
         "xAxis": {"type": "category", "data": x},
         "yAxis": {"type": "value"},
         "series": [{
@@ -471,7 +502,7 @@ def bytes_bar_chart(rows, columns, x_col, y_col, title):
             "data": data,
         }],
     }
-    return _echart_html(option, fns={"__BYTES_FMT__": _BYTES_TOOLTIP_FN})
+    return _echart_html(option, fns={"__BYTES_FMT__": _BYTES_TOOLTIP_FN}, title=title)
 
 
 def bar_chart(rows, columns, x_col, y_col=None, title="", y_cols=None, barmode="group"):
@@ -501,15 +532,14 @@ def bar_chart(rows, columns, x_col, y_col=None, title="", y_cols=None, barmode="
         series.append(s)
 
     option = {
-        "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14, "fontWeight": "normal"}},
         "tooltip": {"trigger": "axis", "axisPointer": {"type": "shadow"}},
-        "legend": {"top": 28, "type": "scroll"},
-        "grid": {"left": 10, "right": 20, "top": 70, "bottom": 30, "containLabel": True},
+        "legend": {"top": 4, "type": "scroll"},
+        "grid": {"left": 10, "right": 20, "top": 38, "bottom": 30, "containLabel": True},
         "xAxis": {"type": "category", "data": x},
         "yAxis": {"type": "value"},
         "series": series,
     }
-    return _echart_html(option)
+    return _echart_html(option, title=title)
 
 
 def heatmap_chart(rows, columns, x_col, y_col, z_col, title):
@@ -533,9 +563,8 @@ def heatmap_chart(rows, columns, x_col, y_col, z_col, title):
 
     height = min(max(300, 30 * len(y_labels) + 80), 1800)
     option = {
-        "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14, "fontWeight": "normal"}},
         "tooltip": {"position": "top"},
-        "grid": {"left": 10, "right": 20, "top": 50, "bottom": 60, "containLabel": True},
+        "grid": {"left": 10, "right": 20, "top": 18, "bottom": 60, "containLabel": True},
         "xAxis": {"type": "category", "data": x_labels, "splitArea": {"show": True}, "axisLabel": {"rotate": 30}},
         "yAxis": {"type": "category", "data": y_labels, "splitArea": {"show": True}},
         "visualMap": {
@@ -554,7 +583,7 @@ def heatmap_chart(rows, columns, x_col, y_col, z_col, title):
             "emphasis": {"itemStyle": {"shadowBlur": 10, "shadowColor": "rgba(0,0,0,0.3)"}},
         }],
     }
-    return _echart_html(option, height=height)
+    return _echart_html(option, height=height, title=title)
 
 
 def sql_escape_string(s: str) -> str:
@@ -3008,13 +3037,8 @@ def gsc_report(
             "'<br/>Impressions: '+d.imp+'<br/>Clicks: '+d.value[2];}"
         )
         scatter_option = {
-            "title": {
-                "text": "Crawl Hits vs Avg Position (bubble size = impressions, color = clicks)",
-                "left": "center",
-                "textStyle": {"fontSize": 14, "fontWeight": "normal"},
-            },
             "tooltip": {"trigger": "item", "formatter": "__SCATTER_FMT__"},
-            "grid": {"left": 50, "right": 60, "top": 60, "bottom": 50, "containLabel": True},
+            "grid": {"left": 50, "right": 60, "top": 18, "bottom": 50, "containLabel": True},
             "xAxis": {"type": "value", "name": "Crawl Hits", "nameLocation": "middle", "nameGap": 30},
             "yAxis": {"type": "value", "name": "Avg Position (lower is better)", "nameLocation": "middle", "nameGap": 40, "inverse": True},
             "visualMap": {
@@ -3034,7 +3058,12 @@ def gsc_report(
                 "itemStyle": {"borderColor": "#475569", "borderWidth": 0.5},
             }],
         }
-        eff += _echart_html(scatter_option, height=500, fns={"__SCATTER_FMT__": scatter_fn})
+        eff += _echart_html(
+            scatter_option,
+            height=500,
+            fns={"__SCATTER_FMT__": scatter_fn},
+            title="Crawl Hits vs Avg Position (bubble size = impressions, color = clicks)",
+        )
     else:
         eff += "<p style='color:#94a3b8;'>Not enough data for scatter plot (need pages with both crawl and impressions).</p>"
 
