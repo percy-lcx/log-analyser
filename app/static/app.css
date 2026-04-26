@@ -1502,3 +1502,90 @@ form.filter-bar input[type='checkbox']{ accent-color: var(--accent); }
   display:flex; justify-content: space-between; gap: 12px;
   color: #fff; font-weight: 600;
 }
+
+/* ── Settings shell ── */
+.settings-layout{
+  display: grid; grid-template-columns: 220px 1fr; gap: 28px;
+  align-items: start; margin-top: 4px;
+}
+@media (max-width: 860px){
+  .settings-layout{ grid-template-columns: 1fr; }
+}
+.settings-nav{
+  position: sticky; top: 16px;
+  padding: 8px 0;
+  border-right: 1px solid var(--border);
+}
+@media (max-width: 860px){
+  .settings-nav{
+    position: static; border-right: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 0 0 10px; margin-bottom: 6px;
+  }
+}
+.settings-nav .sn-lead{
+  display: block;
+  font-size: 10.5px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-4);
+  padding: 0 12px 8px;
+}
+.settings-nav a{
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px;
+  margin: 1px 6px 1px 0;
+  border-left: 2px solid transparent;
+  border-radius: 0 var(--radius) var(--radius) 0;
+  font-size: 13px;
+  color: var(--ink-2);
+  background: var(--surface-alt);
+  text-decoration: none;
+  line-height: 1.25;
+}
+.settings-nav a:hover{
+  color: var(--ink-1);
+  background: var(--surface-alt);
+}
+.settings-nav a.active{
+  color: var(--ink-1);
+  background: var(--surface);
+  border-left-color: var(--accent);
+  box-shadow: var(--shadow-sm);
+  font-weight: 600;
+}
+.settings-nav .sn-divider{
+  height: 1px; background: var(--border);
+  margin: 8px 12px;
+}
+.settings-content{ min-width: 0; }
+.settings-content .page-subtitle{
+  margin: -6px 0 16px;
+  font-size: 13px; color: var(--ink-3);
+}
+.settings-hub-grid{
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.settings-hub-card{
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  text-decoration: none;
+  color: var(--ink-1);
+  box-shadow: var(--shadow-sm);
+  transition: border-color .12s, box-shadow .12s;
+}
+.settings-hub-card:hover{
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+  text-decoration: none;
+}
+.settings-hub-card .shc-title{
+  font-size: 14px; font-weight: 600; color: var(--ink-1);
+}
+.settings-hub-card .shc-desc{
+  font-size: 12px; color: var(--ink-3); line-height: 1.4;
+}

@@ -388,19 +388,18 @@ def api_rebuild_status(task_id: str):
 
 
 # ===================================================================
-# HTML Pages — reuse the page() shell from server.py via import
+# HTML Pages — reuse the v2 page shell from server.py via import
 # ===================================================================
 
 def _settings_page(title: str, body: str) -> HTMLResponse:
-    """Wrapper that imports page() from the main server module."""
-    from app.server import page
-    return page(title, body)
+    """Render a settings body inside the shared v2 page shell (topnav + main)."""
+    from app.server import _lv2_page
+    return _lv2_page(title, "settings", body)
 
 
 # ---------------------------------------------------------------------------
-# Shared settings shell: sidebar nav + content column + consolidated CSS.
-# All /settings/* subpages render their body through _settings_layout() so
-# the "← Back" link, button styles, card styles and layout are defined once.
+# Shared settings shell: sidebar nav + content column. The page chrome
+# (topnav, page-head) comes from app/_ui.py via _settings_page → _lv2_page.
 # ---------------------------------------------------------------------------
 
 SETTINGS_NAV: List[Tuple[str, str, str, str]] = [
@@ -415,8 +414,8 @@ SETTINGS_NAV: List[Tuple[str, str, str, str]] = [
 ]
 
 def _render_active_profile_chip() -> str:
-    """Small pill showing the currently-active profile — rendered above the
-    content title on subpages so context is obvious without a paragraph."""
+    """Pill showing the currently-active profile, rendered in the page-head
+    actions area so context is obvious without a separate paragraph."""
     try:
         from profile_loader import get_active_profile_raw
         p = get_active_profile_raw()
@@ -424,8 +423,10 @@ def _render_active_profile_chip() -> str:
     except Exception:
         name = "(none)"
     return (
-        f"<span class='profile-chip' title='Active site profile'>"
-        f"Active profile: <strong>{name}</strong></span>"
+        f"<span class='chip' title='Active site profile'>"
+        f"<span class='chip-key'>Profile</span>"
+        f"<span class='chip-sep'>·</span>"
+        f"<span class='chip-val'>{name}</span></span>"
     )
 
 
@@ -437,7 +438,9 @@ def _settings_layout(
     body: str,
     show_profile_chip: bool = True,
 ) -> HTMLResponse:
-    """Render a settings page with the shared sidebar + content shell."""
+    """Render a settings page with shared topnav + page-head + sidebar+content."""
+    from app._ui import page_head
+
     nav_items: List[str] = ["<span class='sn-lead'>Settings</span>"]
     for item_id, label, url, _desc in SETTINGS_NAV:
         cls = "active" if item_id == active else ""
@@ -447,19 +450,13 @@ def _settings_layout(
     sidebar = "<nav class='settings-nav'>" + "".join(nav_items) + "</nav>"
 
     chip_html = _render_active_profile_chip() if (show_profile_chip and active != "hub") else ""
-    subtitle_html = f"<p class='page-subtitle'>{subtitle}</p>" if subtitle else ""
-    header = (
-        f"<div style='display:flex;align-items:center;gap:10px;margin-bottom:2px;'>"
-        f"<h1 class='page-title'>{title}</h1>"
-        f"{chip_html}"
-        f"</div>"
-        f"{subtitle_html}"
-    )
+    head_html = page_head(title, subtitle=subtitle or None, actions_html=chip_html)
 
     full = (
-        "<div class='settings-layout'>"
+        head_html
+        + "<div class='settings-layout'>"
         + sidebar
-        + f"<div class='settings-content'>{header}{body}</div>"
+        + f"<div class='settings-content'>{body}</div>"
         + "</div>"
     )
     return _settings_page(title, full)

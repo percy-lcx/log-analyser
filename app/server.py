@@ -98,6 +98,7 @@ if _STATIC_DIR.is_dir():
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 from app.settings import router as settings_router
+from app._ui import iconHtml, topnav, page_head
 app.include_router(settings_router)
 
 
@@ -4921,8 +4922,7 @@ def _lv2_static_ver(name: str) -> str:
 
 
 def _lv2_icon(name: str, cls: str = "") -> str:
-    extra = f" class='{cls}'" if cls else ""
-    return f"<svg{extra} width='14' height='14' aria-hidden='true'><use href='/static/icons.svg#{name}'/></svg>"
+    return iconHtml(name, cls)
 
 
 def _lv2_build_qs(params: Dict[str, Any], **overrides: Any) -> str:
@@ -5168,51 +5168,8 @@ def _lv2_apply_view(view_id: Optional[str], current: Dict[str, Optional[str]]) -
     return merged
 
 
-def _lv2_topnav(active: str) -> str:
-    """Render the sticky top nav. Reports is a dropdown; other items are plain links."""
-    reports_children = [
-        ("Locales", "/reports/locales"),
-        ("Search Console", "/reports/gsc"),
-        ("Strategic Crawl", "/reports/strategic-crawl"),
-    ]
-    reports_active = "active" if active == "reports" else ""
-    reports_items = "".join(
-        f"<a href='{url}'>{html_escape(label)}</a>"
-        for label, url in reports_children
-    )
-    reports_dropdown = (
-        f"<div class='nav-item-dropdown'>"
-        f"<button type='button' class='nav-link {reports_active}' "
-        "data-nav-dropdown='nav-dd-reports' aria-haspopup='true' aria-expanded='false'>"
-        "Reports"
-        f"<span class='caret'>{_lv2_icon('chevron')}</span>"
-        "</button>"
-        f"<div class='nav-dropdown' id='nav-dd-reports' role='menu'>{reports_items}</div>"
-        "</div>"
-    )
-
-    plain_items = [
-        ("logs", "Logs", "/logs"),
-        ("summary", "Summary", "/reports/summary"),
-    ]
-    plain_links = "".join(
-        f"<a href='{url}' class='nav-link{' active' if active == key else ''}'>{html_escape(label)}</a>"
-        for key, label, url in plain_items
-    )
-    settings_link = (
-        f"<a href='/settings' class='nav-link{' active' if active == 'settings' else ''}'>Settings</a>"
-    )
-
-    return (
-        "<nav class='topnav'>"
-        "<div class='brand'><span class='brand-mark'></span><span>log analyser</span></div>"
-        f"<div class='nav-links'>{plain_links}{reports_dropdown}{settings_link}</div>"
-        "<div class='nav-util'>"
-        "<span class='nav-pill' title='Data freshness'><span class='dot'></span>live</span>"
-        f"<button class='btn btn-icon btn-ghost' data-popover-trigger='kb-help-open' title='Shortcuts (?)' aria-label='Keyboard shortcuts'>{_lv2_icon('keyboard')}</button>"
-        "</div>"
-        "</nav>"
-    )
+def _lv2_topnav(active: str, *, last_ingest_label: str = "", date_label: Optional[str] = None) -> str:
+    return topnav(active, last_ingest_label=last_ingest_label, date_label=date_label)
 
 
 def _lv2_kb_help() -> str:
@@ -5244,15 +5201,11 @@ def _lv2_page_head(title: str, count_text: str, mode: str, params: Dict[str, Any
         for mv, ml in modes
     )
     export_qs = _lv2_build_qs(params, mode=None, page=None, per_page=None)
-    return (
-        "<div class='page-head'>"
-        f"<div><div class='page-title'>{html_escape(title)} <small>{count_text}</small></div></div>"
-        "<div class='page-actions'>"
+    actions = (
         f"<div class='seg' role='tablist' data-mode-seg>{seg_links}</div>"
         f"<a class='btn btn-sm' href='/export/logs?{export_qs}' title='Export'>{_lv2_icon('download')}<span>Export</span></a>"
-        "</div>"
-        "</div>"
     )
+    return page_head(title, subtitle=count_text or None, actions_html=actions)
 
 
 def _lv2_views_strip(active_view: Optional[str], date_from: Optional[str], date_to: Optional[str]) -> str:
@@ -6305,14 +6258,7 @@ def _lv2_report_shell(
         "</div>"
     )
 
-    page_head_html = (
-        "<div class='page-head'>"
-        f"<div><div class='page-title'>{html_escape(title)}"
-        + (f" <small>{html_escape(subtitle)}</small>" if subtitle else "")
-        + "</div></div>"
-        f"<div class='page-actions'>{extra_actions_html}</div>"
-        "</div>"
-    )
+    page_head_html = page_head(title, subtitle=subtitle or None, actions_html=extra_actions_html)
 
     body_html = page_head_html + date_bar + f"<div id='results'>{body}</div>"
     return _lv2_page(f"Log analyser — {title}", nav_key, body_html)
