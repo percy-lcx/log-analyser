@@ -17,7 +17,7 @@ rules:
     category: "Search Engine"
   - family: "Google Special Crawlers"
     match: "regex"
-    pattern: "googleassociationservice|google-safety|googleproducer|google-inspectiontool|storebot-google|google-site-verification"
+    pattern: "googleassociationservice|google-safety|googleproducer|google-inspectiontool|storebot-google|google-site-verification|googledocs|apps-spreadsheets"
     category: "Search Engine"
   - family: "Bingbot"
     match: "regex"
@@ -47,11 +47,31 @@ rules:
     match: "regex"
     pattern: "petalbot"
     category: "Search Engine"
+  - family: "SeznamBot"
+    match: "regex"
+    pattern: "seznambot"
+    category: "Search Engine"
+  - family: "MojeekBot"
+    match: "regex"
+    pattern: "mojeekbot"
+    category: "Search Engine"
 
   # AI / LLM crawlers
   - family: "GPTBot"
     match: "regex"
     pattern: "gptbot"
+    category: "AI Crawler"
+  - family: "You.com"
+    match: "regex"
+    pattern: "youbot"
+    category: "AI Crawler"
+  - family: "TikTokSpider"
+    match: "regex"
+    pattern: "tiktokspider"
+    category: "AI Crawler"
+  - family: "AzureAI-SearchBot"
+    match: "regex"
+    pattern: "azureai-searchbot"
     category: "AI Crawler"
   - family: "ChatGPT-User"
     match: "regex"
@@ -83,13 +103,25 @@ rules:
     match: "regex"
     pattern: "semrush"
     category: "SEO Tool"
-  - family: "Majestic"
-    match: "regex"
-    pattern: "majestic"
-    category: "SEO Tool"
   - family: "Moz"
     match: "regex"
     pattern: "rogerbot|mozbot"
+    category: "SEO Tool"
+  - family: "Majestic"
+    match: "regex"
+    pattern: "majestic|mj12bot"
+    category: "SEO Tool"
+  - family: "SE Ranking"
+    match: "regex"
+    pattern: "serankingbacklinksbot|serankingbot"
+    category: "SEO Tool"
+  - family: "BrightEdge"
+    match: "regex"
+    pattern: "brightedge|brightbot"
+    category: "SEO Tool"
+  - family: "HubSpot"
+    match: "regex"
+    pattern: "hubspot crawler"
     category: "SEO Tool"
   - family: "Sitebulb"
     match: "regex"
@@ -143,8 +175,16 @@ rules:
     match: "regex"
     pattern: "statuscake"
     category: "Uptime Monitor"
+  - family: "Site24x7"
+    match: "regex"
+    pattern: "site24x7"
+    category: "Uptime Monitor"
 
   # Social previews (from your list + additions)
+  - family: "Meta"
+    match: "regex"
+    pattern: "meta-externalagent|meta-webindexer|meta-externalads|meta-externalfetcher"
+    category: "AI Crawler"
   - family: "Facebook"
     match: "regex"
     pattern: "facebookexternalhit|facebot"
@@ -173,6 +213,14 @@ rules:
     match: "regex"
     pattern: "whatsapp"
     category: "Social Media"
+  - family: "Awario"
+    match: "regex"
+    pattern: "awariobot"
+    category: "Social Media"
+  - family: "Clarity"
+    match: "regex"
+    pattern: "clarity-bot"
+    category: "Other"
 
   # Infra / misc crawlers
   - family: "Amazonbot"
@@ -203,8 +251,15 @@ rules:
   # Security scanners and exploit probes
   - family: "Security Scanner"
     match: "regex"
-    pattern: "masscan|zgrab|nuclei|dirbuster|nikto|sqlmap|whatweb|nmap|acunetix|nessus|openvas|wfuzz|gobuster|adobe application manager|python-requests/|go-http-client/|curl/[0-9]"
+    pattern: "masscan|zgrab|nuclei|dirbuster|nikto|sqlmap|whatweb|nmap|acunetix|nessus|openvas|wfuzz|gobuster|adobe application manager"
     category: "Security Scanner"
+
+  # Generic HTTP libraries — usually scripted ops tasks or low-effort scrapers,
+  # but distinct enough from active probing that they deserve their own bucket.
+  - family: "HTTP Library"
+    match: "regex"
+    pattern: "python-requests/|go-http-client/|curl/[0-9]|node-fetch/|axios/|java/[0-9]|libwww-perl|okhttp/|guzzlehttp/|aiohttp/|http_request|reqwest/|httpx/"
+    category: "HTTP Library"
 
   # No User-Agent header — nginx/CDN logs these as a bare "-".
   # No real browser or SDK omits the header entirely.
@@ -213,10 +268,13 @@ rules:
     pattern: "^-$"
     category: "Other"
 
-  # Fake browser UAs — truncated version numbers (e.g. Chrome/124.0.0 without patch)
+  # Fake browser UAs — truncated version numbers. Real Chrome ships four-part
+  # versions (Chrome/146.0.7680.177); anything with fewer than three dots after
+  # `Chrome/` is a scraper tell. Catches both `Chrome/57` (no patch) and the
+  # older `Chrome/124.0.0` (zero-patched) cases.
   - family: "Fake Browser UA"
     match: "regex"
-    pattern: 'chrome/\d+\.0\.0[\s/]|firefox/\d+\.0[\s/]'
+    pattern: 'chrome/\d+(\.\d+){0,2}([\s;/)]|$)|firefox/\d+\.0[\s/]'
     category: "Other"
 
   # Generic bot bucket (keep last)
