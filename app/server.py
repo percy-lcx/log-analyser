@@ -3729,7 +3729,7 @@ LV2_SAVED_VIEWS: List[Dict[str, Any]] = [
     {"id": "all",      "label": "All traffic",  "icon": "▦", "filters": {}},
     {"id": "errors",   "label": "Errors only",  "icon": "!", "filters": {"status_class": "4,5"}},
     {"id": "top-404",  "label": "404s",         "icon": "✕", "filters": {"status": "404"}},
-    {"id": "ai-bots",  "label": "AI crawlers",  "icon": "✦", "filters": {"bot_category": "AI", "is_bot": "true"}},
+    {"id": "ai-bots",  "label": "AI crawlers",  "icon": "✦", "filters": {"bot_category": "AI Crawler", "is_bot": "true"}},
     {"id": "humans",   "label": "Humans only",  "icon": "☺", "filters": {"is_bot": "false"}},
     {"id": "paid",     "label": "Paid traffic", "icon": "$", "filters": {"utm_source": "google_ads,newsletter,chatgpt"}},
 ]
