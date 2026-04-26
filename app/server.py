@@ -4084,11 +4084,13 @@ def _lv2_views_strip(active_view: Optional[str], date_from: Optional[str], date_
         date_qs += f"&to={html_escape(date_to, quote=True)}"
     chips = []
     for v in LV2_SAVED_VIEWS:
-        href = f"/logs?view={v['id']}{date_qs}"
-        active = " active" if active_view == v["id"] else ""
+        is_active = active_view == v["id"]
+        # Active chip becomes a deselect link (drops `view=`); the rest select.
+        href = f"/logs?{date_qs.lstrip('&')}" if is_active else f"/logs?view={v['id']}{date_qs}"
+        active = " active" if is_active else ""
         chips.append(
-            f"<a class='view-chip{active}' href='{href}' "
-            f"hx-get='{href}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML'>"
+            f"<a class='view-chip{active}' data-view-id='{html_escape(v['id'], quote=True)}' "
+            f"href='{href}' hx-get='{href}' hx-target='#results' hx-push-url='true' hx-swap='innerHTML'>"
             f"<span class='view-icon'>{html_escape(v['icon'])}</span>"
             f"{html_escape(v['label'])}</a>"
         )

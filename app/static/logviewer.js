@@ -719,27 +719,85 @@
     });
   });
 
-  // View / preset chips are baked into the page chrome and not re-rendered
-  // when filters change via htmx. Before the chip's click reaches htmx or the
-  // browser, copy from/to from the current URL onto the chip's target so the
-  // user's live date range wins over the stale rendered one.
+  // Toggle by adding ?debug=1 to the URL. Persists for the session.
+  var LV_DEBUG = (function () {
+    try {
+      if (new URLSearchParams(window.location.search).get('debug') === '1') {
+        sessionStorage.setItem('lvDebug', '1');
+      }
+      return sessionStorage.getItem('lvDebug') === '1';
+    } catch (_) { return false; }
+  })();
+  function lvLog() {
+    if (!LV_DEBUG) return;
+    var args = ['%c[lv]', 'color:#08f;font-weight:bold'].concat(Array.prototype.slice.call(arguments));
+    console.log.apply(console, args);
+  }
+  if (LV_DEBUG) {
+    console.log('%c[lv] debug logging enabled (sessionStorage.removeItem("lvDebug") to disable)', 'color:#08f');
+  }
+
+  // View chips: htmx caches the hx-get path in a closure at process time, so
+  // updating the attribute later doesn't change the request URL. We take the
+  // click ourselves: build the desired URL (live date range, deselect when the
+  // chip is already active), drive the swap via htmx.ajax, push history.
+  // The .ij-item dropdown items keep the old href-rewrite path since their
+  // hx-get is fresh (rendered into the popover each time).
   document.addEventListener('click', function (e) {
     var a = e.target && e.target.closest && e.target.closest('a.view-chip, a.ij-item');
     if (!a) return;
-    var href = a.getAttribute('href');
-    if (!href) return;
     var curr = new URLSearchParams(window.location.search);
     var from = curr.get('from');
     var to = curr.get('to');
-    if (!from && !to) return;
-    try {
-      var u = new URL(href, window.location.origin);
-      if (from) u.searchParams.set('from', from); else u.searchParams.delete('from');
-      if (to) u.searchParams.set('to', to); else u.searchParams.delete('to');
-      var newHref = u.pathname + u.search;
-      a.setAttribute('href', newHref);
-      if (a.hasAttribute('hx-get')) a.setAttribute('hx-get', newHref);
-    } catch (_) { /* ignore malformed URLs */ }
+    var currentView = curr.get('view') || '';
+    var chipView = a.getAttribute('data-view-id') || '';
+    var isViewChip = a.classList.contains('view-chip');
+    var isActiveChip = isViewChip && chipView && chipView === currentView;
+
+    if (!isViewChip) {
+      // ij-item path: original href-rewrite to inject live from/to.
+      var href = a.getAttribute('href');
+      if (!href || (!from && !to)) return;
+      try {
+        var u = new URL(href, window.location.origin);
+        if (from) u.searchParams.set('from', from); else u.searchParams.delete('from');
+        if (to) u.searchParams.set('to', to); else u.searchParams.delete('to');
+        var newHref = u.pathname + u.search;
+        a.setAttribute('href', newHref);
+        if (a.hasAttribute('hx-get')) a.setAttribute('hx-get', newHref);
+      } catch (_) {}
+      return;
+    }
+
+    // Build the URL we actually want for this chip.
+    var qs = '';
+    if (!isActiveChip && chipView) qs += 'view=' + encodeURIComponent(chipView);
+    if (from) qs += (qs ? '&' : '') + 'from=' + encodeURIComponent(from);
+    if (to)   qs += (qs ? '&' : '') + 'to=' + encodeURIComponent(to);
+    var target = '/logs' + (qs ? '?' + qs : '');
+
+    lvLog('click chip', {
+      chipView: chipView, currentView: currentView,
+      isActiveChip: isActiveChip, target: target,
+      hxGetCached: a.getAttribute('hx-get'),
+    });
+
+    e.preventDefault();
+    e.stopImmediatePropagation();
+
+    if (window.htmx && typeof window.htmx.ajax === 'function') {
+      window.htmx.ajax('GET', target, { target: '#results', swap: 'innerHTML' })
+        .then(function () {
+          if (window.location.pathname + window.location.search !== target) {
+            history.pushState(null, '', target);
+          }
+          syncViewsStrip();
+          syncModeSeg();
+        })
+        .catch(function (err) { lvLog('htmx.ajax failed', err); });
+    } else {
+      window.location.href = target;
+    }
   }, true);
 
   // Keep the Rows/Group/Timeseries segmented control in sync with the URL.
@@ -752,6 +810,38 @@
     seg.querySelectorAll('a[data-mode-val]').forEach(function (a) {
       a.classList.toggle('active', a.getAttribute('data-mode-val') === mode);
     });
+  }
+
+  // Same idea for the Views chip strip — it sits outside #results too.
+  // Also rewrite the active chip's href so clicking it deselects (drops view=).
+  function syncViewsStrip() {
+    var strip = document.querySelector('.views-strip');
+    if (!strip) { lvLog('syncViewsStrip: no strip'); return; }
+    var curr = new URLSearchParams(window.location.search);
+    var view = curr.get('view') || '';
+    var from = curr.get('from');
+    var to = curr.get('to');
+    var report = [];
+    strip.querySelectorAll('a.view-chip').forEach(function (a) {
+      var raw = a.getAttribute('data-view-id') || '';
+      if (!raw) {
+        var href0 = a.getAttribute('href') || '';
+        var m0 = href0.match(/[?&]view=([^&]+)/);
+        raw = m0 ? decodeURIComponent(m0[1]) : '';
+        if (raw) a.setAttribute('data-view-id', raw);
+      }
+      var isActive = raw === view;
+      a.classList.toggle('active', isActive);
+      var qs = '';
+      if (!isActive && raw) qs += 'view=' + encodeURIComponent(raw);
+      if (from) qs += (qs ? '&' : '') + 'from=' + encodeURIComponent(from);
+      if (to)   qs += (qs ? '&' : '') + 'to=' + encodeURIComponent(to);
+      var newHref = '/logs' + (qs ? '?' + qs : '');
+      a.setAttribute('href', newHref);
+      if (a.hasAttribute('hx-get')) a.setAttribute('hx-get', newHref);
+      report.push({ id: raw, active: isActive, href: newHref });
+    });
+    lvLog('syncViewsStrip', { url: window.location.href, view: view, chips: report });
   }
 
   // When an htmx swap targets #drawer, open the drawer and highlight the row.
@@ -771,6 +861,41 @@
       openDrawer();
     }
     syncModeSeg();
+    syncViewsStrip();
+  });
+
+  // htmx lifecycle tracing — only logs when the source element is a view chip
+  // so we don't drown the console on every drawer/filter request.
+  function isChipEvt(evt) {
+    var el = evt && evt.detail && evt.detail.elt;
+    return !!(el && el.classList && el.classList.contains('view-chip'));
+  }
+  document.body.addEventListener('htmx:configRequest', function (evt) {
+    if (!isChipEvt(evt)) return;
+    lvLog('htmx:configRequest', {
+      path: evt.detail.path, verb: evt.detail.verb,
+      parameters: evt.detail.parameters,
+    });
+  });
+  document.body.addEventListener('htmx:beforeRequest', function (evt) {
+    if (!isChipEvt(evt)) return;
+    var x = evt.detail.xhr;
+    lvLog('htmx:beforeRequest', { requestPath: evt.detail.requestConfig && evt.detail.requestConfig.path, xhrUrl: x && x.responseURL });
+  });
+  document.body.addEventListener('htmx:beforeSwap', function (evt) {
+    if (!isChipEvt(evt)) return;
+    var x = evt.detail.xhr;
+    var pushHeader = x && x.getResponseHeader && x.getResponseHeader('HX-Push-Url');
+    lvLog('htmx:beforeSwap', {
+      finalUrl: x && x.responseURL, status: x && x.status,
+      hxPushHeader: pushHeader, currentLocation: window.location.href,
+    });
+  });
+  document.body.addEventListener('htmx:pushedIntoHistory', function (evt) {
+    lvLog('htmx:pushedIntoHistory', { path: evt.detail && evt.detail.path, locationNow: window.location.href });
+  });
+  window.addEventListener('popstate', function () {
+    lvLog('popstate', { locationNow: window.location.href });
   });
 
   // Close clicks: data-drawer-close button, or backdrop click
