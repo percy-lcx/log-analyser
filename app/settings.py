@@ -522,18 +522,18 @@ def settings_profiles():
             <td>{p["created_at"]}</td>
             <td>{p["updated_at"]}</td>
             <td style='white-space:nowrap;'>
-                <button class='btn-sm btn-blue' onclick='activateProfile({p["id"]})' {disable_act}>Activate</button>
-                <button class='btn-sm' onclick='cloneProfile({p["id"]}, "{p["name"]}")'>Clone</button>
-                <button class='btn-sm' onclick='renameProfile({p["id"]}, "{p["name"]}")'>Rename</button>
-                <button class='btn-sm btn-red' onclick='deleteProfile({p["id"]})' {disable_del}>Delete</button>
+                <button class='btn btn-sm btn-primary' onclick='activateProfile({p["id"]})' {disable_act}>Activate</button>
+                <button class='btn btn-sm' onclick='cloneProfile({p["id"]}, "{p["name"]}")'>Clone</button>
+                <button class='btn btn-sm' onclick='renameProfile({p["id"]}, "{p["name"]}")'>Rename</button>
+                <button class='btn btn-sm btn-danger' onclick='deleteProfile({p["id"]})' {disable_del}>Delete</button>
             </td>
         </tr>"""
 
     body = f"""
     <div class='card'>
         <div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;'>
-            <input id='newName' class='settings-input' placeholder='New profile name' style='min-width:200px;'>
-            <button class='btn-sm btn-blue' onclick='createProfile()'>Create Blank</button>
+            <input id='newName' class='input' placeholder='New profile name' style='min-width:200px;'>
+            <button class='btn btn-sm btn-primary' onclick='createProfile()'>Create Blank</button>
             <span style='color:#94a3b8;font-size:12px;'>or clone from an existing profile using Clone button below</span>
         </div>
     </div>
@@ -616,7 +616,7 @@ def settings_url_groups():
     <div class='card'>
         <h2 style='margin-bottom:12px;'>Live Preview</h2>
         <div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;'>
-            <input id='previewPath' placeholder='Enter a sample path, e.g. /en/trading/forex' style='padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;flex:1;min-width:250px;'>
+            <input id='previewPath' class='input' placeholder='Enter a sample path, e.g. /en/trading/forex' style='flex:1;min-width:250px;'>
             <div id='previewResult' style='font-size:13px;color:#374151;'></div>
         </div>
     </div>
@@ -625,8 +625,8 @@ def settings_url_groups():
         <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;'>
             <h2 style='margin:0;'>URL Group Rules</h2>
             <div style='display:flex;gap:8px;'>
-                <button class='btn-sm' onclick='addRule()'>+ Add Rule</button>
-                <button class='btn-sm btn-blue' onclick='saveRules()'>Save</button>
+                <button class='btn btn-sm' onclick='addRule()'>+ Add Rule</button>
+                <button class='btn btn-sm btn-primary' onclick='saveRules()'>Save</button>
             </div>
         </div>
         <div class='table-wrapper' style='max-height:none;'>
@@ -665,7 +665,7 @@ def settings_url_groups():
                     <option value='ext' ${{r.match==='ext'?'selected':''}}>extension</option>
                 </select></td>
                 <td><input value="${{escHtml(val)}}" onchange="updateRule(${{i}},'value',this.value)" placeholder="${{r.match==='ext'?'css, js, png':'pattern'}}"></td>
-                <td><button class='del-btn' onclick='removeRule(${{i}})' title='Delete'>&times;</button></td>
+                <td><button class='btn btn-icon btn-ghost btn-sm' onclick='removeRule(${{i}})' title='Delete' aria-label='Delete'><svg width='12' height='12' aria-hidden='true'><use href='/static/icons.svg#x'/></svg></button></td>
             `;
             // Drag events
             tr.addEventListener('dragstart', e => {{ e.dataTransfer.setData('text/plain', i); tr.classList.add('dragging'); }});
@@ -780,9 +780,9 @@ def settings_locales():
         </p>
         <div id='localeTags' style='display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;'></div>
         <div style='display:flex;gap:8px;align-items:center;'>
-            <input id='localeInput' class='settings-input' placeholder='Add locale code (e.g. en-gb)' style='width:200px;'
+            <input id='localeInput' class='input' placeholder='Add locale code (e.g. en-gb)' style='width:200px;'
                    onkeydown="if(event.key==='Enter'){{ event.preventDefault(); addLocale(); }}">
-            <button class='btn-sm' onclick='addLocale()'>Add</button>
+            <button class='btn btn-sm' onclick='addLocale()'>Add</button>
         </div>
     </div>
 
@@ -795,7 +795,7 @@ def settings_locales():
     </div>
 
     <div style='margin-top:14px;'>
-        <button class='btn-sm btn-blue' onclick='saveLocales()'>Save</button>
+        <button class='btn btn-sm btn-primary' onclick='saveLocales()'>Save</button>
     </div>
 
     <script>
@@ -866,8 +866,8 @@ def settings_sections():
         <div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;'>
             <h2 style='margin:0;'>Section Mappings</h2>
             <div style='display:flex;gap:8px;'>
-                <button class='btn-sm' onclick='addSection()'>+ Add Mapping</button>
-                <button class='btn-sm btn-blue' onclick='saveSections()'>Save</button>
+                <button class='btn btn-sm' onclick='addSection()'>+ Add Mapping</button>
+                <button class='btn btn-sm btn-primary' onclick='saveSections()'>Save</button>
             </div>
         </div>
         <p style='font-size:12px;color:#64748b;margin-bottom:12px;'>
@@ -899,7 +899,7 @@ def settings_sections():
             tr.innerHTML = `
                 <td><input value="${{escHtml(e[0])}}" onchange="entries[${{i}}][0]=this.value"></td>
                 <td><input value="${{escHtml(e[1])}}" onchange="entries[${{i}}][1]=this.value"></td>
-                <td><button class='del-btn' onclick='entries.splice(${{i}},1);renderSections();' title='Delete'>&times;</button></td>
+                <td><button class='btn btn-icon btn-ghost btn-sm' onclick='entries.splice(${{i}},1);renderSections();' title='Delete' aria-label='Delete'><svg width='12' height='12' aria-hidden='true'><use href='/static/icons.svg#x'/></svg></button></td>
             `;
             tbody.appendChild(tr);
         }});
@@ -979,8 +979,8 @@ def settings_logs():
     <div class='card'>
         <h2 style='margin-bottom:10px;'>Ingestion</h2>
         <div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;'>
-            <button class='btn-sm btn-blue' id='btnIngestSelected' onclick='runIngest("selected")'>Ingest Selected</button>
-            <button class='btn-sm btn-blue' id='btnIngestAll' onclick='runIngest("all")'>Ingest All Pending</button>
+            <button class='btn btn-sm btn-primary' id='btnIngestSelected' onclick='runIngest("selected")'>Ingest Selected</button>
+            <button class='btn btn-sm btn-primary' id='btnIngestAll' onclick='runIngest("all")'>Ingest All Pending</button>
         </div>
         <div id='ingestProgress' style='font-size:13px;color:#64748b;'></div>
     </div>
@@ -990,13 +990,13 @@ def settings_logs():
         <div style='display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;'>
             <label style='font-size:12px;font-weight:600;color:#64748b;display:flex;flex-direction:column;gap:4px;'>
                 FROM
-                <input type='date' id='rebuildFrom' style='padding:5px 8px;border:1px solid #cbd5e1;border-radius:4px;font-size:13px;'>
+                <input type='date' id='rebuildFrom' class='input'>
             </label>
             <label style='font-size:12px;font-weight:600;color:#64748b;display:flex;flex-direction:column;gap:4px;'>
                 TO
-                <input type='date' id='rebuildTo' style='padding:5px 8px;border:1px solid #cbd5e1;border-radius:4px;font-size:13px;'>
+                <input type='date' id='rebuildTo' class='input'>
             </label>
-            <button class='btn-sm btn-blue' id='btnRebuild' onclick='runRebuild()' style='align-self:flex-end;'>Rebuild</button>
+            <button class='btn btn-sm btn-primary' id='btnRebuild' onclick='runRebuild()' style='align-self:flex-end;'>Rebuild</button>
         </div>
         <div id='rebuildProgress' style='font-size:13px;color:#64748b;'></div>
     </div>
@@ -1413,14 +1413,14 @@ def settings_gsc():
             </ol>
         </div>
         <div id='authFlowSection'>
-            <button class='btn-sm btn-blue' onclick='startAuth()' id='btnStartAuth'>Get Authorization URL</button>
+            <button class='btn btn-sm btn-primary' onclick='startAuth()' id='btnStartAuth'>Get Authorization URL</button>
             <div id='authUrlBox' style='display:none;margin-top:12px;'>
                 <p style='font-size:13px;margin-bottom:6px;'>Open this URL in your browser and authorize access:</p>
-                <input id='authUrl' readonly style='width:100%;padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:12px;background:#f8fafc;margin-bottom:10px;'>
+                <input id='authUrl' class='input' readonly style='width:100%;background:var(--surface-alt);margin-bottom:10px;'>
                 <p style='font-size:13px;margin-bottom:6px;line-height:1.5;'>After approving, your browser will redirect to <code style='background:#f1f5f9;padding:1px 4px;border-radius:3px;'>http://localhost/?code=...</code> and show a <em>can't reach this page</em> error &mdash; that's expected. Copy the <strong>entire URL</strong> from the browser address bar and paste it below.</p>
                 <div style='display:flex;gap:8px;'>
-                    <input id='authCode' placeholder='Paste http://localhost/?code=... URL here' style='flex:1;padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px;font-size:13px;'>
-                    <button class='btn-sm btn-blue' onclick='exchangeCode()'>Connect</button>
+                    <input id='authCode' class='input' placeholder='Paste http://localhost/?code=... URL here' style='flex:1;'>
+                    <button class='btn btn-sm btn-primary' onclick='exchangeCode()'>Connect</button>
                 </div>
             </div>
         </div>
@@ -1434,13 +1434,13 @@ def settings_gsc():
         <div class='card'>
             <h2 style='margin-bottom:12px;'>Sync Controls</h2>
             <div style='display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;'>
-                <button class='btn-sm btn-blue' onclick='triggerSync("daily")' id='btnDaily'>Sync Now (Last 3 Days)</button>
-                <button class='btn-sm' onclick='triggerSync("backfill")' id='btnBackfill'>Full Backfill (~16 Months)</button>
+                <button class='btn btn-sm btn-primary' onclick='triggerSync("daily")' id='btnDaily'>Sync Now (Last 3 Days)</button>
+                <button class='btn btn-sm' onclick='triggerSync("backfill")' id='btnBackfill'>Full Backfill (~16 Months)</button>
             </div>
             <div style='display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px;'>
-                <label style='font-size:13px;'>From <input type='date' id='syncFrom' style='padding:5px 8px;border:1px solid #cbd5e1;border-radius:5px;font-size:13px;'></label>
-                <label style='font-size:13px;'>To <input type='date' id='syncTo' style='padding:5px 8px;border:1px solid #cbd5e1;border-radius:5px;font-size:13px;'></label>
-                <button class='btn-sm' onclick='triggerRangeSync()'>Sync Range</button>
+                <label style='font-size:13px;'>From <input type='date' id='syncFrom' class='input'></label>
+                <label style='font-size:13px;'>To <input type='date' id='syncTo' class='input'></label>
+                <button class='btn btn-sm' onclick='triggerRangeSync()'>Sync Range</button>
             </div>
             <div id='syncOutput' style='font-size:13px;color:#64748b;'></div>
         </div>
@@ -1451,7 +1451,7 @@ def settings_gsc():
         </div>
 
         <div class='card'>
-            <button class='btn-sm btn-red' onclick='disconnect()'>Disconnect Search Console</button>
+            <button class='btn btn-sm btn-danger' onclick='disconnect()'>Disconnect Search Console</button>
         </div>
     </div>
 

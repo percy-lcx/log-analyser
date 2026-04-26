@@ -78,3 +78,13 @@ def page_head(title: str, subtitle: Optional[str] = None, actions_html: str = ""
         f"<div class='page-actions'>{actions_html}</div>"
         "</div>"
     )
+
+
+def notice(variant: str, text: str, *, link: Optional[tuple[str, str]] = None) -> str:
+    """Inline message banner. variant in {'info','warn','err'}. `link` is (label, href)."""
+    cls = {"info": "notice-info", "warn": "notice-warn", "err": "notice-err"}.get(variant, "notice-info")
+    link_html = ""
+    if link:
+        label, href = link
+        link_html = f" <a class='notice-link' href='{_esc(href, quote=True)}'>{_esc(label)}</a>"
+    return f"<div class='notice {cls}'><span>{text}{link_html}</span></div>"

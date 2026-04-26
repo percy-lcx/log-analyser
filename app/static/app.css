@@ -180,11 +180,81 @@ textarea{ font:inherit; color:inherit; }
 .btn.btn-primary:hover{ background: #000; color:#fff;}
 .btn.btn-ghost{ background: transparent; border-color: transparent; }
 .btn.btn-ghost:hover{ background: var(--surface-alt); border-color: var(--border);}
+.btn.btn-danger{ color: var(--err); border-color: var(--border);}
+.btn.btn-danger:hover{ background: var(--err-soft); color: var(--err); border-color: #e7c0c0;}
 .btn.btn-sm{ height: 26px; padding: 0 9px; font-size: 12px;}
 .btn-icon{
   width: 30px; height: 30px; padding: 0;
   display:inline-flex; align-items:center; justify-content:center;
 }
+.btn-icon.btn-sm{ width: 26px; height: 26px;}
+[disabled], .is-disabled{ opacity: .4; cursor: default; pointer-events: none;}
+.btn:focus-visible,
+.input:focus-visible,
+.select:focus-visible,
+.chip:focus-visible,
+.nav-link:focus-visible{ outline: none; box-shadow: 0 0 0 3px var(--accent-soft);}
+
+/* ── Form primitives ── */
+.input{
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink-1);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  transition: border-color .12s, box-shadow .12s, background .12s;
+}
+.input::placeholder{ color: var(--ink-4);}
+.input:focus,
+.input:focus-visible{
+  outline: none;
+  border-color: var(--accent);
+  background: var(--surface);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.select{
+  height: 32px;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='none' stroke='%237687a8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M1 1l4 4 4-4'/></svg>") no-repeat right 10px center;
+  color: var(--ink-1);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  transition: border-color .12s, box-shadow .12s;
+}
+.select:focus,
+.select:focus-visible{
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ── Notices ── */
+.notice{
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 8px 0 14px;
+  color: var(--ink-1);
+  background: var(--surface);
+}
+.notice .notice-link{ font-weight: 600; white-space: nowrap;}
+.notice-info{ background: var(--accent-soft); border-color: #cfdaf2; color: var(--accent-ink);}
+.notice-info .notice-link{ color: var(--accent);}
+.notice-warn{ background: var(--warn-soft); border-color: #f0d6a5; color: var(--warn);}
+.notice-warn .notice-link{ color: var(--warn);}
+.notice-err{ background: var(--err-soft); border-color: #e7c0c0; color: var(--err);}
+.notice-err .notice-link{ color: var(--err);}
 
 /* ── Segmented control ── */
 .seg{
@@ -985,6 +1055,9 @@ table.log-table td.col-mono{ font-family: var(--font-mono); font-size: 11.5px; c
 .status-3xx{ background: var(--accent-soft); color: var(--accent-ink);}
 .status-4xx{ background: var(--warn-soft); color: var(--warn);}
 .status-5xx{ background: var(--err-soft); color: var(--err);}
+.status-ok{ background: var(--ok-soft); color: var(--ok); font-family: var(--font-sans); min-width: 0;}
+.status-pending{ background: var(--warn-soft); color: var(--warn); font-family: var(--font-sans); min-width: 0;}
+.status-err{ background: var(--err-soft); color: var(--err); font-family: var(--font-sans); min-width: 0;}
 
 /* Method pill */
 .method{
