@@ -2190,6 +2190,7 @@ def strategic_crawl_report(
         )
         return _lv2_report_shell(
             title="Strategic Crawl", nav_key="reports",
+            subtitle="Bot crawl on URLs Google has indexed or ranked vs. URLs with no GSC signal",
             date_from=date_from, date_to=date_to, avail=avail,
             body=body,
         )
@@ -2217,6 +2218,35 @@ def strategic_crawl_report(
         sel = " selected" if b == bot_family else ""
         body += f"<option value='{html_escape(b, quote=True)}'{sel}>{html_escape(b)}</option>"
     body += "</select></label></form>"
+
+    body += (
+        "<details class='strat-explainer' "
+        "style='margin:0 0 14px;padding:10px 12px;border:1px solid var(--border);"
+        "border-radius:6px;background:var(--surface);font-size:13px;'>"
+        "<summary style='cursor:pointer;color:var(--ink-2);font-weight:500;'>"
+        "What counts as <em>strategic</em>?"
+        "</summary>"
+        "<div style='margin-top:8px;color:var(--ink-2);line-height:1.55;'>"
+        "<p style='margin:0 0 8px;'>"
+        "Each crawled URL is joined to Google Search Console for the same day. "
+        "If GSC has any signal for the URL (an impression or a ranking position), "
+        "the crawl is <strong>strategic</strong> — it landed on a page Google knows about. "
+        "Otherwise it's <strong>non-strategic</strong> — crawl budget spent on a URL "
+        "Google has never seen rank."
+        "</p>"
+        "<ul style='margin:0;padding-left:18px;'>"
+        "<li><strong>Strategic · top 10</strong> — has impressions and avg position ≤ 10.</li>"
+        "<li><strong>Strategic · indexed</strong> — has impressions (visible in search results).</li>"
+        "<li><strong>Strategic · ranked, 0 impressions</strong> — Google assigned a position but no one saw it yet.</li>"
+        "<li><strong>Non-strategic · no GSC signal</strong> — no impressions and no position.</li>"
+        "</ul>"
+        "<p style='margin:8px 0 0;color:var(--ink-3);font-size:12px;'>"
+        "Caveat: a crawl can look non-strategic simply because GSC hasn't reported on the URL yet "
+        "(new pages, low-traffic URLs, or GSC sampling gaps)."
+        "</p>"
+        "</div>"
+        "</details>"
+    )
 
     bot_filter_sql = f"bot_family = '{esc_bot}'"
 
@@ -2388,6 +2418,7 @@ def strategic_crawl_report(
 
     return _lv2_report_shell(
         title="Strategic Crawl", nav_key="reports",
+        subtitle="Bot crawl on URLs Google has indexed or ranked vs. URLs with no GSC signal",
         date_from=date_from, date_to=date_to, avail=avail,
         body=body,
     )
